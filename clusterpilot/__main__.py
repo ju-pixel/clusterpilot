@@ -128,6 +128,9 @@ def _cmd_tui() -> None:
                 "Set api_key in config.toml or export ANTHROPIC_API_KEY."
             )
 
+    from clusterpilot.db import DB_PATH
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
     app = ClusterPilotApp(config)
     app.run()
 
