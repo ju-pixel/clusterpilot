@@ -1,7 +1,8 @@
 """AI-powered SLURM script generation.
 
 Takes the user's plain-language job description and the cluster probe data,
-builds a rich system prompt, then streams a complete sbatch script from Claude.
+builds a rich system prompt, then streams a complete sbatch script from the
+configured model.
 
 Usage
 -----
@@ -28,15 +29,23 @@ async def generate_script(
     profile: ClusterProfile,
     model: str,
     api_key: str,
+    *,
+    partition: str = "",
+    script_content: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream a SLURM job script token-by-token.
 
     Args:
-        description: User's plain-language job description.
-        probe:       Fresh or cached cluster probe (partitions, modules, account).
-        profile:     Cluster connection profile (host, user, account, scratch).
-        model:       Claude model ID, e.g. "claude-sonnet-4-6".
-        api_key:     Anthropic API key.
+        description:    User's plain-language job description.
+        probe:          Fresh or cached cluster probe (partitions, modules, account).
+        profile:        Cluster connection profile (host, user, account, scratch).
+        model:          Model ID, e.g. "claude-sonnet-4-6".
+        api_key:        Anthropic API key.
+        partition:      Hard partition constraint from the picker. Empty means
+                        the model chooses based on the description.
+        script_content: Contents of the user's local script (Julia, Python, etc.).
+                        Included verbatim so the model can inspect imports and
+                        infer required modules, GPU count, and walltime.
 
     Yields:
         Raw text tokens as they arrive from the API.
@@ -44,7 +53,7 @@ async def generate_script(
     Raises:
         anthropic.APIError: on network or auth failures.
     """
-    system = _build_system_prompt(probe, profile)
+    system = _build_system_prompt(probe, profile, partition=partition, script_content=script_content)
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async with client.messages.stream(
@@ -59,12 +68,40 @@ async def generate_script(
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
-def _build_system_prompt(probe: ClusterProbe, profile: ClusterProfile) -> str:
+def _build_system_prompt(
+    probe: ClusterProbe,
+    profile: ClusterProfile,
+    *,
+    partition: str = "",
+    script_content: str | None = None,
+) -> str:
     """Construct a cluster-aware system prompt from live probe data."""
     partition_lines = _format_partitions(probe)
     julia_line = ", ".join(probe.julia_versions) or "julia/1.11.3"
     account = profile.account or (probe.accounts[0] if probe.accounts else "")
     scratch = profile.expand_scratch()
+
+    partition_rule = (
+        f"The user has selected partition [bold]{partition}[/bold] from the picker. "
+        f"You MUST use exactly `--partition={partition}`. Do not change it."
+        if partition
+        else "Choose the most appropriate partition from the list above based on the job description."
+    )
+
+    script_section = ""
+    if script_content:
+        script_section = f"""
+═══ USER'S SCRIPT ═══
+
+The user has provided the following script to be run. Read it carefully to
+infer required modules, GPU count, CPU count, memory, and walltime. Load
+only the modules that are actually needed by this script and available on
+this cluster.
+
+```
+{script_content}
+```
+"""
 
     return f"""\
 You generate SLURM job submission scripts for the {profile.name} cluster \
@@ -81,13 +118,13 @@ User account: {account}
 Job working directory base: {scratch}
 
 SSH login: {profile.user}@{profile.host}
-
+{script_section}
 ═══ SCRIPT RULES ═══
 
 1. Always include these #SBATCH directives:
    --job-name       short, lowercase, no spaces (derived from the description)
    --account        {account}
-   --partition      choose the most appropriate from the list above
+   --partition      {partition_rule}
    --nodes          usually 1 unless the job explicitly needs multiple
    --ntasks-per-node  match to CPUs needed
    --cpus-per-task  set appropriately for the workload
@@ -113,6 +150,10 @@ SSH login: {profile.user}@{profile.host}
    Prefer lgpu (L40S) for inference or memory-bandwidth workloads.
 
 6. Do not invent modules. Only load what is available on this cluster.
+
+7. If a script was provided above, infer resource requirements from it
+   rather than guessing. Match module versions to those available on
+   this cluster.
 
 Output only the script. Begin now.
 """

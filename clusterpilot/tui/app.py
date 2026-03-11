@@ -243,6 +243,76 @@ SubmitView {
     margin-bottom: 1;
 }
 
+#partition-row {
+    height: 3;
+    margin-bottom: 1;
+    layout: horizontal;
+    align: left middle;
+}
+
+#script-row {
+    height: 3;
+    margin-bottom: 1;
+    layout: horizontal;
+    align: left middle;
+}
+
+.field-label {
+    width: 12;
+    color: $dim;
+    text-style: bold;
+    height: 3;
+    content-align: left middle;
+    padding-top: 1;
+}
+
+#partition-select {
+    width: 1fr;
+    background: $bg3;
+    border: tall $border2;
+    color: $white;
+}
+
+#partition-select:focus {
+    border: tall $amberDim;
+}
+
+Select > SelectCurrent {
+    background: $bg3;
+    color: $white;
+    border: tall $border2;
+}
+
+Select.-focus > SelectCurrent {
+    border: tall $amberDim;
+}
+
+SelectOverlay {
+    background: $bg2;
+    border: tall $amberDim;
+}
+
+SelectOverlay > OptionList {
+    background: $bg2;
+    color: $white;
+}
+
+SelectOverlay > OptionList > .option-list--option-highlighted {
+    background: $amberLo;
+    color: $amber;
+}
+
+#script-path-input {
+    width: 1fr;
+    background: $bg3;
+    border: tall $border2;
+    color: $white;
+}
+
+#script-path-input:focus {
+    border: tall $amberDim;
+}
+
 #description-input {
     border: tall $border2;
     background: $bg3;

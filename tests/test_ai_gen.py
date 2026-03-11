@@ -90,7 +90,6 @@ class TestBuildSystemPrompt:
 
     def test_contains_expanded_scratch_path(self, grex_probe, grex_profile):
         prompt = _build_system_prompt(grex_probe, grex_profile)
-        # $HOME should be expanded in the prompt
         assert "$HOME" not in prompt
 
     def test_starts_with_bash_instruction(self, grex_probe, grex_profile):
@@ -106,24 +105,42 @@ class TestBuildSystemPrompt:
             name="grex",
             host="yak.hpc.umanitoba.ca",
             user="juliaf",
-            account="",   # no account in profile
+            account="",
             scratch="$HOME/clusterpilot_jobs",
         )
         prompt = _build_system_prompt(grex_probe, profile_no_account)
-        # Should fall back to probe.accounts[0]
         assert "def-stamps" in prompt
 
     def test_falls_back_to_default_julia_when_none_found(self, grex_profile):
         probe_no_julia = ClusterProbe(
             cluster_name="grex", probed_at=time.time(),
             partitions=[],
-            julia_versions=[],   # nothing found
+            julia_versions=[],
             accounts=["def-stamps"],
             account_max_wall={},
         )
         prompt = _build_system_prompt(probe_no_julia, grex_profile)
-        assert "julia/1.11.3" in prompt   # hard-coded fallback
+        assert "julia/1.11.3" in prompt
 
     def test_output_log_format_uses_percent_x_j(self, grex_probe, grex_profile):
         prompt = _build_system_prompt(grex_probe, grex_profile)
         assert "%x-%j.out" in prompt
+
+    def test_partition_hard_constraint_when_specified(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
+        assert "--partition=stamps" in prompt
+        assert "MUST" in prompt
+
+    def test_no_partition_constraint_when_empty(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, partition="")
+        assert "MUST" not in prompt
+
+    def test_script_content_included_when_provided(self, grex_probe, grex_profile):
+        content = 'using CUDA\nusing Flux\nprintln("train")'
+        prompt = _build_system_prompt(grex_probe, grex_profile, script_content=content)
+        assert "using CUDA" in prompt
+        assert "USER'S SCRIPT" in prompt
+
+    def test_no_script_section_when_content_none(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, script_content=None)
+        assert "USER'S SCRIPT" not in prompt

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, cast
 import aiosqlite
 from textual import on, work
 from textual.app import ComposeResult
-from textual.containers import ScrollableContainer, Vertical
-from textual.widgets import Button, Input, Label, Static, TextArea
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
 from clusterpilot.cluster.probe import probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
@@ -20,11 +20,6 @@ from clusterpilot.ssh.rsync import upload
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
-
-_PLACEHOLDER = (
-    'e.g. "MC sweep T=100–400K, N=1024 particles, '
-    '10 replicas on 2 V100s, ~8 hours"'
-)
 
 
 def _format_script(script: str) -> str:
@@ -54,17 +49,33 @@ def _extract(script: str, directive: str, default: str) -> str:
 
 
 class SubmitView(Static):
-    """Left: description + cluster selector. Right: generated script."""
+    """Left: description + partition picker + script path. Right: generated script."""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="submit-left"):
             with Vertical(id="describe-panel"):
                 yield Label("═ DESCRIBE YOUR JOB ", id="describe-title")
+
+                with Horizontal(id="partition-row"):
+                    yield Label("PARTITION", classes="field-label")
+                    yield Select(
+                        [],
+                        prompt="Probing cluster…",
+                        id="partition-select",
+                    )
+
+                with Horizontal(id="script-row"):
+                    yield Label("SCRIPT", classes="field-label")
+                    yield Input(
+                        placeholder="/path/to/your/script.jl  (optional — helps AI pick resources)",
+                        id="script-path-input",
+                    )
+
                 yield TextArea(
                     id="description-input",
                     language=None,
                 )
-                with Vertical(id="generate-row"):
+                with Horizontal(id="generate-row"):
                     yield Button(
                         "⚙  GENERATE SCRIPT",
                         id="btn-generate",
@@ -77,7 +88,7 @@ class SubmitView(Static):
                 with ScrollableContainer(id="script-scroll"):
                     yield Static(_EMPTY_HINT, id="script-display")
 
-            with Vertical(id="submit-actions"):
+            with Horizontal(id="submit-actions"):
                 yield Button(
                     "⚡  UPLOAD + SUBMIT",
                     id="btn-submit",
@@ -88,6 +99,38 @@ class SubmitView(Static):
 
     def on_mount(self) -> None:
         self._generated_script = ""
+        self._populate_partitions()
+
+    # ── Partition probe ────────────────────────────────────────────────────────
+
+    @work(thread=False, exclusive=True)
+    async def _populate_partitions(self) -> None:
+        """Probe the cluster and fill the partition Select widget."""
+        app = cast("ClusterPilotApp", self.app)
+        if not app._config.clusters:
+            return
+        profile = app._config.clusters[0]
+        select = self.query_one("#partition-select", Select)
+        try:
+            probe = await probe_cluster(profile.name, profile.host, profile.user)
+        except Exception as exc:
+            self.app.notify(f"Partition probe failed: {exc}", severity="warning")
+            return
+
+        # GPU partitions first (most ClusterPilot users need GPU), then CPU.
+        ordered = probe.gpu_partitions() + probe.cpu_partitions()
+        options: list[tuple[str, str]] = []
+        for p in ordered:
+            if p.gres:
+                label = f"{p.name}  (GPU: {p.gres}  max {p.max_time})"
+            else:
+                label = f"{p.name}  (CPU  max {p.max_time})"
+            options.append((label, p.name))
+
+        if options:
+            select.set_options(options)
+        else:
+            self.app.notify("No partitions found — check cluster connection.", severity="warning")
 
     # ── Generate ──────────────────────────────────────────────────────────────
 
@@ -97,6 +140,15 @@ class SubmitView(Static):
         if not description:
             self.app.notify("Enter a job description first.", severity="warning")
             return
+
+        partition_select = self.query_one("#partition-select", Select)
+        if partition_select.value is Select.BLANK:
+            self.app.notify(
+                "No partition selected — the AI will choose one from the available list.",
+                severity="warning",
+                timeout=5,
+            )
+
         self.query_one("#btn-generate", Button).disabled = True
         self.query_one("#script-display", Static).update(
             "[#e8a020]Querying cluster and generating script…[/]"
@@ -112,11 +164,29 @@ class SubmitView(Static):
 
         profile = app._config.clusters[0]
 
-        # Load or refresh cluster probe.
+        # Hard partition constraint from picker.
+        partition_select = self.query_one("#partition-select", Select)
+        partition = (
+            str(partition_select.value)
+            if partition_select.value is not Select.BLANK
+            else ""
+        )
+
+        # Read script file content so the AI can inspect it.
+        script_content: str | None = None
+        script_path_str = self.query_one("#script-path-input", Input).value.strip()
+        if script_path_str:
+            script_path = Path(script_path_str).expanduser()
+            if script_path.exists():
+                script_content = script_path.read_text()
+            else:
+                self.app.notify(
+                    f"Script file not found: {script_path}", severity="warning"
+                )
+
+        # Load or refresh cluster probe (returns cache if < 24h old).
         try:
-            probe = await probe_cluster(
-                profile.name, profile.host, profile.user,
-            )
+            probe = await probe_cluster(profile.name, profile.host, profile.user)
         except Exception as exc:
             self.app.notify(f"Cluster probe failed: {exc}", severity="error")
             self.query_one("#btn-generate", Button).disabled = False
@@ -139,6 +209,8 @@ class SubmitView(Static):
                 description, probe, profile,
                 model=app._config.model,
                 api_key=api_key,
+                partition=partition,
+                script_content=script_content,
             ):
                 self._generated_script += token
                 script_widget.update(_format_script(self._generated_script))
@@ -147,7 +219,6 @@ class SubmitView(Static):
             self.query_one("#btn-generate", Button).disabled = False
             return
 
-        # Enable action buttons.
         self.query_one("#btn-generate", Button).disabled = False
         self.query_one("#btn-submit", Button).disabled = False
         self.query_one("#btn-save", Button).disabled = False
@@ -173,7 +244,6 @@ class SubmitView(Static):
         walltime  = _extract(script, "time",       "01:00:00")
         account   = _extract(script, "account",    profile.account)
 
-        # Local directory: a named subdir of cwd.
         local_job_dir = Path.cwd() / "clusterpilot_jobs" / job_name
         local_job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -250,9 +320,9 @@ _EMPTY_HINT = (
     "[#3a3020]Describe your job on the left,\n"
     "then press [GENERATE SCRIPT].\n\n"
     "ClusterPilot will query:\n"
-    "  sinfo       → available partitions\n"
+    "  sinfo        → available partitions\n"
     "  module avail → installed software\n"
-    "  sacctmgr    → your account limits\n\n"
+    "  sacctmgr     → your account limits\n\n"
     "…and generate a correct SLURM\n"
     "script for this cluster.[/]"
 )
