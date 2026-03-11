@@ -96,10 +96,10 @@ poll_interval = 300   # seconds
 
 [[clusters]]
 name = "grex"
-host = "grex.hpc.umanitoba.ca"
-user = "YOUR_USERNAME"
-account = "YOUR_ACCOUNT"
-scratch = "$HOME/scratch"   # Grex: $HOME/scratch, NOT $SCRATCH
+host = "yak.hpc.umanitoba.ca"
+user = "juliaf"
+account = "def-stamps"
+scratch = "$HOME/clusterpilot_jobs"   # Grex: no separate $SCRATCH, home is 15T NFS
 
 [[clusters]]
 name = "cedar"
@@ -131,10 +131,14 @@ Every `poll_interval` seconds per tracked job:
 
 **Grex (UManitoba)** — v0.1 target:
 - Host: `yak.hpc.umanitoba.ca` (login: `juliaf@yak.hpc.umanitoba.ca`)
+- Account: `def-stamps`
 - Scheduler: SLURM
-- Partitions: `skylake`, `largemem` (verify with `sinfo` on first probe)
-- Module system: Lmod (`module avail`)
-- Storage: `$HOME/scratch/` — NOT `$SCRATCH` like Compute Canada
+- Partitions (confirmed via sinfo):
+  - CPU: `skylake`* (default, 43 nodes, 21d), `genoa` (27 nodes), `largemem` (12 nodes), `genlm`, `chrim`, `chrimlm`, `genoacpu-b` (7d), `mcordcpu`, `pgs`, `test` (23h)
+  - GPU: `gpu` (V100×4, 7d, 2 nodes), `stamps`/`stamps-b` (V100×4, 21d/7d, 3 nodes), `lgpu` (L40S×2, 3d), `agro`/`agro-b` (A30×2), `livi`/`livi-b` (V100×16), `mcordgpu`/`mcordgpu-b` (A30×4)
+  - GRES syntax for sbatch: `--gres=gpu:v100:2` (for V100), `--gres=gpu:l40s:1` (for L40S), etc.
+- Module system: Lmod — Julia available: `julia/1.10.3`, `julia/1.11.3` (default)
+- Storage: no separate `$SCRATCH`; home IS the large filesystem (15T NFS). Job working dirs live under `$HOME/clusterpilot_jobs/<jobname>/`
 
 **Compute Canada cedar/narval** — post-v0.1:
 - Hosts: `cedar.computecanada.ca`, `narval.computecanada.ca`
