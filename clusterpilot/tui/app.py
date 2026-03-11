@@ -244,24 +244,22 @@ SubmitView {
 }
 
 #partition-row {
-    height: 3;
+    height: auto;
     margin-bottom: 1;
     layout: horizontal;
-    align: left middle;
 }
 
 #script-row {
-    height: 3;
+    height: auto;
     margin-bottom: 1;
     layout: horizontal;
-    align: left middle;
 }
 
 .field-label {
     width: 12;
     color: $dim;
     text-style: bold;
-    height: 3;
+    height: auto;
     content-align: left middle;
     padding-top: 1;
 }
