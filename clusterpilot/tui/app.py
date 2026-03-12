@@ -422,12 +422,14 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
 #btn-submit {
     background: $greenDim;
     color: $green;
-    border: tall $greenDim;
+    border: tall $green;
     text-style: bold;
     width: 2fr;
 }
 
 #btn-submit:hover { background: #1a5a1a; }
+#btn-submit:disabled { background: $dimmer; color: $dim; border: tall $dimmer; }
+#btn-edit-script { width: 1fr; }
 #btn-save { width: 1fr; }
 #btn-clear { width: 1fr; }
 

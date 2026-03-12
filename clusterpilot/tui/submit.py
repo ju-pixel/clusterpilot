@@ -1,7 +1,9 @@
 """F2 SUBMIT view — describe job → AI generates script → upload + submit."""
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -182,6 +184,7 @@ class SubmitView(Static):
                     id="btn-submit",
                     disabled=True,
                 )
+                yield Button("✎  EDIT", id="btn-edit-script", disabled=True)
                 yield Button("⬇  SAVE", id="btn-save", disabled=True)
                 yield Button("✕  CLEAR", id="btn-clear", disabled=True)
 
@@ -361,6 +364,7 @@ class SubmitView(Static):
 
         self.query_one("#btn-generate", Button).disabled = False
         self.query_one("#btn-submit", Button).disabled = False
+        self.query_one("#btn-edit-script", Button).disabled = False
         self.query_one("#btn-save", Button).disabled = False
         self.query_one("#btn-clear", Button).disabled = False
 
@@ -482,6 +486,29 @@ class SubmitView(Static):
         )
         app.action_show_jobs()
 
+    # ── Edit script ───────────────────────────────────────────────────────────
+
+    @on(Button.Pressed, "#btn-edit-script")
+    def on_edit_script(self) -> None:
+        if not self._generated_script:
+            return
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+        job_name = _extract(self._generated_script, "job-name", "clusterpilot_job")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", prefix=f"{job_name}_", delete=False
+        ) as f:
+            f.write(self._generated_script)
+            tmp_path = f.name
+        try:
+            with self.app.suspend():
+                subprocess.run([editor, tmp_path])
+            self._generated_script = Path(tmp_path).read_text()
+            self.query_one("#script-display", Static).update(
+                _format_script(self._generated_script)
+            )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
     # ── Save / Clear ──────────────────────────────────────────────────────────
 
     @on(Button.Pressed, "#btn-save")
@@ -498,7 +525,7 @@ class SubmitView(Static):
         self._generated_script = ""
         self.query_one("#description-input", TextArea).load_text("")
         self.query_one("#script-display", Static).update(_EMPTY_HINT)
-        for btn_id in ("#btn-submit", "#btn-save", "#btn-clear"):
+        for btn_id in ("#btn-submit", "#btn-edit-script", "#btn-save", "#btn-clear"):
             self.query_one(btn_id, Button).disabled = True
 
 
