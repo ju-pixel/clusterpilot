@@ -11,6 +11,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.events import DescendantFocus
+from textual.suggester import Suggester
 from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
 from clusterpilot.cluster.probe import probe_cluster
@@ -21,6 +22,73 @@ from clusterpilot.ssh.rsync import read_ignore_file, upload
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
+    from collections.abc import Callable
+
+
+class PathSuggester(Suggester):
+    """Inline filesystem path completer for Input widgets.
+
+    When base_getter is provided, completions are relative paths within that
+    base directory (used for DRIVER SCRIPT). Otherwise, absolute paths are
+    completed (used for PROJECT DIR).
+
+    dirs_only=True restricts completions to directories.
+    """
+
+    def __init__(
+        self,
+        *,
+        dirs_only: bool = False,
+        base_getter: "Callable[[], Path | None] | None" = None,
+    ) -> None:
+        super().__init__(use_cache=False, case_sensitive=True)
+        self._dirs_only = dirs_only
+        self._base_getter = base_getter
+
+    async def get_suggestion(self, value: str) -> str | None:
+        if not value:
+            return None
+        try:
+            base = self._base_getter() if self._base_getter else None
+
+            if base is not None:
+                # Relative completion within base directory.
+                full = base / value
+                directory = full if value.endswith("/") else full.parent
+                prefix = "" if value.endswith("/") else full.name
+            else:
+                # Absolute path completion.
+                expanded = Path(value).expanduser()
+                directory = expanded if value.endswith("/") else expanded.parent
+                prefix = "" if value.endswith("/") else expanded.name
+
+            if not directory.is_dir():
+                return None
+
+            matches = sorted(
+                e for e in directory.iterdir()
+                if e.name.startswith(prefix)
+                and (not self._dirs_only or e.is_dir())
+            )
+            if not matches:
+                return None
+
+            entry = matches[0]
+            suffix = "/" if entry.is_dir() else ""
+
+            if base is not None:
+                return str(entry.relative_to(base)) + suffix
+            else:
+                result = str(entry) + suffix
+                # Preserve ~ prefix if the user typed it.
+                if value.startswith("~"):
+                    home = str(Path.home())
+                    if result.startswith(home):
+                        result = "~" + result[len(home):]
+                return result
+
+        except (PermissionError, ValueError, OSError):
+            return None
 
 
 def _format_script(script: str) -> str:
@@ -69,6 +137,7 @@ class SubmitView(Static):
                     yield Label("PROJECT DIR", classes="field-label")
                     yield Input(
                         placeholder="/path/to/project/  (optional — add .clusterpilot_ignore to exclude dirs)",
+                        suggester=PathSuggester(dirs_only=True),
                         id="project-dir-input",
                     )
 
@@ -76,6 +145,7 @@ class SubmitView(Static):
                     yield Label("DRIVER SCRIPT", classes="field-label")
                     yield Input(
                         placeholder="scripts/driver.jl  (relative to PROJECT DIR, or absolute path if no project dir)",
+                        suggester=PathSuggester(base_getter=self._get_project_dir_path),
                         id="script-path-input",
                     )
 
@@ -109,6 +179,14 @@ class SubmitView(Static):
     def on_mount(self) -> None:
         self._generated_script = ""
         self._populate_partitions()
+
+    def _get_project_dir_path(self) -> Path | None:
+        """Return the resolved PROJECT DIR path, or None if unset/invalid."""
+        val = self.query_one("#project-dir-input", Input).value.strip()
+        if val:
+            p = Path(val).expanduser()
+            return p if p.is_dir() else None
+        return None
 
     # ── Contextual help ───────────────────────────────────────────────────────
 
