@@ -101,8 +101,7 @@ def _build_system_prompt(
     partition_lines = _format_partitions(probe)
     julia_line = ", ".join(probe.julia_versions) or "julia/1.11.3"
     account = profile.account or (probe.accounts[0] if probe.accounts else "")
-    scratch = profile.expand_scratch()        # ~ form, used in cd commands
-    scratch_slurm = profile.scratch           # $HOME form, used in --output (SLURM expands $HOME, not ~)
+    scratch = profile.expand_scratch()        # ~ form, safe for bash commands and --chdir
 
     partition_rule = (
         f"The user has selected partition [bold]{partition}[/bold] from the picker. "
@@ -178,7 +177,8 @@ SSH login: {profile.user}@{profile.host}
    --cpus-per-task  set appropriately for the workload
    --mem             total memory per node, e.g. 32G
    --time           requested walltime as D-HH:MM:SS or HH:MM:SS
-   --output         always use {scratch_slurm}/%x/%x-%j.out  (absolute path, required for log discovery)
+   --chdir          {scratch}/<job-name>  (use the SAME value as --job-name; sets working dir so relative paths work)
+   --output         %x-%j.out  (relative to --chdir; required for log discovery)
 
 2. For GPU jobs, add:
    --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s on stamps
@@ -187,7 +187,7 @@ SSH login: {profile.user}@{profile.host}
 3. After #SBATCH directives:
    - module purge
    - module load <required modules>
-   - cd {scratch}/$SLURM_JOB_NAME
+   - (no cd needed — --chdir already set the working directory)
    - {"The driver is a relative path within the project — invoke it as: julia " + driver_script if driver_script else "The actual job command(s)"}
 
    CRITICAL: sbatch does NOT support positional arguments ($1, $2, etc.) when
