@@ -249,6 +249,12 @@ SubmitView {
     layout: horizontal;
 }
 
+#project-dir-row {
+    height: auto;
+    margin-bottom: 0;
+    layout: horizontal;
+}
+
 #script-row {
     height: auto;
     margin-bottom: 1;
@@ -259,9 +265,8 @@ SubmitView {
     width: 12;
     color: $dim;
     text-style: bold;
-    height: auto;
+    height: 3;
     content-align: left middle;
-    padding-top: 1;
 }
 
 #partition-select {
@@ -300,6 +305,17 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
     color: $amber;
 }
 
+#project-dir-input {
+    width: 1fr;
+    background: $bg3;
+    border: tall $border2;
+    color: $white;
+}
+
+#project-dir-input:focus {
+    border: tall $amberDim;
+}
+
 #script-path-input {
     width: 1fr;
     background: $bg3;
@@ -309,6 +325,15 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
 
 #script-path-input:focus {
     border: tall $amberDim;
+}
+
+#field-help {
+    height: auto;
+    max-height: 8;
+    margin-top: 1;
+    padding: 0 1;
+    color: $dim;
+    background: $bg;
 }
 
 #description-input {

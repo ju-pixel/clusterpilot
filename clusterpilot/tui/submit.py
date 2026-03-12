@@ -10,13 +10,14 @@ import aiosqlite
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.events import DescendantFocus
 from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
 from clusterpilot.cluster.probe import probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import generate_script
-from clusterpilot.ssh.rsync import upload
+from clusterpilot.ssh.rsync import read_ignore_file, upload
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
@@ -64,10 +65,17 @@ class SubmitView(Static):
                         id="partition-select",
                     )
 
-                with Horizontal(id="script-row"):
-                    yield Label("SCRIPT", classes="field-label")
+                with Horizontal(id="project-dir-row"):
+                    yield Label("PROJECT DIR", classes="field-label")
                     yield Input(
-                        placeholder="/path/to/your/script.jl  (optional — helps AI pick resources)",
+                        placeholder="/path/to/project/  (optional — add .clusterpilot_ignore to exclude dirs)",
+                        id="project-dir-input",
+                    )
+
+                with Horizontal(id="script-row"):
+                    yield Label("DRIVER SCRIPT", classes="field-label")
+                    yield Input(
+                        placeholder="scripts/driver.jl  (relative to PROJECT DIR, or absolute path if no project dir)",
                         id="script-path-input",
                     )
 
@@ -75,6 +83,7 @@ class SubmitView(Static):
                     id="description-input",
                     language=None,
                 )
+                yield Static(_HELP_DEFAULT, id="field-help")
                 with Horizontal(id="generate-row"):
                     yield Button(
                         "⚙  GENERATE SCRIPT",
@@ -100,6 +109,20 @@ class SubmitView(Static):
     def on_mount(self) -> None:
         self._generated_script = ""
         self._populate_partitions()
+
+    # ── Contextual help ───────────────────────────────────────────────────────
+
+    def on_descendant_focus(self, event: DescendantFocus) -> None:
+        """Update the help panel when any input field receives focus."""
+        help_widget = self.query_one("#field-help", Static)
+        # Walk up the DOM in case focus landed on an internal child widget
+        # (e.g. Select's SelectCurrent, or TextArea's inner editor).
+        for node in event.widget.ancestors_with_self:
+            node_id = getattr(node, "id", None)
+            if node_id in _HELP_MAP:
+                help_widget.update(_HELP_MAP[node_id])
+                return
+        help_widget.update(_HELP_DEFAULT)
 
     # ── Partition probe ────────────────────────────────────────────────────────
 
@@ -172,17 +195,38 @@ class SubmitView(Static):
             else ""
         )
 
-        # Read script file content so the AI can inspect it.
+        # Resolve driver script content for the AI.
         script_content: str | None = None
+        driver_script: str | None = None
+        project_dir_str = self.query_one("#project-dir-input", Input).value.strip()
         script_path_str = self.query_one("#script-path-input", Input).value.strip()
+
         if script_path_str:
-            script_path = Path(script_path_str).expanduser()
-            if script_path.exists():
-                script_content = script_path.read_text()
+            if project_dir_str:
+                # Package mode: driver path is relative to the project root.
+                driver_script = script_path_str
+                full_path = Path(project_dir_str).expanduser() / script_path_str
+            else:
+                # Single-file mode: treat as absolute/expandable path.
+                full_path = Path(script_path_str).expanduser()
+
+            if full_path.exists():
+                script_content = full_path.read_text()
             else:
                 self.app.notify(
-                    f"Script file not found: {script_path}", severity="warning"
+                    f"Script file not found: {full_path}", severity="warning"
                 )
+
+        # When a project dir is set, read the dependency manifest so the AI
+        # can infer runtime versions and packages without the user spelling them out.
+        manifest_content: str | None = None
+        if project_dir_str:
+            project_root = Path(project_dir_str).expanduser()
+            for candidate in ("Project.toml", "pyproject.toml", "requirements.txt"):
+                manifest_path = project_root / candidate
+                if manifest_path.exists():
+                    manifest_content = f"# {candidate}\n{manifest_path.read_text()}"
+                    break
 
         # Load or refresh cluster probe (returns cache if < 24h old).
         try:
@@ -211,6 +255,8 @@ class SubmitView(Static):
                 api_key=api_key,
                 partition=partition,
                 script_content=script_content,
+                driver_script=driver_script,
+                manifest_content=manifest_content,
             ):
                 self._generated_script += token
                 script_widget.update(_format_script(self._generated_script))
@@ -254,8 +300,24 @@ class SubmitView(Static):
         remote_script = f"{remote_dir}/{script_name}"
 
         self.app.notify(f"Uploading files to {remote_dir}…", severity="information")
+        project_dir_str = self.query_one("#project-dir-input", Input).value.strip()
         try:
-            await upload(profile.host, profile.user, local_job_dir, remote_dir)
+            if project_dir_str:
+                # Package mode: rsync the project tree, then merge in the
+                # generated .sh script from the staging dir.
+                # Excludes = global defaults + .clusterpilot_ignore in the project root.
+                project_dir = Path(project_dir_str).expanduser()
+                excludes = list(app._config.defaults.upload_excludes)
+                excludes += read_ignore_file(project_dir)
+                await upload(
+                    profile.host, profile.user,
+                    project_dir, remote_dir,
+                    excludes=excludes,
+                )
+                await upload(profile.host, profile.user, local_job_dir, remote_dir)
+            else:
+                # Single-file mode: only the generated script is uploaded.
+                await upload(profile.host, profile.user, local_job_dir, remote_dir)
         except Exception as exc:
             self.app.notify(f"Upload failed: {exc}", severity="error")
             self.query_one("#btn-submit", Button).disabled = False
@@ -326,3 +388,43 @@ _EMPTY_HINT = (
     "…and generate a correct SLURM\n"
     "script for this cluster.[/]"
 )
+
+_HELP_DEFAULT = "[#7a6a50]Tab into any field for contextual tips.[/]"
+
+_HELP_PARTITION = (
+    "[#e8a020]PARTITION[/]  [#7a6a50]Select the SLURM partition for your job.\n"
+    "GPU partitions are listed first — pick one your account has access to.\n"
+    "If unsure, use your group's dedicated partition (e.g. stamps, lgpu).\n"
+    "sbatch will return a clear error if you pick a partition you cannot use.[/]"
+)
+
+_HELP_PROJECT_DIR = (
+    "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional. Local root of your project package.\n"
+    "If set, the entire directory tree is rsynced to the cluster job directory,\n"
+    "minus anything listed in [#f0e8d0].clusterpilot_ignore[/][#7a6a50] at the project root.\n"
+    "Leave blank for self-contained single-script jobs.[/]"
+)
+
+_HELP_SCRIPT_PATH = (
+    "[#e8a020]DRIVER SCRIPT[/]  [#7a6a50]The script the SLURM job will execute.\n"
+    "With PROJECT DIR set: relative path within the project (e.g. scripts/run.jl).\n"
+    "Without PROJECT DIR: absolute or ~/path to a self-contained script.\n"
+    "The AI reads this file to infer modules, GPU count, and resource needs.[/]"
+)
+
+_HELP_DESCRIPTION = (
+    "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]Tell the AI what this job does.\n"
+    "Runtime and modules are inferred from your driver script and project manifest.\n"
+    "Mention any of the following if known — the AI will make sensible defaults otherwise:\n"
+    "  [#f0e8d0]Compute:[/][#7a6a50]   GPUs needed, or CPU core count\n"
+    "  [#f0e8d0]Memory:[/][#7a6a50]    RAM per node if unusually large (e.g. 128G)\n"
+    "  [#f0e8d0]Walltime:[/][#7a6a50]  estimated run time (e.g. 4 hours, overnight)\n"
+    "  [#f0e8d0]I/O:[/][#7a6a50]       where to read inputs or write outputs[/]"
+)
+
+_HELP_MAP = {
+    "partition-select": _HELP_PARTITION,
+    "project-dir-input": _HELP_PROJECT_DIR,
+    "script-path-input": _HELP_SCRIPT_PATH,
+    "description-input": _HELP_DESCRIPTION,
+}

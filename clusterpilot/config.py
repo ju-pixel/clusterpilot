@@ -23,6 +23,9 @@ _DEFAULT_TOML = """\
 model = "claude-sonnet-4-6"   # or "claude-opus-4-6" for harder jobs
 api_key = ""                  # leave blank to use ANTHROPIC_API_KEY env var
 poll_interval = 300           # seconds between job status checks
+# upload_excludes = [".git/", "__pycache__/", "*.pyc", "*.egg-info/", ".DS_Store"]
+# Override to change what is excluded from all project uploads.
+# Per-project exclusions go in .clusterpilot_ignore at the project root.
 
 [[clusters]]
 name = "grex"
@@ -64,11 +67,21 @@ class NotificationConfig:
     ntfy_server: str = "https://ntfy.sh"
 
 
+_DEFAULT_UPLOAD_EXCLUDES: list[str] = [
+    ".git/",
+    "__pycache__/",
+    "*.pyc",
+    "*.egg-info/",
+    ".DS_Store",
+]
+
+
 @dataclass
 class Defaults:
     model: str = "claude-sonnet-4-6"
     api_key: str = ""
     poll_interval: int = 300
+    upload_excludes: list[str] = field(default_factory=lambda: list(_DEFAULT_UPLOAD_EXCLUDES))
 
 
 @dataclass
@@ -136,6 +149,7 @@ def _from_dict(data: dict) -> Config:
         model=raw_defaults.get("model", "claude-sonnet-4-6"),
         api_key=raw_defaults.get("api_key", ""),
         poll_interval=int(raw_defaults.get("poll_interval", 300)),
+        upload_excludes=raw_defaults.get("upload_excludes", list(_DEFAULT_UPLOAD_EXCLUDES)),
     )
 
     clusters = [

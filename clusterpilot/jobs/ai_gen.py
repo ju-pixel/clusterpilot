@@ -32,6 +32,8 @@ async def generate_script(
     *,
     partition: str = "",
     script_content: str | None = None,
+    driver_script: str | None = None,
+    manifest_content: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream a SLURM job script token-by-token.
 
@@ -43,9 +45,18 @@ async def generate_script(
         api_key:        Anthropic API key.
         partition:      Hard partition constraint from the picker. Empty means
                         the model chooses based on the description.
-        script_content: Contents of the user's local script (Julia, Python, etc.).
-                        Included verbatim so the model can inspect imports and
-                        infer required modules, GPU count, and walltime.
+        script_content: Contents of the user's local driver script (Julia, Python,
+                        etc.). Included verbatim so the model can inspect imports
+                        and infer required modules, GPU count, and walltime.
+        driver_script:  Relative path of the driver within the project directory,
+                        e.g. "scripts/driver.jl". When set the generated script
+                        invokes it as a relative path (the whole project directory
+                        is rsynced to the remote job dir). When None, the script is
+                        treated as self-contained and invoked by filename only.
+        manifest_content: Contents of the project dependency manifest
+                        (Project.toml, pyproject.toml, or requirements.txt).
+                        Included so the AI can infer the correct runtime version
+                        and packages without the user needing to specify them.
 
     Yields:
         Raw text tokens as they arrive from the API.
@@ -53,7 +64,13 @@ async def generate_script(
     Raises:
         anthropic.APIError: on network or auth failures.
     """
-    system = _build_system_prompt(probe, profile, partition=partition, script_content=script_content)
+    system = _build_system_prompt(
+        probe, profile,
+        partition=partition,
+        script_content=script_content,
+        driver_script=driver_script,
+        manifest_content=manifest_content,
+    )
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async with client.messages.stream(
@@ -74,6 +91,8 @@ def _build_system_prompt(
     *,
     partition: str = "",
     script_content: str | None = None,
+    driver_script: str | None = None,
+    manifest_content: str | None = None,
 ) -> str:
     """Construct a cluster-aware system prompt from live probe data."""
     partition_lines = _format_partitions(probe)
@@ -88,15 +107,40 @@ def _build_system_prompt(
         else "Choose the most appropriate partition from the list above based on the job description."
     )
 
+    manifest_section = ""
+    if manifest_content:
+        manifest_section = f"""
+═══ PROJECT MANIFEST ═══
+
+Use this to infer the correct runtime version and package dependencies.
+Match module versions to what is available on this cluster.
+
+```
+{manifest_content}
+```
+"""
+
     script_section = ""
     if script_content:
+        if driver_script:
+            intro = (
+                f"The user has provided the driver script `{driver_script}` from their "
+                f"project package. The entire project directory will be rsynced to the "
+                f"remote job directory, so the driver must be invoked as a relative path: "
+                f"`{driver_script}` (not just the filename). Read it carefully to infer "
+                f"required modules, GPU count, CPU count, memory, and walltime."
+            )
+        else:
+            intro = (
+                "The user has provided the following script to be run. Read it carefully "
+                "to infer required modules, GPU count, CPU count, memory, and walltime. "
+                "Load only the modules that are actually needed by this script and "
+                "available on this cluster."
+            )
         script_section = f"""
 ═══ USER'S SCRIPT ═══
 
-The user has provided the following script to be run. Read it carefully to
-infer required modules, GPU count, CPU count, memory, and walltime. Load
-only the modules that are actually needed by this script and available on
-this cluster.
+{intro}
 
 ```
 {script_content}
@@ -118,7 +162,7 @@ User account: {account}
 Job working directory base: {scratch}
 
 SSH login: {profile.user}@{profile.host}
-{script_section}
+{manifest_section}{script_section}
 ═══ SCRIPT RULES ═══
 
 1. Always include these #SBATCH directives:
@@ -140,7 +184,7 @@ SSH login: {profile.user}@{profile.host}
    - module purge
    - module load <required modules>
    - cd {scratch}/$SLURM_JOB_NAME
-   - The actual job command(s)
+   - {"The driver is a relative path within the project — invoke it as: julia " + driver_script if driver_script else "The actual job command(s)"}
 
 4. Be conservative with walltime: multiply the user's estimate by 1.3 and
    round up to the nearest hour, but never exceed the partition's time limit.
@@ -151,9 +195,25 @@ SSH login: {profile.user}@{profile.host}
 
 6. Do not invent modules. Only load what is available on this cluster.
 
-7. If a script was provided above, infer resource requirements from it
-   rather than guessing. Match module versions to those available on
-   this cluster.
+7. If a script or project manifest was provided above, infer runtime,
+   packages, and resource requirements from them rather than guessing.
+   Match module versions to those available on this cluster.
+
+8. Version mismatches: when the module version you load differs from what
+   the manifest or script requests, add a comment directly above that
+   module load line in this exact format:
+     # ⚠ VERSION MISMATCH: requested X.Y, loading A.B — <one-line impact assessment>
+   Impact assessment guidance:
+   - Julia minor version difference (e.g. 1.10 vs 1.11): usually safe, note it
+   - Julia major version difference (e.g. 1.6 vs 1.10): likely safe but test first
+   - CUDA major version difference (e.g. 11 vs 12): potentially breaking —
+     GPU kernels and CUDA.jl/PyTorch may fail; recommend testing with short job
+   - CUDA minor version difference: usually safe
+   - Python minor version (e.g. 3.10 vs 3.11): usually safe
+   - Any module not available on the cluster at all: add a comment:
+     # ⚠ MODULE NOT FOUND: <name> — not available on this cluster.
+     #   Contact the cluster support team to request installation.
+   If all versions match, add no comments.
 
 Output only the script. Begin now.
 """
