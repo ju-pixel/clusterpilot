@@ -431,6 +431,16 @@ ConfigView {
     height: auto;
 }
 
+#config-content {
+    height: auto;
+}
+
+#config-actions {
+    height: 3;
+    margin-top: 1;
+    layout: horizontal;
+}
+
 /* ── Shared ─────────────────────────────── */
 Button {
     background: $bg3;
