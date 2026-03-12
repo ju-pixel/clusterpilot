@@ -101,7 +101,10 @@ def _build_system_prompt(
     partition_lines = _format_partitions(probe)
     julia_line = ", ".join(probe.julia_versions) or "julia/1.11.3"
     account = profile.account or (probe.accounts[0] if probe.accounts else "")
-    scratch = profile.expand_scratch()        # ~ form, safe for bash commands and --chdir
+    scratch = profile.expand_scratch()        # ~/... form, safe for bash commands
+    # Strip leading ~/ to get the part relative to home, used in --chdir instruction.
+    # e.g. "~/clusterpilot_jobs" → "clusterpilot_jobs"
+    scratch_rel = scratch.removeprefix("~/").removeprefix("~")
 
     partition_rule = (
         f"The user has selected partition [bold]{partition}[/bold] from the picker. "
@@ -177,7 +180,9 @@ SSH login: {profile.user}@{profile.host}
    --cpus-per-task  set appropriately for the workload
    --mem             total memory per node, e.g. 32G
    --time           requested walltime as D-HH:MM:SS or HH:MM:SS
-   --chdir          {scratch}/<job-name>  (use the SAME value as --job-name; sets working dir so relative paths work)
+   --chdir          ~/{scratch_rel}/<job-name>  IMPORTANT: write the tilde (~) literally — do NOT
+                    expand it to /home/username or any absolute path. The cluster expands ~ at
+                    runtime to the correct home directory. Use the SAME value as --job-name.
    --output         %x-%j.out  (relative to --chdir; required for log discovery)
 
 2. For GPU jobs, add:
@@ -190,11 +195,11 @@ SSH login: {profile.user}@{profile.host}
    - (no cd needed — --chdir already set the working directory)
    - {"The driver is a relative path within the project — invoke it as: julia " + driver_script if driver_script else "The actual job command(s)"}
 
-   CRITICAL: sbatch does NOT support positional arguments ($1, $2, etc.) when
-   a script is submitted with `sbatch script.sh`. Never use $1 or $@ to pass
-   file paths or parameters. Instead hardcode paths or use SLURM --export vars.
-   {("Extra input files uploaded to the job directory: " + ", ".join(extra_files)) if extra_files else ""}
-   {"Reference these files by their path relative to the job working directory." if extra_files else ""}
+   CRITICAL — NO POSITIONAL ARGUMENTS: sbatch does NOT pass $1, $2, $@, etc. when
+   submitting with `sbatch script.sh`. These variables are ALWAYS EMPTY at runtime.
+   NEVER write `$1`, `$2`, or `$@` anywhere in the script.
+   {("The following extra input files have been uploaded to the job directory and MUST be" + " referenced by their hardcoded relative path — do not use $1 or any variable: " + ", ".join(extra_files)) if extra_files else ""}
+   {"Hardcode each of these paths directly in the command line." if extra_files else ""}
 
 4. Be conservative with walltime: multiply the user's estimate by 1.3 and
    round up to the nearest hour, but never exceed the partition's time limit.
