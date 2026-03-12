@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from clusterpilot.ssh.connection import run_remote
@@ -38,6 +38,7 @@ class ClusterProbe:
     julia_versions: list[str]  # e.g. ["julia/1.10.3", "julia/1.11.3"]
     accounts: list[str]        # e.g. ["def-stamps"]
     account_max_wall: dict[str, str]   # account → max walltime, "" = no limit
+    python_versions: list[str] = field(default_factory=list)  # e.g. ["python/3.11.5"]
 
     def gpu_partitions(self) -> list[PartitionInfo]:
         """Return partitions that have GPU GRES."""
@@ -96,13 +97,14 @@ async def probe_cluster(
         if cached is not None:
             return cached
 
-    sinfo_out, modules_out, sacctmgr_out = await _fetch_all(host, user)
+    sinfo_out, julia_out, python_out, sacctmgr_out = await _fetch_all(host, user)
 
     result = ClusterProbe(
         cluster_name=cluster_name,
         probed_at=time.time(),
         partitions=_parse_sinfo(sinfo_out),
-        julia_versions=_parse_julia_modules(modules_out),
+        julia_versions=_parse_julia_modules(julia_out),
+        python_versions=_parse_python_modules(python_out),
         accounts=_parse_accounts(sacctmgr_out),
         account_max_wall=_parse_max_wall(sacctmgr_out),
     )
@@ -112,11 +114,12 @@ async def probe_cluster(
 
 # ── Remote fetching ───────────────────────────────────────────────────────────
 
-async def _fetch_all(host: str, user: str) -> tuple[str, str, str]:
-    """Run all three probe commands concurrently."""
+async def _fetch_all(host: str, user: str) -> tuple[str, str, str, str]:
+    """Run all four probe commands concurrently."""
     return await asyncio.gather(
         run_remote(host, user, "sinfo -o '%P %l %G %D' --noheader"),
         run_remote(host, user, "module avail julia 2>&1"),
+        run_remote(host, user, "module avail python 2>&1"),
         run_remote(
             host, user,
             f"sacctmgr show user {user} withassoc "
@@ -170,6 +173,16 @@ def _parse_julia_modules(output: str) -> list[str]:
     return sorted(versions)
 
 
+def _parse_python_modules(output: str) -> list[str]:
+    """Extract python/X.Y.Z tokens from `module avail python 2>&1` output."""
+    versions: set[str] = set()
+    for line in output.splitlines():
+        for token in line.split():
+            if token.startswith("python/"):
+                versions.add(token)
+    return sorted(versions)
+
+
 def _parse_accounts(output: str) -> list[str]:
     """Extract account names from pipe-delimited sacctmgr output."""
     accounts = []
@@ -211,6 +224,7 @@ def _from_dict(data: dict) -> ClusterProbe:
         probed_at=data["probed_at"],
         partitions=[PartitionInfo(**p) for p in data["partitions"]],
         julia_versions=data["julia_versions"],
+        python_versions=data.get("python_versions", []),   # backwards-compat
         accounts=data["accounts"],
         account_max_wall=data["account_max_wall"],
     )

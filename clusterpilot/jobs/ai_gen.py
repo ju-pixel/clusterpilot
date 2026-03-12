@@ -17,8 +17,9 @@ import anthropic
 
 from clusterpilot.cluster.probe import ClusterProbe
 from clusterpilot.config import ClusterProfile
+from clusterpilot.jobs.env_detect import ScriptEnvironment
 
-_MAX_TOKENS = 1024
+_MAX_TOKENS = 2048
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ async def generate_script(
     driver_script: str | None = None,
     manifest_content: str | None = None,
     extra_files: list[str] | None = None,
+    script_env: ScriptEnvironment | None = None,
 ) -> AsyncIterator[str]:
     """Stream a SLURM job script token-by-token.
 
@@ -58,6 +60,9 @@ async def generate_script(
                         (Project.toml, pyproject.toml, or requirements.txt).
                         Included so the AI can infer the correct runtime version
                         and packages without the user needing to specify them.
+        script_env:     Static analysis result from env_detect.analyze_script.
+                        Used to generate appropriate environment setup steps
+                        (Pkg.instantiate, pip install, etc.) in the script.
 
     Yields:
         Raw text tokens as they arrive from the API.
@@ -72,6 +77,7 @@ async def generate_script(
         driver_script=driver_script,
         manifest_content=manifest_content,
         extra_files=extra_files or [],
+        script_env=script_env,
     )
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
@@ -96,23 +102,19 @@ def _build_system_prompt(
     driver_script: str | None = None,
     manifest_content: str | None = None,
     extra_files: list[str] | None = None,
+    script_env: ScriptEnvironment | None = None,
 ) -> str:
     """Construct a cluster-aware system prompt from live probe data."""
     partition_lines = _format_partitions(probe)
     julia_line = ", ".join(probe.julia_versions) or "julia/1.11.3"
+    python_line = ", ".join(probe.python_versions) or "(check with: module avail python)"
     account = profile.account or (probe.accounts[0] if probe.accounts else "")
     scratch = profile.expand_scratch()        # ~/... form, safe for bash commands
     # Strip leading ~/ to get the part relative to home, used in --chdir instruction.
     # e.g. "~/clusterpilot_jobs" → "clusterpilot_jobs"
     scratch_rel = scratch.removeprefix("~/").removeprefix("~")
 
-    # For Julia package jobs, add a Pkg.instantiate() step so the environment
-    # is set up on the cluster before the main run.
-    pkg_instantiate = (
-        "   - julia --project=. -e 'import Pkg; Pkg.instantiate()'\n"
-        if driver_script and driver_script.endswith(".jl")
-        else ""
-    )
+    env_setup = _build_env_setup_section(script_env)
 
     partition_rule = (
         f"The user has selected partition [bold]{partition}[/bold] from the picker. "
@@ -161,6 +163,19 @@ Match module versions to what is available on this cluster.
 ```
 """
 
+    if driver_script:
+        invoke_line = (
+            f"The driver is a relative path within the project — invoke it as: "
+            f"julia --project=. {driver_script}"
+            if driver_script.endswith(".jl")
+            else f"The driver is a relative path within the project — invoke it as: "
+            f"python {driver_script}"
+            if driver_script.endswith((".py", ".pyw"))
+            else f"The driver is a relative path within the project — invoke it: {driver_script}"
+        )
+    else:
+        invoke_line = "The actual job command(s)"
+
     return f"""\
 You generate SLURM job submission scripts for the {profile.name} cluster \
 ({profile.host}). Output ONLY the bash script — no explanation, no markdown \
@@ -172,6 +187,7 @@ Partitions:
 {partition_lines}
 
 Available Julia: {julia_line}
+Available Python: {python_line}
 User account: {account}
 Job working directory base: {scratch}
 
@@ -201,12 +217,14 @@ SSH login: {profile.user}@{profile.host}
    - module purge
    - module load <required modules>
    - (no cd needed — --chdir already set the working directory)
-{pkg_instantiate}   - {"The driver is a relative path within the project — invoke it as: julia --project=. " + driver_script if driver_script else "The actual job command(s)"}
+{env_setup}   - {invoke_line}
 
    CRITICAL — NO POSITIONAL ARGUMENTS: sbatch does NOT pass $1, $2, $@, etc. when
    submitting with `sbatch script.sh`. These variables are ALWAYS EMPTY at runtime.
    NEVER write `$1`, `$2`, or `$@` anywhere in the script.
-   {("The following extra input files have been uploaded to the job directory and MUST be" + " referenced by their hardcoded relative path — do not use $1 or any variable: " + ", ".join(extra_files)) if extra_files else ""}
+   {("The following extra input files have been uploaded to the job directory and MUST be"
+     " referenced by their hardcoded relative path — do not use $1 or any variable: "
+     + ", ".join(extra_files)) if extra_files else ""}
    {"Hardcode each of these paths directly in the command line." if extra_files else ""}
 
 4. Be conservative with walltime: multiply the user's estimate by 1.3 and
@@ -240,6 +258,48 @@ SSH login: {profile.user}@{profile.host}
 
 Output only the script. Begin now.
 """
+
+
+def _build_env_setup_section(env: ScriptEnvironment | None) -> str:
+    """Return environment setup lines to insert in SCRIPT RULES rule 3.
+
+    Returns a string ready for f-string interpolation. Non-empty strings
+    always end with a newline so they slot cleanly before the invoke line.
+    """
+    if env is None:
+        return ""
+
+    if env.language == "julia":
+        if env.has_manifest:
+            # Pinned environment — instantiate exactly what the manifest specifies.
+            return "   - julia --project=. -e 'import Pkg; Pkg.instantiate()'\n"
+        if env.third_party_imports:
+            # No manifest — install inferred packages inline.
+            pkgs = "[" + ", ".join(f'"{p}"' for p in env.third_party_imports) + "]"
+            return (
+                f"   - julia -e 'import Pkg; Pkg.add({pkgs}); Pkg.instantiate()'\n"
+                f"     (No Project.toml found — packages inferred from script imports.)\n"
+            )
+
+    elif env.language == "python":
+        if env.has_manifest:
+            # The manifest type is visible in the PROJECT MANIFEST section above.
+            return (
+                "   - Install Python dependencies from the manifest above.\n"
+                "     For requirements.txt: pip install --quiet -r requirements.txt\n"
+                "     For pyproject.toml:   pip install --quiet -e .\n"
+            )
+        if env.third_party_imports:
+            imports_str = ", ".join(env.third_party_imports)
+            return (
+                f"   - pip install --quiet <packages>  where <packages> are the correct\n"
+                f"     PyPI names for these imports: {imports_str}\n"
+                f"     Apply standard name mappings: sklearn→scikit-learn,\n"
+                f"     cv2→opencv-python, PIL→Pillow, skimage→scikit-image.\n"
+                f"     Only install what is not already provided by a loaded module.\n"
+            )
+
+    return ""
 
 
 def _format_partitions(probe: ClusterProbe) -> str:

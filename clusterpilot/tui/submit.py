@@ -21,6 +21,7 @@ from clusterpilot.cluster.probe import probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import generate_script
+from clusterpilot.jobs.env_detect import analyze_script
 from clusterpilot.ssh.connection import run_remote
 from clusterpilot.ssh.rsync import read_ignore_file, upload, upload_file
 
@@ -319,6 +320,18 @@ class SubmitView(Static):
                     manifest_content = f"# {candidate}\n{manifest_path.read_text()}"
                     break
 
+        # Static analysis: detect language and third-party imports so the AI
+        # can generate the correct environment setup steps.
+        script_env = analyze_script(script_content, driver_script or script_path_str or None, manifest_content)
+        if not script_env.has_manifest and script_env.third_party_imports:
+            self.app.notify(
+                f"No manifest found — inferred {len(script_env.third_party_imports)} "
+                f"third-party package(s) from script imports. "
+                f"Inline install will be added to the generated script.",
+                severity="information",
+                timeout=8,
+            )
+
         # Load or refresh cluster probe (returns cache if < 24h old).
         try:
             probe = await probe_cluster(profile.name, profile.host, profile.user)
@@ -355,6 +368,7 @@ class SubmitView(Static):
                 driver_script=driver_script,
                 manifest_content=manifest_content,
                 extra_files=extra_files or None,
+                script_env=script_env,
             ):
                 self._generated_script += token
                 script_widget.update(_format_script(self._generated_script))
