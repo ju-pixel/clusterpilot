@@ -19,7 +19,7 @@ from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import generate_script
 from clusterpilot.ssh.connection import run_remote
-from clusterpilot.ssh.rsync import read_ignore_file, upload
+from clusterpilot.ssh.rsync import read_ignore_file, upload, upload_file
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
@@ -148,6 +148,14 @@ class SubmitView(Static):
                         placeholder="scripts/driver.jl  (relative to PROJECT DIR, or absolute path if no project dir)",
                         suggester=PathSuggester(base_getter=self._get_project_dir_path),
                         id="script-path-input",
+                    )
+
+                with Horizontal(id="extra-files-row"):
+                    yield Label("EXTRA FILES", classes="field-label")
+                    yield Input(
+                        placeholder="data/ladder.jld2, data/config.toml  (comma-separated, relative to PROJECT DIR)",
+                        suggester=PathSuggester(base_getter=self._get_project_dir_path),
+                        id="extra-files-input",
                     )
 
                 yield TextArea(
@@ -401,6 +409,29 @@ class SubmitView(Static):
                     excludes=excludes,
                 )
                 await upload(profile.host, profile.user, local_job_dir, remote_dir)
+
+                # Extra files: upload individually, bypassing ignore rules.
+                extra_raw = self.query_one("#extra-files-input", Input).value.strip()
+                if extra_raw:
+                    for entry in (e.strip() for e in extra_raw.split(",") if e.strip()):
+                        local_file = project_dir / entry
+                        if not local_file.exists():
+                            self.app.notify(
+                                f"Extra file not found, skipping: {entry}",
+                                severity="warning",
+                            )
+                            continue
+                        # Preserve subdirectory structure relative to project root.
+                        remote_file_dir = f"{remote_dir}/{Path(entry).parent}"
+                        await run_remote(
+                            profile.host, profile.user,
+                            f"mkdir -p {remote_file_dir}",
+                        )
+                        await upload_file(
+                            profile.host, profile.user,
+                            local_file,
+                            remote_file_dir,
+                        )
             else:
                 # Single-file mode: only the generated script is uploaded.
                 await upload(profile.host, profile.user, local_job_dir, remote_dir)
@@ -498,6 +529,14 @@ _HELP_SCRIPT_PATH = (
     "The AI reads this file to infer modules, GPU count, and resource needs.[/]"
 )
 
+_HELP_EXTRA_FILES = (
+    "[#e8a020]EXTRA FILES[/]  [#7a6a50]Comma-separated files to upload alongside the project,\n"
+    "bypassing .clusterpilot_ignore. Use for per-job input data that normally\n"
+    "lives in an excluded directory — e.g. a precomputed temperature ladder,\n"
+    "a parameter file, or a checkpoint from a previous run.\n"
+    "Paths are relative to PROJECT DIR. Leave blank if not needed.[/]"
+)
+
 _HELP_DESCRIPTION = (
     "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]Tell the AI what this job does.\n"
     "Runtime and modules are inferred from your driver script and project manifest.\n"
@@ -512,5 +551,6 @@ _HELP_MAP = {
     "partition-select": _HELP_PARTITION,
     "project-dir-input": _HELP_PROJECT_DIR,
     "script-path-input": _HELP_SCRIPT_PATH,
+    "extra-files-input": _HELP_EXTRA_FILES,
     "description-input": _HELP_DESCRIPTION,
 }

@@ -67,6 +67,29 @@ async def upload(
     )
 
 
+async def upload_file(
+    host: str,
+    user: str,
+    local_file: Path,
+    remote_dir: str,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+    timeout: float = 3600.0,
+) -> None:
+    """Upload a single file to remote_dir on host.
+
+    The file lands as remote_dir/<filename>. The remote directory must
+    already exist (call run_remote mkdir -p first if needed).
+    """
+    await _run(
+        src=str(local_file),
+        dst=f"{user}@{host}:{remote_dir.rstrip('/')}/",
+        excludes=[],
+        progress_callback=progress_callback,
+        timeout=timeout,
+    )
+
+
 async def download(
     host: str,
     user: str,

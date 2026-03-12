@@ -257,8 +257,25 @@ SubmitView {
 
 #script-row {
     height: auto;
+    margin-bottom: 0;
+    layout: horizontal;
+}
+
+#extra-files-row {
+    height: auto;
     margin-bottom: 1;
     layout: horizontal;
+}
+
+#extra-files-input {
+    width: 1fr;
+    background: $bg3;
+    border: tall $border2;
+    color: $white;
+}
+
+#extra-files-input:focus {
+    border: tall $amberDim;
 }
 
 .field-label {
