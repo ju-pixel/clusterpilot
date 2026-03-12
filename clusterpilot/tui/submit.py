@@ -18,6 +18,7 @@ from clusterpilot.cluster.probe import probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import generate_script
+from clusterpilot.ssh.connection import run_remote
 from clusterpilot.ssh.rsync import read_ignore_file, upload
 
 if TYPE_CHECKING:
@@ -378,6 +379,13 @@ class SubmitView(Static):
         remote_script = f"{remote_dir}/{script_name}"
 
         self.app.notify(f"Uploading files to {remote_dir}…", severity="information")
+        try:
+            await run_remote(profile.host, profile.user, f"mkdir -p {remote_dir}")
+        except Exception as exc:
+            self.app.notify(f"Could not create remote directory: {exc}", severity="error")
+            self.query_one("#btn-submit", Button).disabled = False
+            return
+
         project_dir_str = self.query_one("#project-dir-input", Input).value.strip()
         try:
             if project_dir_str:
