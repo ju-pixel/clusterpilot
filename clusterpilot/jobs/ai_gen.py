@@ -34,6 +34,7 @@ async def generate_script(
     script_content: str | None = None,
     driver_script: str | None = None,
     manifest_content: str | None = None,
+    extra_files: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """Stream a SLURM job script token-by-token.
 
@@ -70,6 +71,7 @@ async def generate_script(
         script_content=script_content,
         driver_script=driver_script,
         manifest_content=manifest_content,
+        extra_files=extra_files or [],
     )
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
@@ -93,6 +95,7 @@ def _build_system_prompt(
     script_content: str | None = None,
     driver_script: str | None = None,
     manifest_content: str | None = None,
+    extra_files: list[str] | None = None,
 ) -> str:
     """Construct a cluster-aware system prompt from live probe data."""
     partition_lines = _format_partitions(probe)
@@ -185,6 +188,12 @@ SSH login: {profile.user}@{profile.host}
    - module load <required modules>
    - cd {scratch}/$SLURM_JOB_NAME
    - {"The driver is a relative path within the project — invoke it as: julia " + driver_script if driver_script else "The actual job command(s)"}
+
+   CRITICAL: sbatch does NOT support positional arguments ($1, $2, etc.) when
+   a script is submitted with `sbatch script.sh`. Never use $1 or $@ to pass
+   file paths or parameters. Instead hardcode paths or use SLURM --export vars.
+   {("Extra input files uploaded to the job directory: " + ", ".join(extra_files)) if extra_files else ""}
+   {"Reference these files by their path relative to the job working directory." if extra_files else ""}
 
 4. Be conservative with walltime: multiply the user's estimate by 1.3 and
    round up to the nearest hour, but never exceed the partition's time limit.

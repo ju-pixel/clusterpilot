@@ -335,6 +335,12 @@ class SubmitView(Static):
         script_widget = self.query_one("#script-display", Static)
         self._generated_script = ""
 
+        extra_files_raw = self.query_one("#extra-files-input", Input).value.strip()
+        extra_files = (
+            [e.strip() for e in extra_files_raw.split(",") if e.strip()]
+            if extra_files_raw else []
+        )
+
         try:
             async for token in generate_script(
                 description, probe, profile,
@@ -344,6 +350,7 @@ class SubmitView(Static):
                 script_content=script_content,
                 driver_script=driver_script,
                 manifest_content=manifest_content,
+                extra_files=extra_files or None,
             ):
                 self._generated_script += token
                 script_widget.update(_format_script(self._generated_script))

@@ -78,6 +78,7 @@ _DEFAULT_UPLOAD_EXCLUDES: list[str] = [
     "*.pyc",
     "*.egg-info/",
     ".DS_Store",
+    "clusterpilot_jobs/",   # staging dir created by ClusterPilot itself
 ]
 
 
