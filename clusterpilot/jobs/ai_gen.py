@@ -106,6 +106,14 @@ def _build_system_prompt(
     # e.g. "~/clusterpilot_jobs" → "clusterpilot_jobs"
     scratch_rel = scratch.removeprefix("~/").removeprefix("~")
 
+    # For Julia package jobs, add a Pkg.instantiate() step so the environment
+    # is set up on the cluster before the main run.
+    pkg_instantiate = (
+        "   - julia --project=. -e 'import Pkg; Pkg.instantiate()'\n"
+        if driver_script and driver_script.endswith(".jl")
+        else ""
+    )
+
     partition_rule = (
         f"The user has selected partition [bold]{partition}[/bold] from the picker. "
         f"You MUST use exactly `--partition={partition}`. Do not change it."
@@ -193,7 +201,7 @@ SSH login: {profile.user}@{profile.host}
    - module purge
    - module load <required modules>
    - (no cd needed — --chdir already set the working directory)
-   - {"The driver is a relative path within the project — invoke it as: julia " + driver_script if driver_script else "The actual job command(s)"}
+{pkg_instantiate}   - {"The driver is a relative path within the project — invoke it as: julia --project=. " + driver_script if driver_script else "The actual job command(s)"}
 
    CRITICAL — NO POSITIONAL ARGUMENTS: sbatch does NOT pass $1, $2, $@, etc. when
    submitting with `sbatch script.sh`. These variables are ALWAYS EMPTY at runtime.
