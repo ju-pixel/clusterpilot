@@ -17,6 +17,8 @@ ClusterPilot automates the full local to cluster to local research cycle:
 
 Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, naturally).
 
+![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit.png)
+
 ## Supported clusters
 
 | Cluster | Type | Status |
@@ -117,6 +119,44 @@ Host grex
     ControlPersist 4h
     ServerAliveInterval 60
 ```
+
+## Terminal colours
+
+ClusterPilot uses 24-bit RGB colour throughout. Most modern terminal emulators
+support this, but the `COLORTERM` environment variable must be set to `truecolor`
+for Textual to detect it. Without it, colours fall back to the nearest 16 ANSI
+colours, which can look significantly different from the intended amber palette.
+
+**macOS (iTerm2, Terminal.app):** truecolor works out of the box in a local
+window. No action needed.
+
+**Over SSH:** the `COLORTERM` variable is often not forwarded to the remote
+session. Fix this by adding the following to `~/.bashrc` (or `~/.zshrc`) on
+the remote machine:
+
+```bash
+export COLORTERM=truecolor
+```
+
+Then reconnect, or run `source ~/.bashrc` in the current session.
+
+To verify:
+
+```bash
+echo $COLORTERM   # should print: truecolor
+```
+
+**iTerm2 users:** you can also forward the variable automatically for all SSH
+sessions by adding `COLORTERM = truecolor` to the environment section of your
+iTerm2 profile (Profiles → Session → Environment).
+
+The left screenshot below shows correct truecolor rendering. The right shows
+the 16-colour fallback over SSH without `COLORTERM` set — the amber backgrounds
+are approximated as red by the terminal.
+
+| Correct (truecolor) | 16-colour fallback over SSH |
+|---|---|
+| ![Correct colours](docs/screenshots/tui-submit.png) | ![Fallback colours](docs/screenshots/tui-submit-ssh-notruecolor.png) |
 
 ## Notifications
 
