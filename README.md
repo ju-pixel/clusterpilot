@@ -158,6 +158,22 @@ are approximated as red by the terminal.
 |---|---|
 | ![Correct colours](docs/screenshots/tui-submit.png) | ![Fallback colours](docs/screenshots/tui-submit-ssh-notruecolor.png) |
 
+## Mouse support over SSH
+
+ClusterPilot is fully keyboard-navigable (Tab, arrow keys, Enter, F1/F2/F9)
+and this is the recommended way to use it over SSH.
+
+Mouse clicks work in local terminal windows and in most SSH sessions from
+macOS terminals. However, **SSH into a Linux machine running Wayland** is a
+known exception — mouse events are not reliably forwarded through the SSH
+connection in this configuration, regardless of terminal settings. This is a
+Wayland limitation, not a ClusterPilot bug, and affects most TUI applications.
+
+**Workaround:** run ClusterPilot directly on the local machine and point it at
+the remote cluster via SSH ControlMaster, which is the intended workflow. If
+you need to run it on a remote Linux workstation, switching that session to an
+X11 fallback (`ssh -X`) may restore mouse support.
+
 ## Notifications
 
 ClusterPilot sends push notifications via [ntfy.sh](https://ntfy.sh). No
