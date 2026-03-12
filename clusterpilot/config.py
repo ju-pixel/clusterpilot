@@ -52,8 +52,13 @@ class ClusterProfile:
     scratch: str   # may contain $HOME — call expand_scratch() to resolve
 
     def expand_scratch(self) -> str:
-        """Return scratch path with $HOME expanded to the actual home dir."""
-        return self.scratch.replace("$HOME", str(Path.home()))
+        """Return scratch path suitable for use in remote commands.
+
+        $HOME is replaced with ~ so the remote shell expands it correctly.
+        Never expand $HOME using the local home directory — the local and
+        remote usernames may differ.
+        """
+        return self.scratch.replace("$HOME", "~")
 
     def remote_job_dir(self, job_name: str) -> str:
         """Absolute remote path for a named job's working directory."""
