@@ -142,9 +142,12 @@ Match module versions to what is available on this cluster.
             intro = (
                 f"The user has provided the driver script `{driver_script}` from their "
                 f"project package. The entire project directory will be rsynced to the "
-                f"remote job directory, so the driver must be invoked as a relative path: "
-                f"`{driver_script}` (not just the filename). Read it carefully to infer "
-                f"required modules, GPU count, CPU count, memory, and walltime."
+                f"remote job directory, so the driver must be invoked as a RELATIVE path: "
+                f"`{driver_script}` (not just the filename, and never an absolute path). "
+                f"Because --chdir sets the CWD to the job directory, `{driver_script}` "
+                f"will resolve correctly. Do NOT prefix it with ~/ or $HOME/. "
+                f"Read it carefully to infer required modules, GPU count, CPU count, "
+                f"memory, and walltime."
             )
         else:
             intro = (
@@ -207,7 +210,13 @@ SSH login: {profile.user}@{profile.host}
    --chdir          ~/{scratch_rel}/<job-name>  IMPORTANT: write the tilde (~) literally — do NOT
                     expand it to /home/username or any absolute path. The cluster expands ~ at
                     runtime to the correct home directory. Use the SAME value as --job-name.
-   --output         %x-%j.out  (relative to --chdir; required for log discovery)
+   --output         %x-%j.out
+
+   ABSOLUTE RULE FOR --output: write EXACTLY `--output=%x-%j.out` — nothing else.
+   Do NOT write a directory path before %x-%j.out.
+   Do NOT write `--output=~/.../%x-%j.out`.
+   Do NOT write `--output=/home/.../%x-%j.out`.
+   The % tokens are relative to --chdir. Any path prefix breaks log discovery.
 
 2. For GPU jobs, add:
    --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s on stamps
@@ -218,6 +227,15 @@ SSH login: {profile.user}@{profile.host}
    - module load <required modules>
    - (no cd needed — --chdir already set the working directory)
 {env_setup}   - {invoke_line}
+
+   CRITICAL — PATHS IN THE SCRIPT BODY:
+   Because --chdir sets the working directory to the job directory, ALL files
+   (scripts, data, outputs) are accessible as RELATIVE paths. Use them.
+   NEVER use ~/path or "/home/user/path" syntax in the script body.
+   If you absolutely must reference $HOME, write $HOME/... — bash expands $HOME
+   inside double quotes, but bash does NOT expand ~ inside double quotes.
+   Quoting a tilde ("~/path") makes it a literal relative path segment, which
+   will be appended to the current directory and will not find the file.
 
    CRITICAL — NO POSITIONAL ARGUMENTS: sbatch does NOT pass $1, $2, $@, etc. when
    submitting with `sbatch script.sh`. These variables are ALWAYS EMPTY at runtime.

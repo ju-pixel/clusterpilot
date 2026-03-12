@@ -8,7 +8,7 @@ from pathlib import Path
 import aiosqlite
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Label, Static, TabbedContent, TabPane
+from textual.widgets import Input, Label, Static, TabbedContent, TabPane
 
 from clusterpilot.config import Config
 from clusterpilot.db import DB_PATH, init_db
@@ -17,6 +17,7 @@ from clusterpilot.ssh.connection import is_connected, open_connection
 from clusterpilot.tui.config_view import ConfigView
 from clusterpilot.tui.jobs import JobsView
 from clusterpilot.tui.submit import SubmitView
+from clusterpilot.tui.widgets.file_explorer import FileExplorer, save_recent_path
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class StatusBar(Static):
     DEFAULT_TEXT = (
         "[bold #e8a020]F1[/][#7a6a50] JOBS  [/]"
         "[bold #e8a020]F2[/][#7a6a50] SUBMIT  [/]"
+        "[bold #e8a020]F3[/][#7a6a50] FILES  [/]"
         "[bold #e8a020]F9[/][#7a6a50] CONFIG  [/]"
         "[bold #e8a020]Q[/][#7a6a50] QUIT  [/]"
         "[bold #e8a020]↑↓[/][#7a6a50] SELECT[/]"
@@ -54,6 +56,7 @@ class ClusterPilotApp(App):
     BINDINGS = [
         Binding("f1", "show_jobs", "Jobs", show=False),
         Binding("f2", "show_submit", "Submit", show=False),
+        Binding("f3", "toggle_explorer", "Files", show=False),
         Binding("f9", "show_config", "Config", show=False),
         Binding("q", "quit", "Quit", show=False),
     ]
@@ -460,6 +463,69 @@ ConfigView {
     layout: horizontal;
 }
 
+/* ── File explorer sidebar ──────────────── */
+FileExplorer {
+    dock: left;
+    width: 34;
+    height: 1fr;
+    background: $bg2;
+    border-right: solid $border;
+    display: none;
+    layout: vertical;
+}
+
+FileExplorer.-visible {
+    display: block;
+}
+
+#explorer-title {
+    background: $bg3;
+    color: $amber;
+    text-style: bold;
+    width: 1fr;
+    padding: 0 1;
+    height: 1;
+}
+
+#explorer-path-input {
+    background: $bg3;
+    border: tall $border2;
+    color: $white;
+    height: 3;
+}
+
+#explorer-path-input:focus {
+    border: tall $amberDim;
+}
+
+#explorer-tree {
+    height: 1fr;
+    background: $bg2;
+    scrollbar-color: $amberDim;
+    color: $white;
+}
+
+DirectoryTree > .tree--guides {
+    color: $dimmer;
+}
+
+DirectoryTree > .tree--guides-hover {
+    color: $amberDim;
+}
+
+DirectoryTree > .tree--guides-selected {
+    color: $amber;
+}
+
+DirectoryTree .directory--folder-icon {
+    color: $amber;
+}
+
+DirectoryTree .--highlight {
+    background: $amberLo;
+    color: $amber;
+}
+
 /* ── Shared ─────────────────────────────── */
 Button {
     background: $bg3;
@@ -480,6 +546,7 @@ Button.-error { color: $red; border: tall $redDim; background: $redDim; }
 
     def compose(self) -> ComposeResult:
         yield TitleBar(self._config)
+        yield FileExplorer(id="file-explorer")
         with TabbedContent(initial="jobs"):
             with TabPane("  F1  JOBS  ", id="jobs"):
                 yield JobsView()
@@ -538,3 +605,52 @@ Button.-error { color: $red; border: tall $redDim; background: $redDim; }
 
     def action_show_config(self) -> None:
         self.query_one(TabbedContent).active = "config"
+
+    def action_toggle_explorer(self) -> None:
+        explorer = self.query_one(FileExplorer)
+        explorer.toggle_class("-visible")
+
+    # ── File explorer events ───────────────────────────────────────────────────
+
+    def on_file_explorer_file_selected(
+        self, event: FileExplorer.FileSelected
+    ) -> None:
+        """Wire file clicks to the F2 Submit form when that tab is active."""
+        if self.query_one(TabbedContent).active != "submit":
+            # On other tabs: just show the path in a notification.
+            self.notify(str(event.path), title="File", timeout=4)
+            return
+
+        submit = self.query_one(SubmitView)
+        proj_input = submit.query_one("#project-dir-input", Input)
+        script_input = submit.query_one("#script-path-input", Input)
+
+        proj_val = proj_input.value.strip()
+        script_val = script_input.value.strip()
+
+        if not proj_val:
+            # Nothing set yet — fill PROJECT DIR with the file's parent and
+            # DRIVER SCRIPT with the filename.
+            proj_input.value = str(event.path.parent)
+            script_input.value = event.path.name
+            save_recent_path(event.path.parent)
+        elif not script_val:
+            # PROJECT DIR set but no driver script yet — fill DRIVER SCRIPT.
+            proj_dir = Path(proj_val).expanduser().resolve()
+            try:
+                script_input.value = str(event.path.relative_to(proj_dir))
+            except ValueError:
+                script_input.value = str(event.path)
+        else:
+            # Both already set — append to EXTRA FILES (comma-separated).
+            extra_input = submit.query_one("#extra-files-input", Input)
+            proj_dir = Path(proj_val).expanduser().resolve()
+            try:
+                new_entry = str(event.path.relative_to(proj_dir))
+            except ValueError:
+                new_entry = str(event.path)
+            existing = extra_input.value.strip()
+            extra_input.value = f"{existing}, {new_entry}" if existing else new_entry
+
+        # Switch to Submit tab so the user sees the result immediately.
+        self.query_one(TabbedContent).active = "submit"
