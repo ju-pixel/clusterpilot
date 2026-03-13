@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     walltime      TEXT    NOT NULL,  -- requested walltime, e.g. "08:00:00"
     log_path      TEXT,              -- remote stdout log path (found after start)
     synced        INTEGER NOT NULL DEFAULT 0,  -- 1 once results are downloaded
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    model_used    TEXT    NOT NULL DEFAULT '',
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -77,6 +80,9 @@ class JobRecord:
     finished_at: float | None = None
     log_path: str | None = None
     synced: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model_used: str = ""
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -99,9 +105,23 @@ class JobRecord:
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 async def init_db(db: "aiosqlite.Connection") -> None:
-    """Create tables and indexes if they don't exist. Safe to call repeatedly."""
+    """Create tables and indexes if they don't exist. Safe to call repeatedly.
+
+    Also migrates older databases by adding columns that were introduced
+    after the initial schema.
+    """
     await db.execute(_CREATE_JOBS)
     await db.execute(_CREATE_IDX)
+    # Migration: add usage columns for databases created before this feature.
+    for col, defn in (
+        ("input_tokens",  "INTEGER NOT NULL DEFAULT 0"),
+        ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("model_used",    "TEXT NOT NULL DEFAULT ''"),
+    ):
+        try:
+            await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
+        except Exception:
+            pass  # Column already exists.
     await db.commit()
 
 
@@ -114,14 +134,15 @@ async def insert_job(db: "aiosqlite.Connection", job: JobRecord) -> int:
         INSERT INTO jobs (
             job_id, job_name, cluster_name, host, user, account,
             partition, script_path, working_dir, local_dir, status,
-            submitted_at, walltime
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            submitted_at, walltime, input_tokens, output_tokens, model_used
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job.job_id, job.job_name, job.cluster_name, job.host,
             job.user, job.account, job.partition, job.script_path,
             job.working_dir, job.local_dir, job.status,
             job.submitted_at, job.walltime,
+            job.input_tokens, job.output_tokens, job.model_used,
         ),
     )
     await db.commit()
@@ -220,6 +241,17 @@ async def get_all_jobs(
     return [_row_to_record(r) for r in rows]
 
 
+async def get_total_usage(
+    db: "aiosqlite.Connection",
+) -> tuple[int, int]:
+    """Return (total_input_tokens, total_output_tokens) across all jobs."""
+    async with db.execute(
+        "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM jobs"
+    ) as cur:
+        row = await cur.fetchone()
+    return (row[0], row[1]) if row else (0, 0)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
@@ -227,6 +259,7 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         row_id, job_id, job_name, cluster_name, host, user, account,
         partition, script_path, working_dir, local_dir, status,
         submitted_at, started_at, finished_at, walltime, log_path, synced,
+        input_tokens, output_tokens, model_used,
     ) = row
     return JobRecord(
         row_id=row_id,
@@ -247,4 +280,7 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         walltime=walltime,
         log_path=log_path,
         synced=bool(synced),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model_used=model_used,
     )

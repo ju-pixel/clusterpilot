@@ -6,12 +6,15 @@ configured model.
 
 Usage
 -----
-    async for token in generate_script(description, probe, profile, model, api_key):
+    usage = ApiUsage()
+    async for token in generate_script(description, probe, profile, model, api_key, usage=usage):
         print(token, end="", flush=True)
+    print(f"Cost: ${usage.cost_usd:.4f}")
 """
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 import anthropic
 
@@ -20,6 +23,28 @@ from clusterpilot.config import ClusterProfile
 from clusterpilot.jobs.env_detect import ScriptEnvironment
 
 _MAX_TOKENS = 2048
+
+# Per-million-token pricing (input, output) by model.
+_PRICING: dict[str, tuple[float, float]] = {
+    "claude-sonnet-4-6":  (3.00,  15.00),
+    "claude-opus-4-6":    (5.00,  25.00),
+    "claude-haiku-4-5":   (0.80,   4.00),
+}
+
+
+@dataclass
+class ApiUsage:
+    """Mutable container for token usage from a single API call."""
+
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    @property
+    def cost_usd(self) -> float:
+        """Estimated cost in USD based on published per-token pricing."""
+        inp_rate, out_rate = _PRICING.get(self.model, (3.00, 15.00))
+        return (self.input_tokens * inp_rate + self.output_tokens * out_rate) / 1_000_000
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -37,6 +62,7 @@ async def generate_script(
     manifest_content: str | None = None,
     extra_files: list[str] | None = None,
     script_env: ScriptEnvironment | None = None,
+    usage: ApiUsage | None = None,
 ) -> AsyncIterator[str]:
     """Stream a SLURM job script token-by-token.
 
@@ -63,6 +89,8 @@ async def generate_script(
         script_env:     Static analysis result from env_detect.analyze_script.
                         Used to generate appropriate environment setup steps
                         (Pkg.instantiate, pip install, etc.) in the script.
+        usage:          Optional mutable container; populated with token counts
+                        and cost after streaming completes.
 
     Yields:
         Raw text tokens as they arrive from the API.
@@ -89,6 +117,13 @@ async def generate_script(
     ) as stream:
         async for token in stream.text_stream:
             yield token
+
+        # Populate usage stats after streaming completes.
+        if usage is not None:
+            final = stream.get_final_message()
+            usage.model = model
+            usage.input_tokens = final.usage.input_tokens
+            usage.output_tokens = final.usage.output_tokens
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────

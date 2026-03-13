@@ -11,7 +11,8 @@ from textual.binding import Binding
 from textual.widgets import Input, Label, Static, TabbedContent, TabPane
 
 from clusterpilot.config import Config
-from clusterpilot.db import DB_PATH, init_db
+from clusterpilot.db import DB_PATH, get_total_usage, init_db
+from clusterpilot.jobs.ai_gen import _PRICING
 from clusterpilot.jobs.daemon import PollDaemon
 from clusterpilot.ssh.connection import is_connected, open_connection
 from clusterpilot.tui.config_view import ConfigView
@@ -24,13 +25,23 @@ log = logging.getLogger(__name__)
 
 class TitleBar(Static):
     def __init__(self, config: Config) -> None:
+        self._config = config
+        self._cost_text = ""
+        super().__init__(self._render())
+
+    def _render(self) -> str:
         clusters = "  ".join(
-            f"[#6ed86e]●[/] {c.name}" for c in config.clusters
+            f"[#6ed86e]●[/] {c.name}" for c in self._config.clusters
         )
-        super().__init__(
+        cost = f"  [#3d3520]│[/]  {self._cost_text}" if self._cost_text else ""
+        return (
             f"[bold #e8a020]◈ CLUSTERPILOT[/]  [#7a6a50]v0.1.0-dev[/]  "
-            f"[#3d3520]│[/]  {clusters}"
+            f"[#3d3520]│[/]  {clusters}{cost}"
         )
+
+    def set_cost(self, cost_usd: float) -> None:
+        self._cost_text = f"[#7a6a50]API spend:[/] [#e8a020]${cost_usd:.4f}[/]"
+        self.update(self._render())
 
 
 class StatusBar(Static):
@@ -562,6 +573,18 @@ Button.-error { color: $red; border: tall $redDim; background: $redDim; }
             await init_db(db)
         await self._ensure_connections()
         self._start_daemon()
+        await self._refresh_cost()
+        self.set_interval(30, self._refresh_cost)
+
+    async def _refresh_cost(self) -> None:
+        """Update the title bar with cumulative API spend."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await init_db(db)
+            inp, out = await get_total_usage(db)
+        # Use default sonnet pricing for the aggregate (good enough for display).
+        inp_rate, out_rate = _PRICING.get(self._config.model, (3.00, 15.00))
+        cost = (inp * inp_rate + out * out_rate) / 1_000_000
+        self.query_one(TitleBar).set_cost(cost)
 
     async def _ensure_connections(self) -> None:
         for profile in self._config.clusters:

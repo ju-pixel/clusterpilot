@@ -20,7 +20,7 @@ from textual.widgets import Button, Input, Label, Select, Static, TextArea
 from clusterpilot.cluster.probe import probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
-from clusterpilot.jobs.ai_gen import generate_script
+from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
 from clusterpilot.jobs.env_detect import analyze_script
 from clusterpilot.ssh.connection import run_remote
 from clusterpilot.ssh.rsync import read_ignore_file, upload, upload_file
@@ -403,6 +403,7 @@ class SubmitView(Static):
 
         script_widget = self.query_one("#script-display", Static)
         self._generated_script = ""
+        self._last_usage = ApiUsage()
 
         extra_files_raw = self.query_one("#extra-files-input", Input).value.strip()
         extra_files = (
@@ -421,6 +422,7 @@ class SubmitView(Static):
                 manifest_content=manifest_content,
                 extra_files=extra_files or None,
                 script_env=script_env,
+                usage=self._last_usage,
             ):
                 self._generated_script += token
                 script_widget.update(_format_script(self._generated_script))
@@ -428,6 +430,14 @@ class SubmitView(Static):
             self.app.notify(f"Generation failed: {exc}", severity="error")
             self.query_one("#btn-generate", Button).disabled = False
             return
+
+        u = self._last_usage
+        self.app.notify(
+            f"Script generated — {u.input_tokens:,} in + {u.output_tokens:,} out "
+            f"tokens (${u.cost_usd:.4f})",
+            severity="information",
+            timeout=8,
+        )
 
         self.query_one("#btn-generate", Button).disabled = False
         self.query_one("#btn-submit", Button).disabled = False
@@ -548,6 +558,7 @@ class SubmitView(Static):
             self.query_one("#btn-submit", Button).disabled = False
             return
 
+        u = self._last_usage
         record = JobRecord(
             job_id=job_id,
             job_name=job_name,
@@ -560,6 +571,9 @@ class SubmitView(Static):
             working_dir=remote_dir,
             local_dir=str(local_job_dir),
             walltime=walltime,
+            input_tokens=u.input_tokens,
+            output_tokens=u.output_tokens,
+            model_used=u.model,
         )
         async with aiosqlite.connect(app._db_path) as db:
             await init_db(db)

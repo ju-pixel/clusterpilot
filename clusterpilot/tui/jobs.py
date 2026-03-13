@@ -12,6 +12,7 @@ from textual.widgets import Button, Label, ListItem, ListView, RichLog, Static
 
 from clusterpilot.cluster.slurm import cancel, cat_log, find_log, tail_log
 from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db
+from clusterpilot.jobs.ai_gen import _PRICING
 from clusterpilot.ssh.connection import SSHError, is_connected
 from clusterpilot.ssh.rsync import download
 
@@ -53,6 +54,14 @@ def _format_list_item(job: JobRecord) -> str:
 
 
 def _format_meta(job: JobRecord) -> str:
+    # Per-job API cost (if usage was recorded).
+    if job.input_tokens or job.output_tokens:
+        inp_rate, out_rate = _PRICING.get(job.model_used, (3.00, 15.00))
+        cost = (job.input_tokens * inp_rate + job.output_tokens * out_rate) / 1_000_000
+        cost_str = f"[#e8a020]${cost:.4f}[/]"
+    else:
+        cost_str = "[#7a6a50]—[/]"
+
     rows = [
         ("NAME",      f"[bold #e8a020]{job.job_name}[/]"),
         ("STATUS",    _status_rich(job.status)),
@@ -63,6 +72,7 @@ def _format_meta(job: JobRecord) -> str:
                       else f"[#7a6a50]{_elapsed(job)}[/]"),
         ("WALLTIME",  job.walltime),
         ("SYNCED",    "[#6ed86e]yes[/]" if job.synced else "[#7a6a50]no[/]"),
+        ("AI COST",   cost_str),
     ]
     return "  ".join(f"[#7a6a50]{k}[/] {v}" for k, v in rows[:4]) + "\n" + \
            "  ".join(f"[#7a6a50]{k}[/] {v}" for k, v in rows[4:])
