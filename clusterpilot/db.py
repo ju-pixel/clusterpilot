@@ -165,6 +165,19 @@ async def update_status(
     await db.commit()
 
 
+async def delete_job(
+    db: "aiosqlite.Connection",
+    job_id: str,
+    cluster_name: str,
+) -> None:
+    """Delete a job record from the database."""
+    await db.execute(
+        "DELETE FROM jobs WHERE job_id = ? AND cluster_name = ?",
+        (job_id, cluster_name),
+    )
+    await db.commit()
+
+
 # ── Read operations ───────────────────────────────────────────────────────────
 
 async def get_job(

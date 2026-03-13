@@ -125,6 +125,21 @@ async def tail_log(
         return ""
 
 
+async def cat_log(
+    host: str,
+    user: str,
+    remote_log_path: str,
+) -> str:
+    """Return the full contents of a remote log file. Empty string if not found."""
+    try:
+        return await run_remote(
+            host, user,
+            f"cat {remote_log_path} 2>/dev/null",
+        )
+    except SSHError:
+        return ""
+
+
 async def find_log(
     host: str,
     user: str,

@@ -10,8 +10,8 @@ from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical
 from textual.widgets import Button, Label, ListItem, ListView, RichLog, Static
 
-from clusterpilot.cluster.slurm import cancel, find_log, tail_log
-from clusterpilot.db import DB_PATH, JobRecord, get_all_jobs, init_db
+from clusterpilot.cluster.slurm import cancel, cat_log, find_log, tail_log
+from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db
 from clusterpilot.ssh.connection import SSHError, is_connected
 from clusterpilot.ssh.rsync import download
 
@@ -86,6 +86,8 @@ class JobsView(Static):
                 yield Button("  [R] RSYNC  ", id="btn-rsync", variant="default")
                 yield Button("  [K] KILL   ", id="btn-kill",  variant="default")
                 yield Button("  [T] TAIL   ", id="btn-tail",  variant="default")
+                yield Button("  [L] LOG    ", id="btn-log",   variant="default")
+                yield Button("  [D] DELETE ", id="btn-delete", variant="default")
 
     def on_mount(self) -> None:
         self._jobs: list[JobRecord] = []
@@ -215,9 +217,77 @@ class JobsView(Static):
         if not log_path:
             log_widget.write("[#7a6a50]Log file not found yet.[/]")
             return
-        lines = await tail_log(profile.host, profile.user, log_path, n_lines=80)
-        log_widget.write(f"[#7a6a50]── {log_path} (last 80 lines) ──[/]")
+        lines = await tail_log(profile.host, profile.user, log_path, n_lines=500)
+        log_widget.write(f"[#7a6a50]── {log_path} (last 500 lines) ──[/]")
         for line in lines.splitlines():
             color = "#e05050" if ("ERROR" in line or "error" in line) else \
                     "#6ed86e" if ("✓" in line or "successfully" in line) else "#f0e8d0"
             log_widget.write(f"[{color}]{line}[/]")
+
+    # ── Full log ──────────────────────────────────────────────────────────────
+
+    @on(Button.Pressed, "#btn-log")
+    def action_log(self) -> None:
+        if not self._jobs:
+            return
+        self._do_full_log(self._jobs[self._selected])
+
+    @work(thread=False)
+    async def _do_full_log(self, job: JobRecord) -> None:
+        app = cast("ClusterPilotApp", self.app)
+        profile = app._config.get_cluster(job.cluster_name)
+        if not profile or not is_connected(profile.host, profile.user):
+            self.app.notify("Not connected to cluster.", severity="error")
+            return
+        log_widget = self.query_one("#log-display", RichLog)
+        log_widget.clear()
+        self._log_dirty = True
+        log_path = job.log_path
+        if not log_path:
+            log_path = await find_log(
+                profile.host, profile.user,
+                job.job_name, job.job_id, job.working_dir,
+            )
+        if not log_path:
+            log_widget.write("[#7a6a50]Log file not found yet.[/]")
+            return
+        log_widget.write(f"[#e8a020]Fetching full log…[/]")
+        content = await cat_log(profile.host, profile.user, log_path)
+        log_widget.clear()
+        total = len(content.splitlines())
+        log_widget.write(f"[#7a6a50]── {log_path} ({total} lines) ──[/]")
+        for line in content.splitlines():
+            color = "#e05050" if ("ERROR" in line or "error" in line) else \
+                    "#6ed86e" if ("✓" in line or "successfully" in line) else "#f0e8d0"
+            log_widget.write(f"[{color}]{line}[/]")
+
+    # ── Delete job from history ───────────────────────────────────────────────
+
+    @on(Button.Pressed, "#btn-delete")
+    def action_delete(self) -> None:
+        if not self._jobs:
+            return
+        job = self._jobs[self._selected]
+        if job.status in ("PENDING", "RUNNING"):
+            self.app.notify(
+                "Cannot delete an active job — kill it first.",
+                severity="warning",
+            )
+            return
+        self._do_delete(job)
+
+    @work(thread=False)
+    async def _do_delete(self, job: JobRecord) -> None:
+        app = cast("ClusterPilotApp", self.app)
+        async with aiosqlite.connect(app._db_path) as db:
+            await init_db(db)
+            await delete_job(db, job.job_id, job.cluster_name)
+        self.app.notify(
+            f"Removed {job.job_name} (#{job.job_id}) from history.",
+            severity="information",
+        )
+        # Adjust selection index and refresh the list.
+        if self._selected > 0:
+            self._selected -= 1
+        self._log_dirty = False
+        self._refresh()
