@@ -616,7 +616,9 @@ class SubmitView(Static):
         if not self._generated_script:
             return
         job_name = _extract(self._generated_script, "job-name", "clusterpilot_job")
-        path = Path.cwd() / f"{job_name}.sh"
+        downloads = Path.home() / "Downloads"
+        base = downloads if downloads.is_dir() else Path.home()
+        path = base / f"{job_name}.sh"
         path.write_text(self._generated_script)
         self.app.notify(f"Script saved to {path}", severity="information")
 

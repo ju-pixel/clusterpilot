@@ -4,14 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clusterpilot"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "AI-assisted HPC workflow manager for SLURM clusters"
 readme = "README.md"
 license = { text = "MIT" }
+authors = [{ name = "Julia Frank" }]
 requires-python = ">=3.9"
 keywords = ["hpc", "slurm", "tui", "ai", "ssh", "compute-canada", "textual"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
@@ -37,8 +38,8 @@ dev = [
 clusterpilot = "clusterpilot.__main__:main"
 
 [project.urls]
-Repository = "https://github.com/juliafrank/clusterpilot"
-Issues = "https://github.com/juliafrank/clusterpilot/issues"
+Repository = "https://github.com/ju-pixel/clusterpilot"
+Issues = "https://github.com/ju-pixel/clusterpilot/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["clusterpilot"]
