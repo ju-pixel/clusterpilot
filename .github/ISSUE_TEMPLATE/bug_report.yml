@@ -1,0 +1,81 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as you can.
+
+  - type: dropdown
+    id: cluster
+    attributes:
+      label: Cluster
+      description: Which cluster were you submitting to?
+      options:
+        - Grex (yak.hpc.umanitoba.ca)
+        - Cedar (Compute Canada)
+        - Narval (Compute Canada)
+        - Graham (Compute Canada)
+        - Beluga (Compute Canada)
+        - Other / not cluster-specific
+    validations:
+      required: true
+
+  - type: dropdown
+    id: screen
+    attributes:
+      label: TUI screen
+      description: Which screen or component was involved?
+      options:
+        - F1 — Job list / monitoring
+        - F2 — Submit / script generation
+        - F9 — Settings
+        - Daemon (background poll)
+        - CLI (clusterpilot command)
+        - SSH / connection
+        - Notifications
+        - Not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. What did you do, what did you expect, and what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste any error messages, tracebacks, or log output from the F1 screen or daemon. This will be formatted as code automatically.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: ClusterPilot version
+      description: Output of `pip show clusterpilot | grep Version`
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+      placeholder: "3.11.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and terminal emulator
+      description: e.g. "macOS 14.4, iTerm2" or "Ubuntu 22.04, gnome-terminal"
+    validations:
+      required: false

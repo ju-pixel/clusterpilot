@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are welcome. Describe what you want and why it would be useful.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the workflow friction or limitation you are running into.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like ClusterPilot to handle this?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you are using now, or other approaches you considered.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: cluster
+    attributes:
+      label: Relevant cluster(s)
+      description: Is this specific to a cluster type?
+      options:
+        - All clusters
+        - Grex (UManitoba)
+        - Compute Canada / DRAC
+        - Other
+    validations:
+      required: false
