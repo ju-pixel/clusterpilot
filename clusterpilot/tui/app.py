@@ -27,9 +27,9 @@ class TitleBar(Static):
     def __init__(self, config: Config) -> None:
         self._config = config
         self._cost_text = ""
-        super().__init__(self._render())
+        super().__init__(self._build_content())
 
-    def _render(self) -> str:
+    def _build_content(self) -> str:
         clusters = "  ".join(
             f"[#6ed86e]●[/] {c.name}" for c in self._config.clusters
         )
@@ -41,7 +41,7 @@ class TitleBar(Static):
 
     def set_cost(self, cost_usd: float) -> None:
         self._cost_text = f"[#7a6a50]API spend:[/] [#e8a020]${cost_usd:.4f}[/]"
-        self.update(self._render())
+        self.update(self._build_content())
 
 
 class StatusBar(Static):
