@@ -455,6 +455,20 @@ class SubmitView(Static):
         walltime  = _extract(script, "time",       "01:00:00")
         account   = _extract(script, "account",    profile.account)
 
+        # Ensure unique job directory — append a short timestamp if a job
+        # with this name already exists locally (repeat submissions with the
+        # same description would otherwise overwrite the previous run's data).
+        local_job_dir = Path.cwd() / "clusterpilot_jobs" / job_name
+        if local_job_dir.exists():
+            suffix = time.strftime("%m%d-%H%M")
+            job_name = f"{job_name}-{suffix}"
+            # Rewrite --job-name in the script so SLURM log names match.
+            script = re.sub(
+                r"(#SBATCH\s+--job-name=)\S+",
+                rf"\g<1>{job_name}",
+                script,
+            )
+
         remote_dir = profile.remote_job_dir(job_name)
 
         # Enforce correct SBATCH directives regardless of what the model wrote.

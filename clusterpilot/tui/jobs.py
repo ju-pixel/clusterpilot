@@ -90,6 +90,7 @@ class JobsView(Static):
     def on_mount(self) -> None:
         self._jobs: list[JobRecord] = []
         self._selected: int = 0
+        self._log_dirty: bool = False   # True when user-triggered content is showing
         self.set_interval(10, self._refresh)
         self._refresh()
 
@@ -108,7 +109,10 @@ class JobsView(Static):
             item = ListItem(Static(_format_list_item(job)))
             job_list.append(item)
         if self._jobs:
-            self._show_detail(self._jobs[self._selected])
+            # Update metadata (status, elapsed, etc.) but preserve the log
+            # panel if the user triggered TAIL or RSYNC — those results should
+            # persist until the user explicitly refreshes or selects another job.
+            self._update_meta(self._jobs[self._selected])
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         idx = list(self.query_one("#job-list", ListView).children).index(event.item)
@@ -116,18 +120,23 @@ class JobsView(Static):
             self._selected = idx
             self._show_detail(self._jobs[idx])
 
-    def _show_detail(self, job: JobRecord) -> None:
+    def _update_meta(self, job: JobRecord) -> None:
+        """Refresh the metadata panel and button states without touching the log."""
         self.query_one("#meta-title", Label).update(f"═ JOB {job.job_id} ")
         self.query_one("#meta-content", Static).update(_format_meta(job))
-        log_widget = self.query_one("#log-display", RichLog)
-        log_widget.clear()
-        log_widget.write(f"[#7a6a50]Select [T] TAIL to fetch live output.[/]")
-        # Disable kill/rsync for terminal jobs
         terminal = job.status in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT")
         self.query_one("#btn-kill", Button).disabled = terminal
         self.query_one("#btn-rsync", Button).disabled = job.status not in (
             "COMPLETED", "RUNNING"
         )
+
+    def _show_detail(self, job: JobRecord) -> None:
+        """Full detail update — metadata + reset the log panel (user selected a new job)."""
+        self._update_meta(job)
+        self._log_dirty = False
+        log_widget = self.query_one("#log-display", RichLog)
+        log_widget.clear()
+        log_widget.write(f"[#7a6a50]Select [T] TAIL to fetch live output.[/]")
 
     # ── Action buttons ────────────────────────────────────────────────────────
 
@@ -146,6 +155,7 @@ class JobsView(Static):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
+        self._log_dirty = True
         log_widget.write("[#e8a020]Starting rsync…[/]")
         local = __import__("pathlib").Path(job.local_dir) / "results"
         try:
@@ -194,6 +204,7 @@ class JobsView(Static):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
+        self._log_dirty = True
         # Find log path if not cached.
         log_path = job.log_path
         if not log_path:
