@@ -170,7 +170,7 @@ class PollDaemon:
             try:
                 await notify_started(self.config.notifications, job)
             except Exception:
-                log.warning("Failed to send start notification for %s", job.job_id)
+                log.warning("Failed to send start notification for %s", job.job_id, exc_info=True)
 
         elif new_status in TERMINAL_STATES:
             await update_status(
@@ -220,7 +220,7 @@ class PollDaemon:
         try:
             await notify_completed(self.config.notifications, job)
         except Exception:
-            log.warning("Failed to send completion notification for %s", job.job_id)
+            log.warning("Failed to send completion notification for %s", job.job_id, exc_info=True)
 
     async def _notify_failed(
         self,
@@ -237,7 +237,7 @@ class PollDaemon:
         try:
             await notify_failed(self.config.notifications, job, log_tail)
         except Exception:
-            log.warning("Failed to send failure notification for %s", job.job_id)
+            log.warning("Failed to send failure notification for %s", job.job_id, exc_info=True)
 
     # ── ETA / low-time notifications ──────────────────────────────────────────
 
@@ -264,7 +264,7 @@ class PollDaemon:
                     self.config.notifications, job, int(remaining_min),
                 )
             except Exception:
-                log.warning("Failed low-time notification for %s", job.job_id)
+                log.warning("Failed low-time notification for %s", job.job_id, exc_info=True)
             return
 
         # Periodic ETA update every 30 min (skip if low-time already warned).
@@ -276,7 +276,7 @@ class PollDaemon:
                     self.config.notifications, job, int(remaining_min),
                 )
             except Exception:
-                log.warning("Failed ETA notification for %s", job.job_id)
+                log.warning("Failed ETA notification for %s", job.job_id, exc_info=True)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

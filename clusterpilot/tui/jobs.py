@@ -103,6 +103,10 @@ class JobsView(Static):
         self._jobs: list[JobRecord] = []
         self._selected: int = 0
         self._log_dirty: bool = False   # True when user-triggered content is showing
+        self._tail_timer: object | None = None   # live-polling timer handle
+        self._tail_job_id: str | None = None     # job ID being tailed
+        self._tail_log_path: str | None = None   # cached log path for polling
+        self._tail_mode: str = "tail"             # "tail" or "full"
         self.set_interval(10, self._refresh)
         self._refresh()
 
@@ -144,11 +148,63 @@ class JobsView(Static):
 
     def _show_detail(self, job: JobRecord) -> None:
         """Full detail update — metadata + reset the log panel (user selected a new job)."""
+        self._stop_tail_polling()
         self._update_meta(job)
         self._log_dirty = False
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
         log_widget.write(f"[#7a6a50]Select [T] TAIL to fetch live output.[/]")
+
+    def _stop_tail_polling(self) -> None:
+        """Cancel any active log-polling timer."""
+        if self._tail_timer is not None:
+            self._tail_timer.stop()
+            self._tail_timer = None
+        self._tail_job_id = None
+        self._tail_log_path = None
+
+    def _start_tail_polling(self, job: JobRecord, log_path: str, mode: str) -> None:
+        """Begin polling the log every 5 seconds for a running job."""
+        self._stop_tail_polling()
+        self._tail_job_id = job.job_id
+        self._tail_log_path = log_path
+        self._tail_mode = mode
+        self._tail_timer = self.set_interval(5, self._poll_tail)
+
+    @work(thread=False)
+    async def _poll_tail(self) -> None:
+        """Re-fetch log for the currently tailed job."""
+        if not self._tail_job_id or not self._tail_log_path:
+            self._stop_tail_polling()
+            return
+        # Find the job record — stop if gone or terminal.
+        job = None
+        for j in self._jobs:
+            if j.job_id == self._tail_job_id:
+                job = j
+                break
+        if job is None or job.status in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"):
+            self._stop_tail_polling()
+            return
+        app = cast("ClusterPilotApp", self.app)
+        profile = app._config.get_cluster(job.cluster_name)
+        if not profile or not is_connected(profile.host, profile.user):
+            return
+        log_widget = self.query_one("#log-display", RichLog)
+        if self._tail_mode == "tail":
+            lines = await tail_log(profile.host, profile.user, self._tail_log_path, n_lines=500)
+        else:
+            lines = await cat_log(profile.host, profile.user, self._tail_log_path)
+        if not lines:
+            return
+        log_widget.clear()
+        total = len(lines.splitlines())
+        label = "last 500 lines" if self._tail_mode == "tail" else f"{total} lines"
+        log_widget.write(f"[#7a6a50]── {self._tail_log_path} ({label}) ── [dim]live[/dim][/]")
+        for line in lines.splitlines():
+            color = "#e05050" if ("ERROR" in line or "error" in line) else \
+                    "#6ed86e" if ("\u2713" in line or "successfully" in line) else "#f0e8d0"
+            log_widget.write(f"[{color}]{line}[/]")
 
     # ── Action buttons ────────────────────────────────────────────────────────
 
@@ -209,6 +265,7 @@ class JobsView(Static):
 
     @work(thread=False)
     async def _do_tail(self, job: JobRecord) -> None:
+        self._stop_tail_polling()
         app = cast("ClusterPilotApp", self.app)
         profile = app._config.get_cluster(job.cluster_name)
         if not profile or not is_connected(profile.host, profile.user):
@@ -228,11 +285,15 @@ class JobsView(Static):
             log_widget.write("[#7a6a50]Log file not found yet.[/]")
             return
         lines = await tail_log(profile.host, profile.user, log_path, n_lines=500)
-        log_widget.write(f"[#7a6a50]── {log_path} (last 500 lines) ──[/]")
+        live_tag = " [dim]live[/dim]" if job.status == "RUNNING" else ""
+        log_widget.write(f"[#7a6a50]── {log_path} (last 500 lines) ──{live_tag}[/]")
         for line in lines.splitlines():
             color = "#e05050" if ("ERROR" in line or "error" in line) else \
-                    "#6ed86e" if ("✓" in line or "successfully" in line) else "#f0e8d0"
+                    "#6ed86e" if ("\u2713" in line or "successfully" in line) else "#f0e8d0"
             log_widget.write(f"[{color}]{line}[/]")
+        # Start live polling if the job is still running.
+        if job.status == "RUNNING":
+            self._start_tail_polling(job, log_path, "tail")
 
     # ── Full log ──────────────────────────────────────────────────────────────
 
@@ -244,6 +305,7 @@ class JobsView(Static):
 
     @work(thread=False)
     async def _do_full_log(self, job: JobRecord) -> None:
+        self._stop_tail_polling()
         app = cast("ClusterPilotApp", self.app)
         profile = app._config.get_cluster(job.cluster_name)
         if not profile or not is_connected(profile.host, profile.user):
@@ -265,11 +327,15 @@ class JobsView(Static):
         content = await cat_log(profile.host, profile.user, log_path)
         log_widget.clear()
         total = len(content.splitlines())
-        log_widget.write(f"[#7a6a50]── {log_path} ({total} lines) ──[/]")
+        live_tag = " [dim]live[/dim]" if job.status == "RUNNING" else ""
+        log_widget.write(f"[#7a6a50]── {log_path} ({total} lines) ──{live_tag}[/]")
         for line in content.splitlines():
             color = "#e05050" if ("ERROR" in line or "error" in line) else \
-                    "#6ed86e" if ("✓" in line or "successfully" in line) else "#f0e8d0"
+                    "#6ed86e" if ("\u2713" in line or "successfully" in line) else "#f0e8d0"
             log_widget.write(f"[{color}]{line}[/]")
+        # Start live polling if the job is still running.
+        if job.status == "RUNNING":
+            self._start_tail_polling(job, log_path, "full")
 
     # ── Delete job from history ───────────────────────────────────────────────
 

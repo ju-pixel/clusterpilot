@@ -12,7 +12,7 @@ ClusterPilot automates the full local to cluster to local research cycle:
 1. **Describe your job in plain English** - ClusterPilot sends your description to an AI model to generate a correct, cluster-aware SLURM script
 2. **Upload and submit** - files are rsynced to the cluster and `sbatch` is run over an existing SSH ControlMaster socket
 3. **Monitor without babysitting** - a background poll daemon checks `squeue` every 5 minutes; no persistent SSH connection is held open
-4. **Get notified** - push notifications to your phone on job start, completion, failure, and walltime warnings via [ntfy.sh](https://ntfy.sh)
+4. **Get notified** (optional) - push notifications to your phone on job start, completion, failure, and walltime warnings via [ntfy.sh](https://ntfy.sh)
 5. **Auto-sync results** - on completion, output files are rsynced back to your local project directory
 
 Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, naturally).
@@ -31,7 +31,7 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 - Python >= 3.9
 - System `ssh` binary with ControlMaster support (standard on macOS/Linux)
 - An API key for your chosen AI provider (currently Anthropic)
-- A free [ntfy.sh](https://ntfy.sh) topic (or self-hosted ntfy server)
+- (Optional) A free [ntfy.sh](https://ntfy.sh) topic for push notifications
 
 ## Installation
 
@@ -231,18 +231,59 @@ the remote cluster via SSH ControlMaster, which is the intended workflow. If
 you need to run it on a remote Linux workstation, switching that session to an
 X11 fallback (`ssh -X`) may restore mouse support.
 
-## Notifications
+## Notifications (optional)
 
-ClusterPilot sends push notifications via [ntfy.sh](https://ntfy.sh). No
-account is needed - just pick a topic string and subscribe to it on your
-phone using the ntfy app.
+Push notifications are **entirely optional**. If you prefer to just leave
+the TUI open and check job status from the F1 screen, that works perfectly
+well. The SSH connection stays alive as long as the TUI is running
+(`ControlPersist 4h` + `ServerAliveInterval 60`), the job list refreshes
+automatically every 10 seconds, and you can press TAIL or LOG at any time
+to see live output. No external service is needed for this workflow.
 
-Events that trigger notifications:
+If you want push notifications to your phone (useful when you close
+the lid and walk away), ClusterPilot supports [ntfy.sh](https://ntfy.sh).
+
+### Setting up ntfy (if you want it)
+
+1. **Pick a topic string** - this is just a name, like a channel.
+   Use something unique so strangers cannot read your notifications
+   (e.g. `clusterpilot-jfrank-a8f3`, not `test-jobs`).
+
+2. **Add it to your config** (`~/.config/clusterpilot/config.toml`):
+
+   ```toml
+   [notifications]
+   backend = "ntfy"
+   ntfy_topic = "clusterpilot-jfrank-a8f3"   # your unique topic
+   ntfy_server = "https://ntfy.sh"           # or a self-hosted server
+   ```
+
+3. **Subscribe on your phone** - install the ntfy app
+   ([Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) /
+   [iOS](https://apps.apple.com/app/ntfy/id1625396347)) and subscribe to
+   the same topic string. No account or phone number is required.
+
+That's it. You can also view notifications in a browser at
+`https://ntfy.sh/your-topic-string`.
+
+### Disabling notifications
+
+Leave `ntfy_topic` empty (or remove it) and no notifications will be sent:
+
+```toml
+[notifications]
+backend = "ntfy"
+ntfy_topic = ""
+```
+
+### Notification events
+
+When enabled, ClusterPilot notifies on:
 
 - Job started (PENDING to RUNNING)
 - Job completed - results are syncing
 - Job failed - includes the last 6 lines of the SLURM log
-- Walltime warning - when less than ~10 minutes remain
+- Walltime warning - less than 30 minutes remaining
 - ETA update - periodic estimate while running
 
 A self-hosted ntfy server or any HTTP POST webhook also works; set

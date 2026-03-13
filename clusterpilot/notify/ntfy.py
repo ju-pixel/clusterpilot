@@ -58,7 +58,7 @@ async def notify_started(cfg: NotificationConfig, job: JobRecord) -> None:
         cfg.ntfy_topic,
         f"{job.job_name} is now running on {job.cluster_name}\n"
         f"Job ID: {job.job_id}  Partition: {job.partition}",
-        title=f"Job started — {job.job_name}",
+        title=f"Job started - {job.job_name}",
         priority="default",
         tags=["rocket"],
         server=cfg.ntfy_server,
@@ -70,7 +70,7 @@ async def notify_completed(cfg: NotificationConfig, job: JobRecord) -> None:
         cfg.ntfy_topic,
         f"{job.job_name} completed on {job.cluster_name}\n"
         f"Results are being synced to your local directory.",
-        title=f"Job done ✓ — {job.job_name}",
+        title=f"Job done - {job.job_name}",
         priority="high",
         tags=["white_check_mark"],
         server=cfg.ntfy_server,
@@ -90,7 +90,7 @@ async def notify_failed(
     await send(
         cfg.ntfy_topic,
         body,
-        title=f"Job FAILED — {job.job_name}",
+        title=f"Job FAILED - {job.job_name}",
         priority="high",
         tags=["x"],
         server=cfg.ntfy_server,
@@ -106,9 +106,9 @@ async def notify_eta(
     eta_str = f"{hours}h {mins}m" if hours else f"{mins}m"
     await send(
         cfg.ntfy_topic,
-        f"{job.job_name} — estimated {eta_str} remaining\n"
+        f"{job.job_name} - estimated {eta_str} remaining\n"
         f"Job ID: {job.job_id}",
-        title=f"ETA update — {job.job_name}",
+        title=f"ETA update - {job.job_name}",
         priority="low",
         tags=["clock1"],
         server=cfg.ntfy_server,
@@ -124,7 +124,7 @@ async def notify_low_time(
         cfg.ntfy_topic,
         f"{job.job_name} has only ~{minutes_left} minutes of walltime left!\n"
         f"Job ID: {job.job_id}",
-        title=f"Low walltime — {job.job_name}",
+        title=f"Low walltime - {job.job_name}",
         priority="high",
         tags=["warning"],
         server=cfg.ntfy_server,
