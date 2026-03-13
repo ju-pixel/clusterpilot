@@ -120,7 +120,7 @@ async def generate_script(
 
         # Populate usage stats after streaming completes.
         if usage is not None:
-            final = stream.get_final_message()
+            final = await stream.get_final_message()
             usage.model = model
             usage.input_tokens = final.usage.input_tokens
             usage.output_tokens = final.usage.output_tokens
