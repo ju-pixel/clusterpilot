@@ -122,6 +122,48 @@ def _extract(script: str, directive: str, default: str) -> str:
     return default
 
 
+def _sanitise_script(script: str, remote_dir: str, job_name: str) -> str:
+    """Enforce correct SBATCH directives and strip absolute job-dir paths.
+
+    The AI reliably deviates from two prompt rules:
+
+    1. ``--output`` — writes a full ``~/.../%x-%j.out`` path instead of the
+       required bare ``%x-%j.out``.  SLURM on Grex does not expand ``~`` in
+       ``--output``, so it treats the path as relative to ``--chdir`` and
+       creates a literal ``~`` subdirectory inside the job directory.
+
+    2. Script body paths — writes ``"~/clusterpilot_jobs/<job>/..."`` inside
+       double quotes.  Bash does not expand ``~`` inside double quotes, so
+       Julia/Python receive the literal ``~`` string and resolve it relative
+       to the CWD (which is already the job directory), producing a doubled
+       path like ``<cwd>/~/clusterpilot_jobs/<job>/...``.
+
+    Since ``--chdir`` sets the CWD to the job directory, every file reference
+    in the script body can and should be a relative path.  This function
+    enforces that deterministically, independent of what the model generates.
+    """
+    tilde_dir    = f"~/clusterpilot_jobs/{job_name}"   # job dir, no trailing slash
+    tilde_prefix = tilde_dir + "/"                      # job dir prefix with slash
+
+    lines = []
+    for line in script.splitlines():
+        if re.match(r"^#SBATCH\s+--output=", line):
+            # Relative path only — SLURM expands %x and %j, not ~
+            line = "#SBATCH --output=%x-%j.out"
+        elif re.match(r"^#SBATCH\s+--chdir=", line):
+            # Always use the authoritative remote_dir we computed
+            line = f"#SBATCH --chdir={remote_dir}"
+        elif not line.lstrip().startswith("#"):
+            # Script body: strip the absolute job-directory prefix so all
+            # paths become relative to --chdir.
+            #   ~/clusterpilot_jobs/<job>/scripts/run.jl → scripts/run.jl
+            #   ~/clusterpilot_jobs/<job>               → .  (e.g. --project=.)
+            line = line.replace(tilde_prefix, "")
+            line = line.replace(tilde_dir, ".")
+        lines.append(line)
+    return "\n".join(lines)
+
+
 class SubmitView(Static):
     """Left: description + partition picker + script path. Right: generated script."""
 
@@ -403,13 +445,18 @@ class SubmitView(Static):
         walltime  = _extract(script, "time",       "01:00:00")
         account   = _extract(script, "account",    profile.account)
 
+        remote_dir = profile.remote_job_dir(job_name)
+
+        # Enforce correct SBATCH directives regardless of what the model wrote.
+        script = _sanitise_script(script, remote_dir, job_name)
+        self._generated_script = script   # keep TUI display in sync
+
         local_job_dir = Path.cwd() / "clusterpilot_jobs" / job_name
         local_job_dir.mkdir(parents=True, exist_ok=True)
 
         script_name = f"{job_name}.sh"
         (local_job_dir / script_name).write_text(script)
 
-        remote_dir    = profile.remote_job_dir(job_name)
         remote_script = f"{remote_dir}/{script_name}"
 
         self.app.notify(f"Uploading files to {remote_dir}…", severity="information")
