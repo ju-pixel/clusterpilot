@@ -393,6 +393,7 @@ class SubmitView(Static):
             return
 
         api_key = app._config.api_key
+        api_base_url = app._config.api_base_url
         if not api_key:
             self.app.notify(
                 "No API key. Set api_key in config or ANTHROPIC_API_KEY env var.",
@@ -416,6 +417,7 @@ class SubmitView(Static):
                 description, probe, profile,
                 model=app._config.model,
                 api_key=api_key,
+                api_base_url=api_base_url,
                 partition=partition,
                 script_content=script_content,
                 driver_script=driver_script,

@@ -56,6 +56,7 @@ async def generate_script(
     model: str,
     api_key: str,
     *,
+    api_base_url: str = "",
     partition: str = "",
     script_content: str | None = None,
     driver_script: str | None = None,
@@ -107,7 +108,10 @@ async def generate_script(
         extra_files=extra_files or [],
         script_env=script_env,
     )
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = anthropic.AsyncAnthropic(
+        api_key=api_key,
+        base_url=api_base_url or None,
+    )
 
     async with client.messages.stream(
         model=model,

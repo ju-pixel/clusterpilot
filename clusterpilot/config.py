@@ -21,7 +21,8 @@ CONFIG_PATH = Path.home() / ".config" / "clusterpilot" / "config.toml"
 _DEFAULT_TOML = """\
 [defaults]
 model = "claude-sonnet-4-6"   # or "claude-opus-4-6" for harder jobs
-api_key = ""                  # leave blank to use ANTHROPIC_API_KEY env var
+api_key = ""                  # your Anthropic API key, or a ClusterPilot beta token
+api_base_url = ""             # leave blank (direct Anthropic) or set to the beta proxy URL
 poll_interval = 300           # seconds between job status checks
 # upload_excludes = [".git/", "__pycache__/", "*.pyc", "*.egg-info/", ".DS_Store"]
 # Override to change what is excluded from all project uploads.
@@ -102,6 +103,7 @@ _DEFAULT_DOWNLOAD_EXCLUDES: list[str] = [
 class Defaults:
     model: str = "claude-sonnet-4-6"
     api_key: str = ""
+    api_base_url: str = ""   # empty → direct Anthropic; set to proxy URL for beta tokens
     poll_interval: int = 300
     upload_excludes: list[str] = field(default_factory=lambda: list(_DEFAULT_UPLOAD_EXCLUDES))
     download_excludes: list[str] = field(default_factory=lambda: list(_DEFAULT_DOWNLOAD_EXCLUDES))
@@ -124,6 +126,11 @@ class Config:
     def api_key(self) -> str:
         """Effective API key: config value, then ANTHROPIC_API_KEY env var."""
         return self.defaults.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+
+    @property
+    def api_base_url(self) -> str:
+        """Proxy base URL, or empty string to use Anthropic directly."""
+        return self.defaults.api_base_url
 
     @property
     def model(self) -> str:
@@ -171,6 +178,7 @@ def _from_dict(data: dict) -> Config:
     defaults = Defaults(
         model=raw_defaults.get("model", "claude-sonnet-4-6"),
         api_key=raw_defaults.get("api_key", ""),
+        api_base_url=raw_defaults.get("api_base_url", ""),
         poll_interval=int(raw_defaults.get("poll_interval", 300)),
         upload_excludes=raw_defaults.get("upload_excludes", list(_DEFAULT_UPLOAD_EXCLUDES)),
         download_excludes=raw_defaults.get("download_excludes", list(_DEFAULT_DOWNLOAD_EXCLUDES)),
