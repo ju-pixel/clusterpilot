@@ -96,6 +96,7 @@ async def download(
     remote_path: str,
     local_path: Path,
     *,
+    excludes: list[str] | None = None,
     progress_callback: Callable[[str], None] | None = None,
     timeout: float = 3600.0,
 ) -> None:
@@ -103,12 +104,14 @@ async def download(
 
     Never passes --delete, so local files absent from the remote are preserved.
     New or updated remote files are merged in.
+
+    excludes: rsync --exclude patterns to skip (e.g. source dirs already local).
     """
     local_path.mkdir(parents=True, exist_ok=True)
     await _run(
         src=f"{user}@{host}:{remote_path.rstrip('/')}/",
         dst=str(local_path).rstrip("/") + "/",
-        excludes=[],
+        excludes=excludes or [],
         progress_callback=progress_callback,
         timeout=timeout,
     )

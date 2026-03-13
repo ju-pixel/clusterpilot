@@ -74,6 +74,50 @@ ntfy_server = "https://ntfy.sh"
 The API key can also be provided via the `ANTHROPIC_API_KEY` environment
 variable instead of the config file.
 
+### Upload and download excludes
+
+When uploading a project directory, ClusterPilot excludes files that are not
+needed on the cluster. When downloading results, it skips source files that
+are already on your machine and only pulls back output (SLURM logs, data
+files, etc.).
+
+Both lists are configurable in the `[defaults]` section:
+
+```toml
+[defaults]
+# Files/dirs excluded from upload to the cluster.
+upload_excludes = [
+    ".git/",
+    "__pycache__/",
+    "*.pyc",
+    "*.egg-info/",
+    ".DS_Store",
+    "CLAUDE.md",
+    "clusterpilot_jobs/",
+]
+
+# Files/dirs excluded when syncing results back from the cluster.
+# Everything not matched here is downloaded (SLURM logs, data output, etc.).
+download_excludes = [
+    "src/",
+    "docs/",
+    "examples/",
+    "scripts/",
+    "*.toml",
+    "*.md",
+    "*.sh",
+    ".git/",
+    "__pycache__/",
+    ".DS_Store",
+]
+```
+
+These are rsync glob patterns. If your job writes output to an unusual
+location, adjust `download_excludes` to avoid filtering it out.
+
+Per-project upload exclusions can also be set in a `.clusterpilot_ignore` file
+at the project root (one pattern per line, same syntax as rsync `--exclude`).
+
 ## Usage
 
 ```bash
@@ -102,6 +146,19 @@ clusterpilot daemon   # run the poll daemon in the foreground
 
 The partition you select is passed to the model as a hard constraint, not a
 suggestion. It will use the correct `--gres` syntax for that partition's hardware.
+
+### Project directory mode
+
+If you set **PROJECT DIR** on the F2 screen, the entire project tree is
+rsynced to a job-specific directory on the cluster
+(`$HOME/clusterpilot_jobs/<job-name>/`). Each job gets its own isolated copy,
+so you can submit multiple jobs from the same local project without them
+interfering with each other. Modify a parameter, change the driver script,
+and submit again - each submission creates a fresh directory on the cluster.
+
+When results are synced back, only output files are downloaded (SLURM logs,
+data files). Source code that was uploaded is skipped by default. See
+[Upload and download excludes](#upload-and-download-excludes) for details.
 
 ## How SSH works
 

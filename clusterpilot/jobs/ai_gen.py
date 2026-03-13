@@ -109,10 +109,7 @@ def _build_system_prompt(
     julia_line = ", ".join(probe.julia_versions) or "julia/1.11.3"
     python_line = ", ".join(probe.python_versions) or "(check with: module avail python)"
     account = profile.account or (probe.accounts[0] if probe.accounts else "")
-    scratch = profile.expand_scratch()        # ~/... form, safe for bash commands
-    # Strip leading ~/ to get the part relative to home, used in --chdir instruction.
-    # e.g. "~/clusterpilot_jobs" → "clusterpilot_jobs"
-    scratch_rel = scratch.removeprefix("~/").removeprefix("~")
+    scratch = profile.expand_scratch()        # ~/... form, for context only
 
     env_setup = _build_env_setup_section(script_env)
 
@@ -121,6 +118,14 @@ def _build_system_prompt(
         f"You MUST use exactly `--partition={partition}`. Do not change it."
         if partition
         else "Choose the most appropriate partition from the list above based on the job description."
+    )
+
+    # The job directory base shown to the AI is for context only — the script
+    # must NOT reference it.  All paths must be relative because the submission
+    # harness already cd's into the job directory before running sbatch.
+    job_dir_note = (
+        f"Job working directory: {scratch}/<job-name>/ — the submission harness "
+        f"cd's here before sbatch, so the script's CWD is already the job dir."
     )
 
     manifest_section = ""
@@ -144,7 +149,7 @@ Match module versions to what is available on this cluster.
                 f"project package. The entire project directory will be rsynced to the "
                 f"remote job directory, so the driver must be invoked as a RELATIVE path: "
                 f"`{driver_script}` (not just the filename, and never an absolute path). "
-                f"Because --chdir sets the CWD to the job directory, `{driver_script}` "
+                f"The CWD is already the job directory at runtime, so `{driver_script}` "
                 f"will resolve correctly. Do NOT prefix it with ~/ or $HOME/. "
                 f"Read it carefully to infer required modules, GPU count, CPU count, "
                 f"memory, and walltime."
@@ -192,7 +197,7 @@ Partitions:
 Available Julia: {julia_line}
 Available Python: {python_line}
 User account: {account}
-Job working directory base: {scratch}
+{job_dir_note}
 
 SSH login: {profile.user}@{profile.host}
 {manifest_section}{script_section}
@@ -207,16 +212,18 @@ SSH login: {profile.user}@{profile.host}
    --cpus-per-task  set appropriately for the workload
    --mem             total memory per node, e.g. 32G
    --time           requested walltime as D-HH:MM:SS or HH:MM:SS
-   --chdir          ~/{scratch_rel}/<job-name>  IMPORTANT: write the tilde (~) literally — do NOT
-                    expand it to /home/username or any absolute path. The cluster expands ~ at
-                    runtime to the correct home directory. Use the SAME value as --job-name.
    --output         %x-%j.out
+
+   DO NOT include --chdir or -D.  The submission harness already cd's into the
+   job directory before running sbatch, so SLURM's default CWD is correct.
+   Adding --chdir with ~ breaks on SLURM because ~ is not expanded in #SBATCH
+   directives and gets treated as a literal directory name.
 
    ABSOLUTE RULE FOR --output: write EXACTLY `--output=%x-%j.out` — nothing else.
    Do NOT write a directory path before %x-%j.out.
    Do NOT write `--output=~/.../%x-%j.out`.
    Do NOT write `--output=/home/.../%x-%j.out`.
-   The % tokens are relative to --chdir. Any path prefix breaks log discovery.
+   The % tokens are relative to the CWD. Any path prefix breaks log discovery.
 
 2. For GPU jobs, add:
    --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s on stamps
@@ -225,17 +232,18 @@ SSH login: {profile.user}@{profile.host}
 3. After #SBATCH directives:
    - module purge
    - module load <required modules>
-   - (no cd needed — --chdir already set the working directory)
+   - (no cd needed — the CWD is already the job directory)
 {env_setup}   - {invoke_line}
 
    CRITICAL — PATHS IN THE SCRIPT BODY:
-   Because --chdir sets the working directory to the job directory, ALL files
-   (scripts, data, outputs) are accessible as RELATIVE paths. Use them.
-   NEVER use ~/path or "/home/user/path" syntax in the script body.
-   If you absolutely must reference $HOME, write $HOME/... — bash expands $HOME
-   inside double quotes, but bash does NOT expand ~ inside double quotes.
-   Quoting a tilde ("~/path") makes it a literal relative path segment, which
-   will be appended to the current directory and will not find the file.
+   The CWD is already the job directory (set by the submission harness).
+   ALL files (scripts, data, outputs) are accessible as RELATIVE paths.
+   Use ONLY relative paths.  Examples:
+     julia --project=. scripts/run.jl      (NOT ~/clusterpilot_jobs/.../scripts/run.jl)
+     python train.py                        (NOT $HOME/.../train.py)
+   NEVER use ~/path or $HOME/path or /home/user/path in the script body.
+   Bash does NOT expand ~ inside double quotes — it becomes a literal
+   directory name, creating broken paths like /job-dir/~/more/path.
 
    CRITICAL — NO POSITIONAL ARGUMENTS: sbatch does NOT pass $1, $2, $@, etc. when
    submitting with `sbatch script.sh`. These variables are ALWAYS EMPTY at runtime.

@@ -151,6 +151,7 @@ class JobsView(Static):
         try:
             await download(
                 profile.host, profile.user, job.working_dir, local,
+                excludes=list(app._config.defaults.download_excludes),
                 progress_callback=lambda line: log_widget.write(f"[#7a6a50]{line}[/]"),
             )
             log_widget.write(f"[#6ed86e]✓ Synced to {local}[/]")

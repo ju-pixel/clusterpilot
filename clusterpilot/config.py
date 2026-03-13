@@ -78,7 +78,23 @@ _DEFAULT_UPLOAD_EXCLUDES: list[str] = [
     "*.pyc",
     "*.egg-info/",
     ".DS_Store",
+    "CLAUDE.md",
     "clusterpilot_jobs/",   # staging dir created by ClusterPilot itself
+]
+
+# When downloading results, skip files that were part of the uploaded project.
+# Only new files (SLURM logs, data output, etc.) are pulled back.
+_DEFAULT_DOWNLOAD_EXCLUDES: list[str] = [
+    "src/",
+    "docs/",
+    "examples/",
+    "scripts/",
+    "*.toml",
+    "*.md",
+    "*.sh",
+    ".git/",
+    "__pycache__/",
+    ".DS_Store",
 ]
 
 
@@ -88,6 +104,7 @@ class Defaults:
     api_key: str = ""
     poll_interval: int = 300
     upload_excludes: list[str] = field(default_factory=lambda: list(_DEFAULT_UPLOAD_EXCLUDES))
+    download_excludes: list[str] = field(default_factory=lambda: list(_DEFAULT_DOWNLOAD_EXCLUDES))
 
 
 @dataclass
@@ -156,6 +173,7 @@ def _from_dict(data: dict) -> Config:
         api_key=raw_defaults.get("api_key", ""),
         poll_interval=int(raw_defaults.get("poll_interval", 300)),
         upload_excludes=raw_defaults.get("upload_excludes", list(_DEFAULT_UPLOAD_EXCLUDES)),
+        download_excludes=raw_defaults.get("download_excludes", list(_DEFAULT_DOWNLOAD_EXCLUDES)),
     )
 
     clusters = [

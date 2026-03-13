@@ -205,6 +205,7 @@ class PollDaemon:
             await download(
                 profile.host, profile.user,
                 job.working_dir, local_results,
+                excludes=list(self.config.defaults.download_excludes),
             )
             synced = True
             log.info("Results synced for job %s → %s", job.job_id, local_results)
