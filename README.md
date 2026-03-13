@@ -169,16 +169,9 @@ ClusterPilot uses your system `ssh` binary with ControlMaster multiplexing.
 You authenticate once (including MFA if required); all subsequent commands
 reuse the existing socket with sub-second latency.
 
-Add the following `Host` block to `~/.ssh/config` for each cluster:
-
-```
-Host grex
-    HostName yak.hpc.umanitoba.ca
-    ControlMaster auto
-    ControlPath ~/.ssh/cm_%h_%p_%r
-    ControlPersist 4h
-    ServerAliveInterval 60
-```
+**No changes to `~/.ssh/config` are required.** ClusterPilot passes all
+ControlMaster flags directly on the command line. Your existing SSH config
+is left untouched.
 
 ## Terminal colours
 
