@@ -328,6 +328,11 @@ ruff check .    # lint
 - Windows support (WSL2 path handling, no systemd dependency)
 - Cost estimation before submission based on requested resources and account allocation
 
+## Support
+
+ClusterPilot is free and open source. If it saves you time,
+consider [sponsoring development](https://github.com/sponsors/ju-pixel).
+
 ## Licence
 
 MIT - free to use and self-host.
