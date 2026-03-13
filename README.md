@@ -17,7 +17,13 @@ ClusterPilot automates the full local to cluster to local research cycle:
 
 Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, naturally).
 
-![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit.png)
+### F2 — Describe your job and generate a SLURM script
+
+![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit-real.png)
+
+### F1 — Monitor jobs, tail logs in real time, sync results
+
+![ClusterPilot F1 Jobs screen](docs/screenshots/tui-jobs.png)
 
 ## Supported clusters
 
@@ -213,7 +219,7 @@ are approximated as red by the terminal.
 
 | Correct (truecolor) | 16-colour fallback over SSH |
 |---|---|
-| ![Correct colours](docs/screenshots/tui-submit.png) | ![Fallback colours](docs/screenshots/tui-submit-ssh-notruecolor.png) |
+| ![Correct colours](docs/screenshots/tui-submit-real.png) | ![Fallback colours](docs/screenshots/tui-submit-ssh-notruecolor.png) |
 
 ## Mouse support over SSH
 
@@ -232,6 +238,8 @@ you need to run it on a remote Linux workstation, switching that session to an
 X11 fallback (`ssh -X`) may restore mouse support.
 
 ## Notifications (optional)
+
+![ntfy.sh browser view showing ClusterPilot job notifications](docs/screenshots/ntfy-browser.png)
 
 Push notifications are **entirely optional**. If you prefer to just leave
 the TUI open and check job status from the F1 screen, that works perfectly
