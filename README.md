@@ -43,16 +43,12 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 
 ```bash
 pip install clusterpilot
+clusterpilot
 ```
 
-Then run the setup wizard:
-
-```bash
-clusterpilot init
-```
-
-This creates `~/.config/clusterpilot/config.toml` and installs the systemd
-poll daemon (Linux) or equivalent.
+On first run, ClusterPilot creates a starter config at
+`~/.config/clusterpilot/config.toml`, prints its location, and exits.
+Edit it to add your cluster username and account, then run `clusterpilot` again.
 
 ## Configuration
 
@@ -127,8 +123,9 @@ at the project root (one pattern per line, same syntax as rsync `--exclude`).
 ## Usage
 
 ```bash
-clusterpilot          # launch the TUI
-clusterpilot daemon   # run the poll daemon in the foreground
+clusterpilot                 # launch the TUI
+clusterpilot daemon run      # run the poll daemon in the foreground
+clusterpilot daemon install  # install systemd user service (Linux)
 ```
 
 ### TUI screens
@@ -172,7 +169,7 @@ ClusterPilot uses your system `ssh` binary with ControlMaster multiplexing.
 You authenticate once (including MFA if required); all subsequent commands
 reuse the existing socket with sub-second latency.
 
-`clusterpilot init` writes the appropriate `Host` block to `~/.ssh/config`:
+Add the following `Host` block to `~/.ssh/config` for each cluster:
 
 ```
 Host grex
