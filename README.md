@@ -17,7 +17,7 @@ ClusterPilot automates the full local to cluster to local research cycle:
 
 Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, naturally).
 
-<video src="docs/screenshots/clusterpilot-demo.mp4" autoplay loop muted playsinline></video> 
+<video src="https://github.com/user-attachments/assets/7bc688b2-9c35-4215-ae52-04750aaef889" autoplay loop muted playsinline></video>
 
 ### F2 — Describe your job and generate a SLURM script
 
