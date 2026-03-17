@@ -3,6 +3,8 @@
 AI-assisted HPC workflow manager for Compute Canada (DRAC) clusters and the
 University of Manitoba's Grex cluster.
 
+https://juliafrank.net/clusterpilot/
+
 Built by a computational physics PhD student who got tired of doing this manually.
 
 ## What it does
