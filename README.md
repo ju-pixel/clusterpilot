@@ -54,6 +54,15 @@ On first run, ClusterPilot creates a starter config at
 `~/.config/clusterpilot/config.toml`, prints its location, and exits.
 Edit it to add your cluster username and account, then run `clusterpilot` again.
 
+## Updating
+
+```bash
+pip install --upgrade clusterpilot
+```
+
+That's it. Your config at `~/.config/clusterpilot/config.toml` and job history
+are untouched by updates.
+
 ## Configuration
 
 `~/.config/clusterpilot/config.toml`:
