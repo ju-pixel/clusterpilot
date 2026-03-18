@@ -149,7 +149,7 @@ def _build_system_prompt(
     python_line = ", ".join(probe.python_versions) or "(check with: module avail python)"
     account = profile.account or (probe.accounts[0] if probe.accounts else "")
     scratch = profile.expand_scratch()        # ~/... form, for context only
-    storage_note = _cluster_storage_note(profile)
+    storage_note = _cluster_storage_note(profile, probe)
 
     env_setup = _build_env_setup_section(script_env)
 
@@ -378,36 +378,42 @@ def _build_env_setup_section(env: ScriptEnvironment | None) -> str:
     return ""
 
 
-def _cluster_storage_note(profile: ClusterProfile) -> str:
-    """Return a one-paragraph storage guidance blurb for the system prompt.
+def _cluster_storage_note(profile: ClusterProfile, probe: ClusterProbe) -> str:
+    """Return storage guidance for the system prompt.
 
-    The blurb is cluster-type-aware so the AI gets correct advice about
-    $SCRATCH vs $HOME vs $SLURM_TMPDIR without any cluster-specific names
-    being hardcoded elsewhere in the prompt.
+    Uses the probed $SCRATCH value to give accurate advice for any cluster.
+    cluster_type = "drac" adds a hard policy warning on top of the probe result
+    (DRAC home quota is ~50 GB — jobs writing there get quota-killed).
+    All other cluster types are handled by probed $SCRATCH presence alone.
     """
-    ct = profile.cluster_type
-    if ct == "drac":
+    scratch = probe.scratch_env   # non-empty if $SCRATCH is set on the cluster
+
+    if profile.cluster_type == "drac":
+        # DRAC has a hard policy: $SCRATCH is mandatory regardless of size.
+        dest = scratch or "$SCRATCH"
         return (
-            "Storage: ALL job I/O must target $SCRATCH (not $HOME — home quota "
-            "is ~50 GB and not meant for job output). $SLURM_TMPDIR is fast local "
-            "node SSD; use it for temporary files during the run and copy results "
-            "to $SCRATCH before the job ends."
+            f"Storage: ALL job I/O must target $SCRATCH ({dest}) — NEVER $HOME. "
+            "Home quota on DRAC is ~50 GB and jobs writing there will be killed "
+            "by quota. $SLURM_TMPDIR is fast local node SSD; use it for temporary "
+            f"files and copy results to {dest} before the job ends."
         )
-    if ct == "grex":
+
+    if scratch:
+        # Cluster has $SCRATCH — probed directly, no guessing needed.
         return (
-            "Storage: this cluster has NO $SCRATCH environment variable. Write job "
-            "outputs to the job working directory (relative paths, CWD is already "
-            "set by the submission harness) or to $HOME for persistent storage. "
+            f"Storage: this cluster has $SCRATCH at {scratch}. "
+            "Prefer $SCRATCH over $HOME for large job output. "
             "$SLURM_TMPDIR is fast local node disk; use it for temporary files "
-            "and copy results before the job ends."
+            f"and copy results to {scratch} before the job ends."
         )
-    # Generic SLURM cluster — give safe, general advice.
+
+    # No $SCRATCH on this cluster — use job working directory / $HOME.
     return (
-        "Storage: write job outputs to the working directory using relative paths "
-        "(the submission harness has already cd'd into the job directory). "
-        "Check this cluster's documentation for the correct path for large "
-        "persistent output ($SCRATCH, $WORK, or similar may be available). "
-        "Use $SLURM_TMPDIR for temporary files if it is available on this cluster."
+        "Storage: this cluster has no $SCRATCH environment variable. "
+        "Write job outputs to the job working directory (relative paths — "
+        "the submission harness has already cd'd into the job directory) "
+        "or to $HOME for persistent storage. "
+        "Use $SLURM_TMPDIR for temporary files if available on this cluster."
     )
 
 

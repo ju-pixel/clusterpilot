@@ -133,14 +133,21 @@ cluster_type = "generic"         # any other SLURM cluster
 
 | Value | Use for |
 |-------|---------|
-| `generic` | Any SLURM cluster not listed below (default if omitted) |
-| `drac` | Compute Canada / DRAC clusters (Cedar, Narval, Graham, Beluga) |
-| `grex` | University of Manitoba Grex |
+| `generic` | Any SLURM cluster (default if omitted) |
+| `drac` | Compute Canada / DRAC (Cedar, Narval, Graham, Beluga) |
+| `grex` | University of Manitoba Grex (same as `generic` in practice) |
 
-The `cluster_type` controls what cluster-specific advice is injected into the
-AI prompt — things like whether `$SCRATCH` exists, whether `--account` is
-mandatory, and local storage conventions. For `generic`, the AI uses safe
-defaults and advises checking your cluster's documentation for storage paths.
+ClusterPilot probes `$SCRATCH` at connection time, so storage advice in
+generated scripts is accurate for any cluster without manual configuration:
+
+| What the probe finds | Storage advice injected into the AI prompt |
+|---------------------|-------------------------------------------|
+| `$SCRATCH` is set (e.g. `/scratch/jsmith`) | Use `$SCRATCH` for large output; `$SLURM_TMPDIR` for temp files |
+| `$SCRATCH` is unset | Use `$HOME` or the job working directory; `$SLURM_TMPDIR` for temp files |
+| `cluster_type = "drac"` (regardless of probe) | Hard rule: **never** `$HOME` — DRAC home quota is ~50 GB and jobs writing there get killed |
+
+The only reason to set `cluster_type = "drac"` is to get that hard warning.
+For every other cluster, `generic` is correct — the probe handles the rest.
 
 ### Upload and download excludes
 

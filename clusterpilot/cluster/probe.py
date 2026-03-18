@@ -39,6 +39,7 @@ class ClusterProbe:
     accounts: list[str]        # e.g. ["def-stamps"]
     account_max_wall: dict[str, str]   # account → max walltime, "" = no limit
     python_versions: list[str] = field(default_factory=list)  # e.g. ["python/3.11.5"]
+    scratch_env: str = ""      # value of $SCRATCH on the cluster, "" if unset
 
     def gpu_partitions(self) -> list[PartitionInfo]:
         """Return partitions that have GPU GRES."""
@@ -97,7 +98,7 @@ async def probe_cluster(
         if cached is not None:
             return cached
 
-    sinfo_out, julia_out, python_out, sacctmgr_out = await _fetch_all(host, user)
+    sinfo_out, julia_out, python_out, sacctmgr_out, scratch_out = await _fetch_all(host, user)
 
     result = ClusterProbe(
         cluster_name=cluster_name,
@@ -107,6 +108,7 @@ async def probe_cluster(
         python_versions=_parse_python_modules(python_out),
         accounts=_parse_accounts(sacctmgr_out),
         account_max_wall=_parse_max_wall(sacctmgr_out),
+        scratch_env=scratch_out.strip(),
     )
     save_cache(result)
     return result
@@ -114,8 +116,8 @@ async def probe_cluster(
 
 # ── Remote fetching ───────────────────────────────────────────────────────────
 
-async def _fetch_all(host: str, user: str) -> tuple[str, str, str, str]:
-    """Run all four probe commands concurrently."""
+async def _fetch_all(host: str, user: str) -> tuple[str, str, str, str, str]:
+    """Run all probe commands concurrently."""
     return await asyncio.gather(
         run_remote(host, user, "sinfo -o '%P %l %G %D' --noheader"),
         run_remote(host, user, "module avail julia 2>&1"),
@@ -125,6 +127,7 @@ async def _fetch_all(host: str, user: str) -> tuple[str, str, str, str]:
             f"sacctmgr show user {user} withassoc "
             f"format=account,maxjobs,maxwall -p --noheader",
         ),
+        run_remote(host, user, "echo $SCRATCH"),
     )
 
 
@@ -298,4 +301,5 @@ def _from_dict(data: dict) -> ClusterProbe:
         python_versions=data.get("python_versions", []),   # backwards-compat
         accounts=data["accounts"],
         account_max_wall=data["account_max_wall"],
+        scratch_env=data.get("scratch_env", ""),           # backwards-compat
     )
