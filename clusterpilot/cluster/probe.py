@@ -212,6 +212,77 @@ def _parse_max_wall(output: str) -> dict[str, str]:
     return result
 
 
+# ── Live availability (not cached) ────────────────────────────────────────────
+
+@dataclass
+class PartitionAvailability:
+    idle: int
+    total: int
+    state: str   # "up", "down", "drain", "inactive"
+
+
+async def fetch_availability(host: str, user: str) -> dict[str, PartitionAvailability]:
+    """Return partition → live availability. Not cached — always fresh.
+
+    Uses ``sinfo -o '%P %F %a' --noheader`` which reports
+    Allocated/Idle/Other/Total node counts and partition state per row.
+    Aggregates across multiple rows for the same partition name
+    (heterogeneous partitions can appear on more than one line).
+    """
+    try:
+        output = await run_remote(host, user, "sinfo -o '%P %F %a' --noheader")
+        return _parse_availability(output)
+    except Exception:
+        return {}
+
+
+def _parse_availability(output: str) -> dict[str, PartitionAvailability]:
+    """Parse ``sinfo -o '%P %F %a' --noheader`` output.
+
+    Example lines::
+
+        stamps   2/1/0/8   up
+        stamps-b 0/0/3/3   drain
+        skylake  10/20/0/40 up
+        lgpu     0/0/2/2   down
+    """
+    result: dict[str, PartitionAvailability] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[0].rstrip("*")
+        state = parts[2].strip() if len(parts) >= 3 else "up"
+        try:
+            counts = parts[1].split("/")
+            if len(counts) >= 4:
+                idle_val = int(counts[1])
+                total_val = int(counts[3])
+            elif len(counts) >= 2:
+                # Fallback: A/I only (older SLURM)
+                idle_val = int(counts[1])
+                total_val = int(counts[0]) + idle_val
+            else:
+                continue
+        except (ValueError, IndexError):
+            continue
+
+        if name in result:
+            existing = result[name]
+            # For state: propagate non-up states; drain/down take priority over up.
+            merged_state = state if existing.state == "up" else existing.state
+            result[name] = PartitionAvailability(
+                idle=existing.idle + idle_val,
+                total=existing.total + total_val,
+                state=merged_state,
+            )
+        else:
+            result[name] = PartitionAvailability(
+                idle=idle_val, total=total_val, state=state
+            )
+    return result
+
+
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
 def _cache_path(cluster_name: str) -> Path:

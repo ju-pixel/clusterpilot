@@ -32,8 +32,9 @@ poll_interval = 300           # seconds between job status checks
 name = "grex"
 host = "yak.hpc.umanitoba.ca"
 user = ""          # your Grex username
-account = ""       # your SLURM account, e.g. def-stamps
+account = ""       # your SLURM account, e.g. def-stamps (leave blank if not required)
 scratch = "$HOME/clusterpilot_jobs"
+cluster_type = "grex"   # "drac", "grex", or "generic" (any other SLURM cluster)
 
 [notifications]
 backend = "ntfy"
@@ -50,7 +51,8 @@ class ClusterProfile:
     host: str
     user: str
     account: str
-    scratch: str   # may contain $HOME — call expand_scratch() to resolve
+    scratch: str        # may contain $HOME — call expand_scratch() to resolve
+    cluster_type: str = "generic"   # "drac", "grex", or "generic"
 
     def expand_scratch(self) -> str:
         """Return scratch path suitable for use in remote commands.
@@ -191,6 +193,7 @@ def _from_dict(data: dict) -> Config:
             user=c.get("user", ""),
             account=c.get("account", ""),
             scratch=c.get("scratch", "$HOME/clusterpilot_jobs"),
+            cluster_type=c.get("cluster_type", "generic"),
         )
         for c in data.get("clusters", [])
     ]

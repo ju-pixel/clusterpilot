@@ -42,6 +42,7 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 - System `ssh` binary with ControlMaster support (standard on macOS/Linux)
 - An API key for your chosen AI provider (currently Anthropic)
 - (Optional) A free [ntfy.sh](https://ntfy.sh) topic for push notifications
+- **Terminal:** Konsole, Alacritty, or Kitty on Linux; iTerm2 on macOS. macOS Terminal.app is not supported.
 
 ## Installation
 
@@ -186,6 +187,21 @@ reuse the existing socket with sub-second latency.
 ControlMaster flags directly on the command line. Your existing SSH config
 is left untouched.
 
+## Terminal emulator compatibility
+
+**Recommended terminals:**
+
+| Platform | Recommended | Works with caveats | Avoid |
+|----------|-------------|-------------------|-------|
+| Linux    | Konsole, Alacritty, Kitty | GNOME Terminal | — |
+| macOS    | iTerm2 | — | Terminal.app |
+| Windows  | Windows Terminal (WSL2) | — | cmd, PowerShell |
+
+**macOS Terminal.app** renders many Unicode symbols (arrows, icons, box-drawing
+variants) at double character width, which breaks the TUI layout. This is a
+long-standing Terminal.app bug, not a ClusterPilot issue. Use iTerm2 on macOS
+— it is free and handles everything correctly.
+
 ## Terminal colours
 
 ClusterPilot uses 24-bit RGB colour throughout. Most modern terminal emulators
@@ -193,8 +209,8 @@ support this, but the `COLORTERM` environment variable must be set to `truecolor
 for Textual to detect it. Without it, colours fall back to the nearest 16 ANSI
 colours, which can look significantly different from the intended amber palette.
 
-**macOS (iTerm2, Terminal.app):** truecolor works out of the box in a local
-window. No action needed.
+**macOS (iTerm2):** truecolor works out of the box in a local window.
+No action needed.
 
 **Over SSH:** the `COLORTERM` variable is often not forwarded to the remote
 session. Fix this by adding the following to `~/.bashrc` (or `~/.zshrc`) on

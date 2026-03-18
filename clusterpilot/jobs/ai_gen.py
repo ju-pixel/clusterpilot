@@ -149,6 +149,7 @@ def _build_system_prompt(
     python_line = ", ".join(probe.python_versions) or "(check with: module avail python)"
     account = profile.account or (probe.accounts[0] if probe.accounts else "")
     scratch = profile.expand_scratch()        # ~/... form, for context only
+    storage_note = _cluster_storage_note(profile)
 
     env_setup = _build_env_setup_section(script_env)
 
@@ -223,6 +224,17 @@ Match module versions to what is available on this cluster.
     else:
         invoke_line = "The actual job command(s)"
 
+    account_directive = (
+        f"   --account        {account}"
+        if account
+        else "   --account        (omit — this cluster does not require an account)"
+    )
+    account_rule = (
+        f"--account        {account}"
+        if account
+        else "(no --account directive — not required on this cluster)"
+    )
+
     return f"""\
 You generate SLURM job submission scripts for the {profile.name} cluster \
 ({profile.host}). Output ONLY the bash script — no explanation, no markdown \
@@ -235,16 +247,16 @@ Partitions:
 
 Available Julia: {julia_line}
 Available Python: {python_line}
-User account: {account}
+User account: {account or "(none configured)"}
 {job_dir_note}
-
+{storage_note}
 SSH login: {profile.user}@{profile.host}
 {manifest_section}{script_section}
 ═══ SCRIPT RULES ═══
 
 1. Always include these #SBATCH directives:
    --job-name       short, lowercase, no spaces (derived from the description)
-   --account        {account}
+   {account_directive}
    --partition      {partition_rule}
    --nodes          usually 1 unless the job explicitly needs multiple
    --ntasks-per-node  match to CPUs needed
@@ -265,8 +277,8 @@ SSH login: {profile.user}@{profile.host}
    The % tokens are relative to the CWD. Any path prefix breaks log discovery.
 
 2. For GPU jobs, add:
-   --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s on stamps
-   Choose the partition that has the requested GPU type.
+   --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s
+   Choose the partition that has the requested GPU type from the partition list above.
 
 3. After #SBATCH directives:
    - module purge
@@ -295,9 +307,8 @@ SSH login: {profile.user}@{profile.host}
 4. Be conservative with walltime: multiply the user's estimate by 1.3 and
    round up to the nearest hour, but never exceed the partition's time limit.
 
-5. If the user mentions GPU count or type, pick the partition that has it.
-   Prefer stamps over stamps-b unless the user asks for shorter queue.
-   Prefer lgpu (L40S) for inference or memory-bandwidth workloads.
+5. If the user mentions GPU count or type, pick the GPU partition from the list
+   above that matches. Use the exact --gres syntax shown for that partition.
 
 6. Do not invent modules. Only load what is available on this cluster.
 
@@ -365,6 +376,39 @@ def _build_env_setup_section(env: ScriptEnvironment | None) -> str:
             )
 
     return ""
+
+
+def _cluster_storage_note(profile: ClusterProfile) -> str:
+    """Return a one-paragraph storage guidance blurb for the system prompt.
+
+    The blurb is cluster-type-aware so the AI gets correct advice about
+    $SCRATCH vs $HOME vs $SLURM_TMPDIR without any cluster-specific names
+    being hardcoded elsewhere in the prompt.
+    """
+    ct = profile.cluster_type
+    if ct == "drac":
+        return (
+            "Storage: ALL job I/O must target $SCRATCH (not $HOME — home quota "
+            "is ~50 GB and not meant for job output). $SLURM_TMPDIR is fast local "
+            "node SSD; use it for temporary files during the run and copy results "
+            "to $SCRATCH before the job ends."
+        )
+    if ct == "grex":
+        return (
+            "Storage: this cluster has NO $SCRATCH environment variable. Write job "
+            "outputs to the job working directory (relative paths, CWD is already "
+            "set by the submission harness) or to $HOME for persistent storage. "
+            "$SLURM_TMPDIR is fast local node disk; use it for temporary files "
+            "and copy results before the job ends."
+        )
+    # Generic SLURM cluster — give safe, general advice.
+    return (
+        "Storage: write job outputs to the working directory using relative paths "
+        "(the submission harness has already cd'd into the job directory). "
+        "Check this cluster's documentation for the correct path for large "
+        "persistent output ($SCRATCH, $WORK, or similar may be available). "
+        "Use $SLURM_TMPDIR for temporary files if it is available on this cluster."
+    )
 
 
 def _format_partitions(probe: ClusterProbe) -> str:

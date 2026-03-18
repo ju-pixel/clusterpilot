@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 import aiosqlite
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Input, Label, Static, TabbedContent, TabPane
@@ -14,6 +15,7 @@ from clusterpilot.config import Config
 from clusterpilot.db import DB_PATH, get_total_usage, init_db
 from clusterpilot.jobs.ai_gen import _PRICING
 from clusterpilot.jobs.daemon import PollDaemon
+from clusterpilot.config import ClusterProfile
 from clusterpilot.ssh.connection import is_connected, open_connection
 from clusterpilot.tui.config_view import ConfigView
 from clusterpilot.tui.jobs import JobsView
@@ -29,15 +31,22 @@ class TitleBar(Static):
         self._cost_text = ""
         super().__init__(self._build_content())
 
+    def _cluster_indicator(self, c: "ClusterProfile") -> str:
+        if is_connected(c.host, c.user):
+            return f"[#6ed86e]●[/] {c.name}"
+        return f"[#3a3020]●[/] [#7a6a50]{c.name}[/]"
+
     def _build_content(self) -> str:
-        clusters = "  ".join(
-            f"[#6ed86e]●[/] {c.name}" for c in self._config.clusters
-        )
+        clusters = "  ".join(self._cluster_indicator(c) for c in self._config.clusters)
         cost = f"  [#3d3520]│[/]  {self._cost_text}" if self._cost_text else ""
         return (
             f"[bold #e8a020]◈ CLUSTERPILOT[/]  [#7a6a50]v0.1.1[/]  "
             f"[#3d3520]│[/]  {clusters}{cost}"
         )
+
+    def refresh_status(self) -> None:
+        """Re-render with current SSH connection state for each cluster."""
+        self.update(self._build_content())
 
     def set_cost(self, cost_usd: float) -> None:
         self._cost_text = f"[#7a6a50]API spend:[/] [#e8a020]${cost_usd:.4f}[/]"
@@ -147,7 +156,7 @@ JobsView {
 #queue-panel {
     width: 34;
     height: 1fr;
-    border: tall $amberDim;
+    border: solid $amberDim;
     background: $bg;
 }
 
@@ -183,7 +192,7 @@ ListView > ListItem.--highlight {
 
 #meta-panel {
     height: 10;
-    border: tall $amberDim;
+    border: solid $amberDim;
     background: $bg;
     padding: 0 1;
 }
@@ -205,7 +214,7 @@ ListView > ListItem.--highlight {
 #log-panel {
     height: 1fr;
     margin-top: 1;
-    border: tall $amberDim;
+    border: solid $amberDim;
     background: $bg;
 }
 
@@ -245,22 +254,44 @@ SubmitView {
 }
 
 #describe-panel {
-    border: tall $amberDim;
+    border: solid $amberDim;
     background: $bg;
-    height: auto;
-    padding: 1;
+    height: 1fr;
+    padding: 0 1;
 }
 
-#describe-title {
-    color: $amber;
-    text-style: bold;
-    margin-bottom: 1;
+#cluster-row {
+    height: auto;
+    margin-bottom: 0;
+    layout: horizontal;
+}
+
+#cluster-select {
+    width: 1fr;
+    background: $bg3;
+    border: solid $border2;
+    color: $white;
+}
+
+#cluster-select:focus {
+    border: solid $amberDim;
 }
 
 #partition-row {
     height: auto;
-    margin-bottom: 1;
+    margin-bottom: 0;
     layout: horizontal;
+}
+
+#partition-select {
+    width: 1fr;
+    background: $bg3;
+    border: solid $border2;
+    color: $white;
+}
+
+#partition-select:focus {
+    border: solid $amberDim;
 }
 
 #project-dir-row {
@@ -277,19 +308,19 @@ SubmitView {
 
 #extra-files-row {
     height: auto;
-    margin-bottom: 1;
+    margin-bottom: 0;
     layout: horizontal;
 }
 
 #extra-files-input {
     width: 1fr;
     background: $bg3;
-    border: tall $border2;
+    border: solid $border2;
     color: $white;
 }
 
 #extra-files-input:focus {
-    border: tall $amberDim;
+    border: solid $amberDim;
 }
 
 .field-label {
@@ -300,30 +331,14 @@ SubmitView {
     content-align: left middle;
 }
 
-#partition-select {
-    width: 1fr;
-    background: $bg3;
-    border: tall $border2;
-    color: $white;
-}
-
-#partition-select:focus {
-    border: tall $amberDim;
-}
-
 Select > SelectCurrent {
     background: $bg3;
     color: $white;
-    border: tall $border2;
-}
-
-Select.-focus > SelectCurrent {
-    border: tall $amberDim;
 }
 
 SelectOverlay {
     background: $bg2;
-    border: tall $amberDim;
+    border: solid $amberDim;
 }
 
 SelectOverlay > OptionList {
@@ -339,43 +354,53 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
 #project-dir-input {
     width: 1fr;
     background: $bg3;
-    border: tall $border2;
+    border: solid $border2;
     color: $white;
 }
 
 #project-dir-input:focus {
-    border: tall $amberDim;
+    border: solid $amberDim;
 }
 
 #script-path-input {
     width: 1fr;
     background: $bg3;
-    border: tall $border2;
+    border: solid $border2;
     color: $white;
 }
 
 #script-path-input:focus {
-    border: tall $amberDim;
+    border: solid $amberDim;
 }
 
 #field-help {
     height: auto;
-    max-height: 8;
-    margin-top: 1;
+    max-height: 3;
+    margin-top: 0;
+    margin-bottom: 0;
     padding: 0 1;
     color: $dim;
     background: $bg;
 }
 
+#describe-label {
+    color: $amber;
+    text-style: bold;
+    margin-top: 1;
+    margin-bottom: 0;
+    padding: 0 1;
+}
+
 #description-input {
-    border: tall $border2;
+    border: solid $border2;
     background: $bg3;
     color: $white;
-    height: 7;
+    height: 4;
+    margin-top: 0;
 }
 
 #description-input:focus {
-    border: tall $amberDim;
+    border: solid $amberDim;
 }
 
 #generate-row {
@@ -388,7 +413,7 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
 #btn-generate {
     background: $amberLo;
     color: $amber;
-    border: tall $amberDim;
+    border: solid $amberDim;
     text-style: bold;
 }
 
@@ -402,7 +427,7 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
 }
 
 #script-panel {
-    border: tall $greenDim;
+    border: solid $greenDim;
     background: $bg;
     height: 1fr;
 }
@@ -433,19 +458,24 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
     layout: horizontal;
 }
 
+/* All four action buttons: equal width, no margins between them */
+#btn-submit,
+#btn-edit-script,
+#btn-save,
+#btn-clear {
+    width: 1fr;
+    margin: 0;
+}
+
 #btn-submit {
     background: $greenDim;
     color: $green;
-    border: tall $green;
+    border: solid $green;
     text-style: bold;
-    width: 2fr;
 }
 
 #btn-submit:hover { background: #1a5a1a; }
-#btn-submit:disabled { background: $dimmer; color: $dim; border: tall $dimmer; }
-#btn-edit-script { width: 1fr; }
-#btn-save { width: 1fr; }
-#btn-clear { width: 1fr; }
+#btn-submit:disabled { background: $dimmer; color: $dim; border: solid $dimmer; }
 
 /* ── Config view ────────────────────────── */
 ConfigView {
@@ -457,7 +487,7 @@ ConfigView {
 }
 
 .cfg-section {
-    border: tall $amberDim;
+    border: solid $amberDim;
     background: $bg;
     padding: 1;
     margin-bottom: 1;
@@ -500,13 +530,13 @@ FileExplorer.-visible {
 
 #explorer-path-input {
     background: $bg3;
-    border: tall $border2;
+    border: solid $border2;
     color: $white;
     height: 3;
 }
 
 #explorer-path-input:focus {
-    border: tall $amberDim;
+    border: solid $amberDim;
 }
 
 #explorer-tree {
@@ -541,12 +571,12 @@ DirectoryTree .--highlight {
 Button {
     background: $bg3;
     color: $amber;
-    border: tall $amberDim;
+    border: solid $amberDim;
     margin-right: 1;
 }
 
 Button:hover { background: $amberLo; }
-Button.-error { color: $red; border: tall $redDim; background: $redDim; }
+Button.-error { color: $red; border: solid $redDim; background: $redDim; }
 """
 
     def __init__(self, config: Config, db_path: Path = DB_PATH) -> None:
@@ -572,6 +602,7 @@ Button.-error { color: $red; border: tall $redDim; background: $redDim; }
         async with aiosqlite.connect(self._db_path) as db:
             await init_db(db)
         await self._ensure_connections()
+        self.query_one(TitleBar).refresh_status()
         self._start_daemon()
         await self._refresh_cost()
         self.set_interval(30, self._refresh_cost)
@@ -582,6 +613,7 @@ Button.-error { color: $red; border: tall $redDim; background: $redDim; }
         # on the worker means this either cancels the in-flight first attempt
         # and restarts it, or re-runs from cache if the first already finished.
         self.query_one(SubmitView)._populate_partitions()
+        self._check_for_update()
 
     async def _refresh_cost(self) -> None:
         """Update the title bar with cumulative API spend."""
@@ -592,6 +624,20 @@ Button.-error { color: $red; border: tall $redDim; background: $redDim; }
         inp_rate, out_rate = _PRICING.get(self._config.model, (3.00, 15.00))
         cost = (inp * inp_rate + out * out_rate) / 1_000_000
         self.query_one(TitleBar).set_cost(cost)
+
+    @work(thread=False)
+    async def _check_for_update(self) -> None:
+        """Check PyPI for a newer release and notify the user if one exists."""
+        from clusterpilot.update import check_for_update
+        latest = await check_for_update()
+        if latest:
+            self.notify(
+                f"ClusterPilot {latest} is available — "
+                "run: pip install --upgrade clusterpilot",
+                title="Update available",
+                severity="information",
+                timeout=15,
+            )
 
     async def _ensure_connections(self) -> None:
         for profile in self._config.clusters:

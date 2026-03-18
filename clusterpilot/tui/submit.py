@@ -17,7 +17,7 @@ from textual.events import DescendantFocus
 from textual.suggester import Suggester
 from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
-from clusterpilot.cluster.probe import probe_cluster
+from clusterpilot.cluster.probe import PartitionAvailability, fetch_availability, probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
@@ -180,7 +180,13 @@ class SubmitView(Static):
     def compose(self) -> ComposeResult:
         with Vertical(id="submit-left"):
             with Vertical(id="describe-panel"):
-                yield Label("═ DESCRIBE YOUR JOB ", id="describe-title")
+                with Horizontal(id="cluster-row"):
+                    yield Label("CLUSTER", classes="field-label")
+                    yield Select(
+                        [],
+                        prompt="Select a cluster…",
+                        id="cluster-select",
+                    )
 
                 with Horizontal(id="partition-row"):
                     yield Label("PARTITION", classes="field-label")
@@ -214,6 +220,7 @@ class SubmitView(Static):
                         id="extra-files-input",
                     )
 
+                yield Label("DESCRIBE YOUR JOB", id="describe-label")
                 yield TextArea(
                     id="description-input",
                     language=None,
@@ -233,18 +240,40 @@ class SubmitView(Static):
                     yield Static(_EMPTY_HINT, id="script-display")
 
             with Horizontal(id="submit-actions"):
-                yield Button(
-                    "⚡  UPLOAD + SUBMIT",
-                    id="btn-submit",
-                    disabled=True,
-                )
-                yield Button("✎  EDIT", id="btn-edit-script", disabled=True)
-                yield Button("⬇  SAVE", id="btn-save", disabled=True)
-                yield Button("✕  CLEAR", id="btn-clear", disabled=True)
+                yield Button("SUBMIT", id="btn-submit", disabled=True)
+                yield Button("EDIT", id="btn-edit-script", disabled=True)
+                yield Button("SAVE", id="btn-save", disabled=True)
+                yield Button("CLEAR", id="btn-clear", disabled=True)
 
     def on_mount(self) -> None:
         self._generated_script = ""
+        self._partition_availability: dict[str, PartitionAvailability] = {}
+        self._populate_cluster_select()
         self._populate_partitions()
+
+    def _populate_cluster_select(self) -> None:
+        """Fill the cluster Select from the loaded config."""
+        app = cast("ClusterPilotApp", self.app)
+        clusters = app._config.clusters
+        if not clusters:
+            return
+        select = self.query_one("#cluster-select", Select)
+        options = [(c.name, c.name) for c in clusters]
+        select.set_options(options)
+        # Default to the first cluster.
+        select.value = clusters[0].name
+
+    def _selected_profile(self):
+        """Return the ClusterProfile for the currently selected cluster."""
+        app = cast("ClusterPilotApp", self.app)
+        if not app._config.clusters:
+            return None
+        select = self.query_one("#cluster-select", Select)
+        if select.value is not Select.BLANK:
+            profile = app._config.get_cluster(str(select.value))
+            if profile is not None:
+                return profile
+        return app._config.clusters[0]
 
     def _get_project_dir_path(self) -> Path | None:
         """Return the resolved PROJECT DIR path, or None if unset/invalid."""
@@ -268,15 +297,57 @@ class SubmitView(Static):
                 return
         help_widget.update(_HELP_DEFAULT)
 
+    # ── Cluster selection ──────────────────────────────────────────────────────
+
+    @on(Select.Changed, "#cluster-select")
+    def on_cluster_changed(self, event: Select.Changed) -> None:
+        """Re-probe partitions whenever the user picks a different cluster."""
+        if event.value is not Select.BLANK:
+            self._partition_availability = {}
+            self.query_one("#partition-select", Select).set_options([])
+            self._populate_partitions()
+
+    # ── Partition selection ────────────────────────────────────────────────────
+
+    @on(Select.Changed, "#partition-select")
+    def on_partition_changed(self, event: Select.Changed) -> None:
+        """Warn the user about partition state or saturation on selection."""
+        if event.value is Select.BLANK:
+            return
+        name = str(event.value)
+        pa = self._partition_availability.get(name)
+        if pa is None:
+            return
+        if pa.state == "down":
+            self.app.notify(
+                f"Partition '{name}' is DOWN ({pa.total} nodes) — "
+                "job submission will be rejected.",
+                severity="error",
+                timeout=10,
+            )
+        elif pa.state == "drain":
+            self.app.notify(
+                f"Partition '{name}' is draining ({pa.total} nodes) — "
+                "no new jobs will start until it returns to service.",
+                severity="warning",
+                timeout=10,
+            )
+        elif pa.idle == 0:
+            self.app.notify(
+                f"Partition '{name}' has no idle nodes (0/{pa.total}) — "
+                "your job will queue. Select another partition to start immediately.",
+                severity="warning",
+                timeout=10,
+            )
+
     # ── Partition probe ────────────────────────────────────────────────────────
 
     @work(thread=False, exclusive=True)
     async def _populate_partitions(self) -> None:
         """Probe the cluster and fill the partition Select widget."""
-        app = cast("ClusterPilotApp", self.app)
-        if not app._config.clusters:
+        profile = self._selected_profile()
+        if profile is None:
             return
-        profile = app._config.clusters[0]
         select = self.query_one("#partition-select", Select)
         try:
             probe = await probe_cluster(profile.name, profile.host, profile.user)
@@ -284,14 +355,28 @@ class SubmitView(Static):
             self.app.notify(f"Partition probe failed: {exc}", severity="warning")
             return
 
+        # Fetch live partition availability (not cached — always fresh).
+        avail = await fetch_availability(profile.host, profile.user)
+        self._partition_availability = avail
+
         # GPU partitions first (most ClusterPilot users need GPU), then CPU.
         ordered = probe.gpu_partitions() + probe.cpu_partitions()
         options: list[tuple[str, str]] = []
         for p in ordered:
-            if p.gres:
-                label = f"{p.name}  (GPU: {p.gres}  max {p.max_time})"
+            pa = avail.get(p.name)
+            if pa is None:
+                avail_str = ""
+            elif pa.state in ("down", "drain"):
+                avail_str = f"  [{pa.state.upper()}  {pa.idle}/{pa.total} nodes]"
+            elif pa.idle == 0:
+                avail_str = f"  [BUSY  0/{pa.total} nodes]"
             else:
-                label = f"{p.name}  (CPU  max {p.max_time})"
+                avail_str = f"  [{pa.idle}/{pa.total} idle]"
+
+            if p.gres:
+                label = f"{p.name}  (GPU: {p.gres}  max {p.max_time}){avail_str}"
+            else:
+                label = f"{p.name}  (CPU  max {p.max_time}){avail_str}"
             options.append((label, p.name))
 
         if options:
@@ -325,11 +410,10 @@ class SubmitView(Static):
     @work(thread=False, exclusive=True)
     async def _stream_script(self, description: str) -> None:
         app = cast("ClusterPilotApp", self.app)
-        if not app._config.clusters:
+        profile = self._selected_profile()
+        if profile is None:
             self.app.notify("No clusters configured.", severity="error")
             return
-
-        profile = app._config.clusters[0]
 
         # Hard partition constraint from picker.
         partition_select = self.query_one("#partition-select", Select)
@@ -460,7 +544,10 @@ class SubmitView(Static):
     async def _do_submit(self) -> None:
         app = cast("ClusterPilotApp", self.app)
         script = self._generated_script
-        profile = app._config.clusters[0]
+        profile = self._selected_profile()
+        if profile is None:
+            self.app.notify("No cluster selected.", severity="error")
+            return
 
         job_name  = _extract(script, "job-name",  f"cpjob_{int(time.time())}")
         partition = _extract(script, "partition",  "skylake")
@@ -646,10 +733,15 @@ _EMPTY_HINT = (
 
 _HELP_DEFAULT = "[#7a6a50]Tab into any field for contextual tips.[/]"
 
+_HELP_CLUSTER = (
+    "[#e8a020]CLUSTER[/]  [#7a6a50]Select the cluster to submit your job to. "
+    "Clusters are loaded from your config file. "
+    "Changing cluster re-probes partitions automatically.[/]"
+)
+
 _HELP_PARTITION = (
     "[#e8a020]PARTITION[/]  [#7a6a50]Select the SLURM partition for your job. "
     "GPU partitions are listed first — pick one your account has access to. "
-    "If unsure, use your group's dedicated partition (e.g. stamps, lgpu). "
     "sbatch will return a clear error if you pick a partition you cannot use.[/]"
 )
 
@@ -686,6 +778,7 @@ _HELP_DESCRIPTION = (
 )
 
 _HELP_MAP = {
+    "cluster-select": _HELP_CLUSTER,
     "partition-select": _HELP_PARTITION,
     "project-dir-input": _HELP_PROJECT_DIR,
     "script-path-input": _HELP_SCRIPT_PATH,
