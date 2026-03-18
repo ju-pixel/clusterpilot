@@ -40,7 +40,7 @@ class TitleBar(Static):
         clusters = "  ".join(self._cluster_indicator(c) for c in self._config.clusters)
         cost = f"  [#3d3520]│[/]  {self._cost_text}" if self._cost_text else ""
         return (
-            f"[bold #e8a020]◈ CLUSTERPILOT[/]  [#7a6a50]v0.1.1[/]  "
+            f"[bold #e8a020]◈ CLUSTERPILOT[/]  [#7a6a50]v0.1.2[/]  "
             f"[#3d3520]│[/]  {clusters}{cost}"
         )
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clusterpilot"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI-assisted HPC workflow manager for SLURM clusters"
 readme = "README.md"
 license = { text = "MIT" }
