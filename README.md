@@ -1,7 +1,8 @@
 # ClusterPilot
 
-AI-assisted HPC workflow manager for Compute Canada (DRAC) clusters and the
-University of Manitoba's Grex cluster.
+AI-assisted SLURM workflow manager for HPC clusters worldwide.
+
+Generate, submit, and monitor SLURM jobs on any HPC cluster from a terminal UI.
 
 https://juliafrank.net/clusterpilot/
 
