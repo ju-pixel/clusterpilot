@@ -339,7 +339,7 @@ ruff check .    # lint
 - Hosted tier with managed API key and web dashboard
 - conda-forge package for HPC environments that prefer conda
 - Windows support (WSL2 path handling, no systemd dependency)
-- Cost estimation before submission based on requested resources and account allocation
+- ~~Cost estimation before submission based on requested resources and account allocation~~ Done.
 
 ## Support
 
