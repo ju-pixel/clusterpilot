@@ -196,10 +196,21 @@ at the project root (one pattern per line, same syntax as rsync `--exclude`).
 ## Usage
 
 ```bash
-clusterpilot                 # launch the TUI
-clusterpilot daemon run      # run the poll daemon in the foreground
-clusterpilot daemon install  # install systemd user service (Linux)
+clusterpilot
 ```
+
+That's it for normal use. The TUI monitors your jobs and syncs results automatically while it is open.
+
+### Background daemon (optional)
+
+If you want job monitoring and notifications to continue after you close the TUI — for example, you submit a job and close your laptop — you can run the poll daemon separately:
+
+```bash
+clusterpilot daemon run      # run in the foreground (Ctrl-C to stop)
+clusterpilot daemon install  # install as a systemd user service (Linux)
+```
+
+The daemon polls `squeue` every 5 minutes, sends ntfy notifications on job events, and syncs results on completion. You do not need it if you keep the TUI open.
 
 ### TUI screens
 
