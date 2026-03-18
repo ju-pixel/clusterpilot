@@ -186,7 +186,7 @@ class SubmitView(Static):
                     yield Label("PARTITION", classes="field-label")
                     yield Select(
                         [],
-                        prompt="Probing cluster…",
+                        prompt="Select a partition…",
                         id="partition-select",
                     )
 
@@ -647,42 +647,42 @@ _EMPTY_HINT = (
 _HELP_DEFAULT = "[#7a6a50]Tab into any field for contextual tips.[/]"
 
 _HELP_PARTITION = (
-    "[#e8a020]PARTITION[/]  [#7a6a50]Select the SLURM partition for your job.\n"
-    "GPU partitions are listed first — pick one your account has access to.\n"
-    "If unsure, use your group's dedicated partition (e.g. stamps, lgpu).\n"
+    "[#e8a020]PARTITION[/]  [#7a6a50]Select the SLURM partition for your job. "
+    "GPU partitions are listed first — pick one your account has access to. "
+    "If unsure, use your group's dedicated partition (e.g. stamps, lgpu). "
     "sbatch will return a clear error if you pick a partition you cannot use.[/]"
 )
 
 _HELP_PROJECT_DIR = (
-    "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional. Local root of your project package.\n"
-    "If set, the entire directory tree is rsynced to the cluster job directory,\n"
-    "minus anything listed in [#f0e8d0].clusterpilot_ignore[/][#7a6a50] at the project root.\n"
+    "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional. Local root of your project package. "
+    "If set, the entire directory tree is rsynced to the cluster job directory, "
+    "minus anything listed in [#f0e8d0].clusterpilot_ignore[/][#7a6a50] at the project root. "
     "Leave blank for self-contained single-script jobs.[/]"
 )
 
 _HELP_SCRIPT_PATH = (
-    "[#e8a020]DRIVER SCRIPT[/]  [#7a6a50]The script the SLURM job will execute.\n"
-    "With PROJECT DIR set: relative path within the project (e.g. scripts/run.jl).\n"
-    "Without PROJECT DIR: absolute or ~/path to a self-contained script.\n"
+    "[#e8a020]DRIVER SCRIPT[/]  [#7a6a50]The script the SLURM job will execute. "
+    "With PROJECT DIR set: relative path within the project (e.g. scripts/run.jl). "
+    "Without PROJECT DIR: absolute or ~/path to a self-contained script. "
     "The AI reads this file to infer modules, GPU count, and resource needs.[/]"
 )
 
 _HELP_EXTRA_FILES = (
-    "[#e8a020]EXTRA FILES[/]  [#7a6a50]Comma-separated files to upload alongside the project,\n"
-    "bypassing .clusterpilot_ignore. Use for per-job input data that normally\n"
-    "lives in an excluded directory — e.g. a precomputed temperature ladder,\n"
-    "a parameter file, or a checkpoint from a previous run.\n"
+    "[#e8a020]EXTRA FILES[/]  [#7a6a50]Comma-separated files to upload alongside the project, "
+    "bypassing .clusterpilot_ignore. Use for per-job input data that normally "
+    "lives in an excluded directory — e.g. a precomputed temperature ladder, "
+    "a parameter file, or a checkpoint from a previous run. "
     "Paths are relative to PROJECT DIR. Leave blank if not needed.[/]"
 )
 
 _HELP_DESCRIPTION = (
-    "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]Tell the AI what this job does.\n"
-    "Runtime and modules are inferred from your driver script and project manifest.\n"
-    "Mention any of the following if known — the AI will make sensible defaults otherwise:\n"
-    "  [#f0e8d0]Compute:[/][#7a6a50]   GPUs needed, or CPU core count\n"
-    "  [#f0e8d0]Memory:[/][#7a6a50]    RAM per node if unusually large (e.g. 128G)\n"
-    "  [#f0e8d0]Walltime:[/][#7a6a50]  estimated run time (e.g. 4 hours, overnight)\n"
-    "  [#f0e8d0]I/O:[/][#7a6a50]       where to read inputs or write outputs[/]"
+    "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]Tell the AI what this job does. "
+    "Runtime and modules are inferred from your driver script and project manifest. "
+    "Mention what you know — the AI will make sensible defaults otherwise. "
+    "[#f0e8d0]Compute:[/][#7a6a50] GPUs or CPU count · "
+    "[#f0e8d0]Memory:[/][#7a6a50] RAM if unusually large (e.g. 128G) · "
+    "[#f0e8d0]Walltime:[/][#7a6a50] estimated run time · "
+    "[#f0e8d0]I/O:[/][#7a6a50] where to read inputs or write outputs[/]"
 )
 
 _HELP_MAP = {

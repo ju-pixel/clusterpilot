@@ -575,6 +575,13 @@ Button.-error { color: $red; border: tall $redDim; background: $redDim; }
         self._start_daemon()
         await self._refresh_cost()
         self.set_interval(30, self._refresh_cost)
+        # Re-trigger partition probe after SSH is confirmed ready.  The probe
+        # is also attempted in SubmitView.on_mount, but that fires before
+        # _ensure_connections establishes the socket, so it fails on first run
+        # (BatchMode=yes returns immediately with no socket).  exclusive=True
+        # on the worker means this either cancels the in-flight first attempt
+        # and restarts it, or re-runs from cache if the first already finished.
+        self.query_one(SubmitView)._populate_partitions()
 
     async def _refresh_cost(self) -> None:
         """Update the title bar with cumulative API spend."""
