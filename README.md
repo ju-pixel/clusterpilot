@@ -31,10 +31,16 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 
 ## Supported clusters
 
-| Cluster | Type | Status |
-|---------|------|--------|
-| Grex (`yak.hpc.umanitoba.ca`) | UManitoba | v0.1 target |
-| Cedar, Narval, Graham, Beluga | Compute Canada / DRAC | post-v1 |
+ClusterPilot works with **any SLURM cluster worldwide**. Grex and Compute Canada
+(DRAC) clusters have built-in profiles with cluster-specific prompt tuning. Every
+other SLURM cluster uses the generic profile, which works correctly for the vast
+majority of schedulers.
+
+| Cluster | `cluster_type` | Notes |
+|---------|---------------|-------|
+| Grex (UManitoba) | `grex` | Built-in profile |
+| Cedar, Narval, Graham, Beluga (DRAC) | `drac` | Built-in profile |
+| NSF ACCESS, ARCHER2, EuroHPC, university clusters, … | `generic` | Works out of the box |
 
 ## Requirements
 
@@ -78,8 +84,9 @@ poll_interval = 300           # seconds between job status checks
 name = "grex"
 host = "yak.hpc.umanitoba.ca"
 user = "your_username"
-account = "def-yoursupervisor"
+account = "def-yoursupervisor"   # leave blank if your cluster does not require one
 scratch = "$HOME/clusterpilot_jobs"
+cluster_type = "grex"            # "drac", "grex", or "generic"
 
 [notifications]
 backend = "ntfy"
@@ -89,6 +96,51 @@ ntfy_server = "https://ntfy.sh"
 
 The API key can also be provided via the `ANTHROPIC_API_KEY` environment
 variable instead of the config file.
+
+### Adding multiple clusters
+
+Add as many `[[clusters]]` blocks as you need. All configured clusters appear
+in the cluster dropdown on the F2 Submit screen and are connected to
+automatically on startup.
+
+```toml
+[[clusters]]
+name = "grex"
+host = "yak.hpc.umanitoba.ca"
+user = "jsmith"
+account = "def-supervisor"
+scratch = "$HOME/clusterpilot_jobs"
+cluster_type = "grex"
+
+[[clusters]]
+name = "narval"
+host = "narval.computecanada.ca"
+user = "jsmith"
+account = "def-supervisor"
+scratch = "/scratch/jsmith"
+cluster_type = "drac"
+
+[[clusters]]
+name = "myuni-hpc"
+host = "hpc.myuniversity.edu"
+user = "jsmith"
+account = ""                     # omit if not required
+scratch = "$HOME/jobs"
+cluster_type = "generic"         # any other SLURM cluster
+```
+
+**`cluster_type` values:**
+
+| Value | Use for |
+|-------|---------|
+| `generic` | Any SLURM cluster not listed below (default if omitted) |
+| `drac` | Compute Canada / DRAC clusters (Cedar, Narval, Graham, Beluga) |
+| `grex` | University of Manitoba Grex |
+
+The `cluster_type` controls what cluster-specific advice is injected into the
+AI prompt — things like whether `$SCRATCH` exists, whether `--account` is
+mandatory, and local storage conventions. For `generic`, the AI uses safe
+defaults and advises checking your cluster's documentation for storage paths.
 
 ### Upload and download excludes
 
@@ -350,7 +402,6 @@ ruff check .    # lint
 - Remote cleanup from F1: delete synced/terminal job directories on the cluster
   to reclaim scratch space without SSH-ing in manually
 - Support for additional AI providers (OpenAI, local models via Ollama, etc.)
-- Graham and Beluga (Compute Canada) cluster profiles
 - Job array support in the submission UI
 - Hosted tier with managed API key and web dashboard
 - conda-forge package for HPC environments that prefer conda
