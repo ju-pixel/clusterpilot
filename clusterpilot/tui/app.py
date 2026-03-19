@@ -577,6 +577,9 @@ Button {
 
 Button:hover { background: $amberLo; }
 Button.-error { color: $red; border: solid $redDim; background: $redDim; }
+#btn-clean { color: $red; border: solid $redDim; }
+#btn-clean:hover { background: $redDim; }
+#btn-clean:disabled { color: $dim; border: solid $dimmer; background: $bg3; }
 """
 
     def __init__(self, config: Config, db_path: Path = DB_PATH) -> None:

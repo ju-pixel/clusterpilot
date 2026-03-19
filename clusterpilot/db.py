@@ -46,10 +46,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at   REAL,
     walltime      TEXT    NOT NULL,  -- requested walltime, e.g. "08:00:00"
     log_path      TEXT,              -- remote stdout log path (found after start)
-    synced        INTEGER NOT NULL DEFAULT 0,  -- 1 once results are downloaded
-    input_tokens  INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    model_used    TEXT    NOT NULL DEFAULT '',
+    synced          INTEGER NOT NULL DEFAULT 0,  -- 1 once results are downloaded
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    model_used      TEXT    NOT NULL DEFAULT '',
+    remote_cleaned  INTEGER NOT NULL DEFAULT 0,  -- 1 once remote working dir deleted
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -83,6 +84,7 @@ class JobRecord:
     input_tokens: int = 0
     output_tokens: int = 0
     model_used: str = ""
+    remote_cleaned: bool = False
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -112,11 +114,12 @@ async def init_db(db: "aiosqlite.Connection") -> None:
     """
     await db.execute(_CREATE_JOBS)
     await db.execute(_CREATE_IDX)
-    # Migration: add usage columns for databases created before this feature.
+    # Migration: add columns for databases created before this feature.
     for col, defn in (
-        ("input_tokens",  "INTEGER NOT NULL DEFAULT 0"),
-        ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
-        ("model_used",    "TEXT NOT NULL DEFAULT ''"),
+        ("input_tokens",   "INTEGER NOT NULL DEFAULT 0"),
+        ("output_tokens",  "INTEGER NOT NULL DEFAULT 0"),
+        ("model_used",     "TEXT NOT NULL DEFAULT ''"),
+        ("remote_cleaned", "INTEGER NOT NULL DEFAULT 0"),
     ):
         try:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -182,6 +185,19 @@ async def update_status(
     await db.execute(
         f"UPDATE jobs SET {', '.join(sets)} WHERE job_id = ? AND cluster_name = ?",
         params,
+    )
+    await db.commit()
+
+
+async def mark_remote_cleaned(
+    db: "aiosqlite.Connection",
+    job_id: str,
+    cluster_name: str,
+) -> None:
+    """Record that the remote working directory has been deleted."""
+    await db.execute(
+        "UPDATE jobs SET remote_cleaned = 1 WHERE job_id = ? AND cluster_name = ?",
+        (job_id, cluster_name),
     )
     await db.commit()
 
@@ -259,7 +275,7 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         row_id, job_id, job_name, cluster_name, host, user, account,
         partition, script_path, working_dir, local_dir, status,
         submitted_at, started_at, finished_at, walltime, log_path, synced,
-        input_tokens, output_tokens, model_used,
+        input_tokens, output_tokens, model_used, remote_cleaned,
     ) = row
     return JobRecord(
         row_id=row_id,
@@ -283,4 +299,5 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         model_used=model_used,
+        remote_cleaned=bool(remote_cleaned),
     )

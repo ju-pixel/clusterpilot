@@ -16,6 +16,7 @@ Usage
 from __future__ import annotations
 
 import asyncio
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -120,3 +121,19 @@ async def run_remote(
         )
 
     return stdout.decode().strip()
+
+
+async def remove_remote_dir(host: str, user: str, path: str) -> None:
+    """Delete a remote directory via ``rm -rf`` over the ControlMaster socket.
+
+    Only operates on paths that contain ``clusterpilot_jobs`` as a safety
+    guard against deleting unintended directories.
+
+    Raises :class:`SSHError` if the path is unsafe or the command fails.
+    """
+    if not path or "clusterpilot_jobs" not in path:
+        raise SSHError(
+            f"Refusing to delete {path!r}: path must contain 'clusterpilot_jobs'. "
+            "Only ClusterPilot job directories can be cleaned from the TUI."
+        )
+    await run_remote(host, user, f"rm -rf {shlex.quote(path)}", timeout=60.0)

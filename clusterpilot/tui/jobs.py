@@ -11,9 +11,9 @@ from textual.containers import ScrollableContainer, Vertical
 from textual.widgets import Button, Label, ListItem, ListView, RichLog, Static
 
 from clusterpilot.cluster.slurm import cancel, cat_log, find_log, tail_log
-from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db
+from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db, mark_remote_cleaned
 from clusterpilot.jobs.ai_gen import _PRICING
-from clusterpilot.ssh.connection import SSHError, is_connected
+from clusterpilot.ssh.connection import SSHError, is_connected, remove_remote_dir
 from clusterpilot.ssh.rsync import download
 
 if TYPE_CHECKING:
@@ -72,6 +72,7 @@ def _format_meta(job: JobRecord) -> str:
                       else f"[#7a6a50]{_elapsed(job)}[/]"),
         ("WALLTIME",  job.walltime),
         ("SYNCED",    "[#6ed86e]yes[/]" if job.synced else "[#7a6a50]no[/]"),
+        ("CLEANED",   "[#6ed86e]yes[/]" if job.remote_cleaned else "[#7a6a50]no[/]"),
         ("AI COST",   cost_str),
     ]
     return "  ".join(f"[#7a6a50]{k}[/] {v}" for k, v in rows[:4]) + "\n" + \
@@ -97,6 +98,7 @@ class JobsView(Static):
                 yield Button("  [K] KILL   ", id="btn-kill",  variant="default")
                 yield Button("  [T] TAIL   ", id="btn-tail",  variant="default")
                 yield Button("  [L] LOG    ", id="btn-log",   variant="default")
+                yield Button("  [C] CLEAN  ", id="btn-clean",  variant="default")
                 yield Button("  [D] DELETE ", id="btn-delete", variant="default")
 
     def on_mount(self) -> None:
@@ -107,6 +109,7 @@ class JobsView(Static):
         self._tail_job_id: str | None = None     # job ID being tailed
         self._tail_log_path: str | None = None   # cached log path for polling
         self._tail_mode: str = "tail"             # "tail" or "full"
+        self._clean_confirm_id: str | None = None  # job_id awaiting clean confirmation
         self.set_interval(10, self._refresh)
         self._refresh()
 
@@ -145,10 +148,15 @@ class JobsView(Static):
         self.query_one("#btn-rsync", Button).disabled = job.status not in (
             "COMPLETED", "RUNNING"
         )
+        # CLEAN: only for terminal jobs that still have a remote directory.
+        self.query_one("#btn-clean", Button).disabled = (
+            not terminal or job.remote_cleaned or not job.working_dir
+        )
 
     def _show_detail(self, job: JobRecord) -> None:
         """Full detail update — metadata + reset the log panel (user selected a new job)."""
         self._stop_tail_polling()
+        self._clean_confirm_id = None
         self._update_meta(job)
         self._log_dirty = False
         log_widget = self.query_one("#log-display", RichLog)
@@ -336,6 +344,59 @@ class JobsView(Static):
         # Start live polling if the job is still running.
         if job.status == "RUNNING":
             self._start_tail_polling(job, log_path, "full")
+
+    # ── Clean remote working directory ────────────────────────────────────────
+
+    @on(Button.Pressed, "#btn-clean")
+    def action_clean(self) -> None:
+        if not self._jobs:
+            return
+        job = self._jobs[self._selected]
+        log_widget = self.query_one("#log-display", RichLog)
+
+        if not job.synced and self._clean_confirm_id != job.job_id:
+            # First press with unsynced results: warn and ask for confirmation.
+            self._clean_confirm_id = job.job_id
+            log_widget.clear()
+            self._log_dirty = True
+            log_widget.write(
+                "[#e8a020]⚠ Results have not been synced to your local machine.[/]\n"
+                "[#7a6a50]Press [C] CLEAN again to delete the remote directory anyway.[/]"
+            )
+            return
+
+        self._clean_confirm_id = None
+        self._do_clean(job)
+
+    @work(thread=False)
+    async def _do_clean(self, job: JobRecord) -> None:
+        app = cast("ClusterPilotApp", self.app)
+        profile = app._config.get_cluster(job.cluster_name)
+        if not profile:
+            self.app.notify("Cluster not in config.", severity="error")
+            return
+        if not is_connected(profile.host, profile.user):
+            self.app.notify("Not connected to cluster.", severity="error")
+            return
+        log_widget = self.query_one("#log-display", RichLog)
+        log_widget.clear()
+        self._log_dirty = True
+        log_widget.write(f"[#e8a020]Deleting {job.working_dir} …[/]")
+        try:
+            await remove_remote_dir(profile.host, profile.user, job.working_dir)
+        except SSHError as exc:
+            log_widget.write(f"[#e05050]Failed: {exc}[/]")
+            self.app.notify(f"Clean failed: {exc}", severity="error")
+            return
+        async with aiosqlite.connect(app._db_path) as db:
+            await init_db(db)
+            await mark_remote_cleaned(db, job.job_id, job.cluster_name)
+        log_widget.write("[#6ed86e]✓ Remote directory deleted.[/]")
+        self.app.notify(
+            f"Cleaned {job.job_name} — remote directory removed.",
+            severity="information",
+        )
+        self._refresh()
 
     # ── Delete job from history ───────────────────────────────────────────────
 
