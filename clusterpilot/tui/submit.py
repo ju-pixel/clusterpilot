@@ -476,11 +476,13 @@ class SubmitView(Static):
             self.query_one("#btn-generate", Button).disabled = False
             return
 
+        provider = app._config.provider
         api_key = app._config.api_key
         api_base_url = app._config.api_base_url
-        if not api_key:
+        if not api_key and provider != "ollama":
+            env_var = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
             self.app.notify(
-                "No API key. Set api_key in config or ANTHROPIC_API_KEY env var.",
+                f"No API key. Set api_key in config or {env_var} env var.",
                 severity="error",
             )
             self.query_one("#btn-generate", Button).disabled = False
@@ -501,6 +503,7 @@ class SubmitView(Static):
                 description, probe, profile,
                 model=app._config.model,
                 api_key=api_key,
+                provider=provider,
                 api_base_url=api_base_url,
                 partition=partition,
                 script_content=script_content,

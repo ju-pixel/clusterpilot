@@ -119,14 +119,13 @@ def _cmd_tui() -> None:
         print("No clusters defined in config. Edit ~/.config/clusterpilot/config.toml.")
         sys.exit(1)
 
-    if not config.api_key:
-        import os
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            print(
-                "Warning: no API key configured. "
-                "Script generation will fail.\n"
-                "Set api_key in config.toml or export ANTHROPIC_API_KEY."
-            )
+    if not config.api_key and config.provider != "ollama":
+        env_var = "OPENAI_API_KEY" if config.provider == "openai" else "ANTHROPIC_API_KEY"
+        print(
+            f"Warning: no API key configured. "
+            "Script generation will fail.\n"
+            f"Set api_key in config.toml or export {env_var}."
+        )
 
     from clusterpilot.db import DB_PATH
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import anthropic
+import openai
 
 from clusterpilot.cluster.probe import ClusterProbe
 from clusterpilot.config import ClusterProfile
@@ -25,10 +26,17 @@ from clusterpilot.jobs.env_detect import ScriptEnvironment
 _MAX_TOKENS = 2048
 
 # Per-million-token pricing (input, output) by model.
+# Unknown models (e.g. local Ollama) default to (0, 0).
 _PRICING: dict[str, tuple[float, float]] = {
+    # Anthropic
     "claude-sonnet-4-6":  (3.00,  15.00),
     "claude-opus-4-6":    (5.00,  25.00),
     "claude-haiku-4-5":   (0.80,   4.00),
+    # OpenAI
+    "gpt-4o":             (2.50,  10.00),
+    "gpt-4o-mini":        (0.15,   0.60),
+    "o4-mini":            (1.10,   4.40),
+    "gpt-4-turbo":       (10.00,  30.00),
 }
 
 
@@ -42,8 +50,11 @@ class ApiUsage:
 
     @property
     def cost_usd(self) -> float:
-        """Estimated cost in USD based on published per-token pricing."""
-        inp_rate, out_rate = _PRICING.get(self.model, (3.00, 15.00))
+        """Estimated cost in USD based on published per-token pricing.
+
+        Returns 0.0 for unknown models (e.g. local Ollama models).
+        """
+        inp_rate, out_rate = _PRICING.get(self.model, (0.00, 0.00))
         return (self.input_tokens * inp_rate + self.output_tokens * out_rate) / 1_000_000
 
 
@@ -56,6 +67,7 @@ async def generate_script(
     model: str,
     api_key: str,
     *,
+    provider: str = "anthropic",
     api_base_url: str = "",
     partition: str = "",
     script_content: str | None = None,
@@ -108,11 +120,31 @@ async def generate_script(
         extra_files=extra_files or [],
         script_env=script_env,
     )
-    client = anthropic.AsyncAnthropic(
-        api_key=api_key,
-        base_url=api_base_url or None,
-    )
 
+    if provider == "anthropic":
+        async for token in _stream_anthropic(system, description, model, api_key, api_base_url, usage):
+            yield token
+    else:
+        # "openai" and "ollama" both use the OpenAI-compatible API.
+        effective_base_url = api_base_url or (
+            "http://localhost:11434/v1" if provider == "ollama" else None
+        )
+        effective_key = api_key or ("ollama" if provider == "ollama" else "")
+        async for token in _stream_openai(system, description, model, effective_key, effective_base_url, usage):
+            yield token
+
+
+# ── Provider streaming helpers ────────────────────────────────────────────────
+
+async def _stream_anthropic(
+    system: str,
+    description: str,
+    model: str,
+    api_key: str,
+    api_base_url: str,
+    usage: ApiUsage | None,
+) -> AsyncIterator[str]:
+    client = anthropic.AsyncAnthropic(api_key=api_key, base_url=api_base_url or None)
     async with client.messages.stream(
         model=model,
         max_tokens=_MAX_TOKENS,
@@ -121,13 +153,39 @@ async def generate_script(
     ) as stream:
         async for token in stream.text_stream:
             yield token
-
-        # Populate usage stats after streaming completes.
         if usage is not None:
             final = await stream.get_final_message()
             usage.model = model
             usage.input_tokens = final.usage.input_tokens
             usage.output_tokens = final.usage.output_tokens
+
+
+async def _stream_openai(
+    system: str,
+    description: str,
+    model: str,
+    api_key: str,
+    api_base_url: str | None,
+    usage: ApiUsage | None,
+) -> AsyncIterator[str]:
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=api_base_url or None)
+    stream = await client.chat.completions.create(
+        model=model,
+        max_tokens=_MAX_TOKENS,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": description},
+        ],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
+        if usage is not None and chunk.usage is not None:
+            usage.model = model
+            usage.input_tokens = chunk.usage.prompt_tokens
+            usage.output_tokens = chunk.usage.completion_tokens
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────

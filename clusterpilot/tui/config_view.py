@@ -46,12 +46,18 @@ def _render(app: "ClusterPilotApp") -> str:
     lines.append("\n")
 
     lines.append("[bold #e8a020]AI SCRIPT GENERATION[/]\n")
+    lines.append(_row("Provider", cfg.provider))
     lines.append(_row("Model", cfg.model))
-    api_display = (
-        f"[#7a6a50]{cfg.api_key[:8]}…[/]"
-        if cfg.api_key else "[#e05050](not set — export ANTHROPIC_API_KEY)[/]"
-    )
+    if cfg.provider == "ollama":
+        api_display = "[#7a6a50](not required for ollama)[/]"
+    elif cfg.api_key:
+        api_display = f"[#7a6a50]{cfg.api_key[:8]}…[/]"
+    else:
+        env_var = "OPENAI_API_KEY" if cfg.provider == "openai" else "ANTHROPIC_API_KEY"
+        api_display = f"[#e05050](not set — export {env_var})[/]"
     lines.append(f"[#7a6a50]{'API key':<20}[/] {api_display}\n")
+    if cfg.api_base_url:
+        lines.append(_row("Base URL", cfg.api_base_url))
     lines.append(_row("Poll interval", f"{cfg.poll_interval}s"))
 
     return "".join(lines)

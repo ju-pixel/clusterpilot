@@ -47,7 +47,7 @@ majority of schedulers.
 
 - Python >= 3.9
 - System `ssh` binary with ControlMaster support (standard on macOS/Linux)
-- An API key for your chosen AI provider (currently Anthropic)
+- An API key for your chosen AI provider (Anthropic or OpenAI), or a local Ollama installation
 - (Optional) A free [ntfy.sh](https://ntfy.sh) topic for push notifications
 - **Terminal:** Konsole, Alacritty, or Kitty on Linux; iTerm2 on macOS. macOS Terminal.app is not supported.
 
@@ -77,8 +77,9 @@ are untouched by updates.
 
 ```toml
 [defaults]
-model = "claude-sonnet-4-6"   # AI model to use for script generation
-api_key = ""                  # or set ANTHROPIC_API_KEY env var
+provider = "anthropic"        # "anthropic", "openai", or "ollama"
+model = "claude-sonnet-4-6"   # model name for the chosen provider
+api_key = ""                  # API key (not required for ollama)
 poll_interval = 300           # seconds between job status checks
 
 [[clusters]]
@@ -95,8 +96,17 @@ ntfy_topic = "your-topic-string"
 ntfy_server = "https://ntfy.sh"
 ```
 
-The API key can also be provided via the `ANTHROPIC_API_KEY` environment
-variable instead of the config file.
+### AI providers
+
+| `provider` | `model` examples | API key |
+|------------|-----------------|---------|
+| `anthropic` (default) | `claude-sonnet-4-6`, `claude-opus-4-6` | `ANTHROPIC_API_KEY` env var or `api_key` in config |
+| `openai` | `gpt-4o`, `gpt-4o-mini`, `o4-mini` | `OPENAI_API_KEY` env var or `api_key` in config |
+| `ollama` | `llama3.2`, `qwen2.5-coder`, any local model | not required |
+
+For Ollama, ClusterPilot connects to `http://localhost:11434` by default. To use a remote Ollama instance, set `api_base_url = "http://your-host:11434/v1"` in config.
+
+Any OpenAI-compatible API (vLLM, LM Studio, etc.) also works with `provider = "openai"` and `api_base_url` pointing at the server.
 
 ### Adding multiple clusters
 
@@ -437,7 +447,7 @@ ruff check .    # lint
 
 ## Planned
 
-- Support for additional AI providers (OpenAI, local models via Ollama, etc.)
+- ~~Support for additional AI providers (OpenAI, local models via Ollama, etc.)~~ Done.
 - Job array support in the submission UI
 - Hosted tier with managed API key and web dashboard
 - conda-forge package for HPC environments that prefer conda

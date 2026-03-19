@@ -20,9 +20,12 @@ CONFIG_PATH = Path.home() / ".config" / "clusterpilot" / "config.toml"
 
 _DEFAULT_TOML = """\
 [defaults]
-model = "claude-sonnet-4-6"   # or "claude-opus-4-6" for harder jobs
-api_key = ""                  # your Anthropic API key, or a ClusterPilot beta token
-api_base_url = ""             # leave blank (direct Anthropic) or set to the beta proxy URL
+provider = "anthropic"        # "anthropic", "openai", or "ollama"
+model = "claude-sonnet-4-6"   # model name for the chosen provider
+api_key = ""                  # API key (not required for ollama)
+                              #   anthropic: set here or export ANTHROPIC_API_KEY
+                              #   openai:    set here or export OPENAI_API_KEY
+api_base_url = ""             # leave blank for defaults; for ollama set to http://localhost:11434/v1
 poll_interval = 300           # seconds between job status checks
 # upload_excludes = [".git/", "__pycache__/", "*.pyc", "*.egg-info/", ".DS_Store"]
 # Override to change what is excluded from all project uploads.
@@ -103,9 +106,10 @@ _DEFAULT_DOWNLOAD_EXCLUDES: list[str] = [
 
 @dataclass
 class Defaults:
+    provider: str = "anthropic"   # "anthropic", "openai", or "ollama"
     model: str = "claude-sonnet-4-6"
     api_key: str = ""
-    api_base_url: str = ""   # empty → direct Anthropic; set to proxy URL for beta tokens
+    api_base_url: str = ""
     poll_interval: int = 300
     upload_excludes: list[str] = field(default_factory=lambda: list(_DEFAULT_UPLOAD_EXCLUDES))
     download_excludes: list[str] = field(default_factory=lambda: list(_DEFAULT_DOWNLOAD_EXCLUDES))
@@ -125,9 +129,17 @@ class Config:
         return None
 
     @property
+    def provider(self) -> str:
+        return self.defaults.provider
+
+    @property
     def api_key(self) -> str:
-        """Effective API key: config value, then ANTHROPIC_API_KEY env var."""
-        return self.defaults.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        """Effective API key: config value, then provider-specific env var."""
+        if self.defaults.api_key:
+            return self.defaults.api_key
+        if self.defaults.provider == "openai":
+            return os.environ.get("OPENAI_API_KEY", "")
+        return os.environ.get("ANTHROPIC_API_KEY", "")
 
     @property
     def api_base_url(self) -> str:
@@ -178,6 +190,7 @@ def write_default_config(path: Path = CONFIG_PATH) -> None:
 def _from_dict(data: dict) -> Config:
     raw_defaults = data.get("defaults", {})
     defaults = Defaults(
+        provider=raw_defaults.get("provider", "anthropic"),
         model=raw_defaults.get("model", "claude-sonnet-4-6"),
         api_key=raw_defaults.get("api_key", ""),
         api_base_url=raw_defaults.get("api_base_url", ""),
