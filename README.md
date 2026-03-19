@@ -217,9 +217,28 @@ The daemon polls `squeue` every 5 minutes, sends ntfy notifications on job event
 
 | Key | Screen |
 |-----|--------|
-| F1  | Job list - status, log tail, cancel |
+| F1  | Job list - status, log tail, cancel, remote cleanup |
 | F2  | Submit - describe job, pick partition, generate + review script |
 | F9  | Settings - clusters, SSH, notifications, API key |
+
+### F1 job actions
+
+Select a job from the queue and use these keys:
+
+| Key | Action |
+|-----|--------|
+| R   | Rsync results to your local machine |
+| T   | Tail live output (polls every 5 s while running) |
+| L   | Fetch full output log |
+| C   | Clean — delete the remote job directory to reclaim scratch space |
+| K   | Kill — cancel the job (scancel) |
+| D   | Delete the job record from local history |
+
+**Cleaning up scratch space:** once a job has finished, select it and press **C**. ClusterPilot
+deletes the entire job directory from the cluster (`clusterpilot_jobs/<job-name>/`), including
+uploaded project files, the generated script, and all output. If you have not yet synced the
+results, you will be warned and asked to press C a second time to confirm. The job record stays
+in your local history with a **CLEANED** marker.
 
 ### Submitting a job (F2 workflow)
 
@@ -418,13 +437,12 @@ ruff check .    # lint
 
 ## Planned
 
-- Remote cleanup from F1: delete synced/terminal job directories on the cluster
-  to reclaim scratch space without SSH-ing in manually
 - Support for additional AI providers (OpenAI, local models via Ollama, etc.)
 - Job array support in the submission UI
 - Hosted tier with managed API key and web dashboard
 - conda-forge package for HPC environments that prefer conda
 - Windows support (WSL2 path handling, no systemd dependency)
+- ~~Remote cleanup from F1: delete synced/terminal job directories on the cluster to reclaim scratch space without SSH-ing in manually~~ Done.
 - ~~Cost estimation before submission based on requested resources and account allocation~~ Done.
 
 ## Support
