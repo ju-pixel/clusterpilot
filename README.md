@@ -266,6 +266,28 @@ in your local history with a **CLEANED** marker.
 The partition you select is passed to the model as a hard constraint, not a
 suggestion. It will use the correct `--gres` syntax for that partition's hardware.
 
+### Job arrays
+
+Fill in the **ARRAY** field on the F2 screen to submit a SLURM job array
+instead of a single job. The field accepts standard SLURM array syntax:
+
+| Example | Meaning |
+|---------|---------|
+| `0-9` | 10 tasks, indices 0–9 |
+| `1-100%5` | 100 tasks, at most 5 running simultaneously |
+| `0,2,4,8` | Specific indices only |
+
+The generated script uses `$SLURM_ARRAY_TASK_ID` to select parameters per
+task. Describe how each index maps to your parameter space in the job
+description and the AI will generate the selection logic automatically:
+
+> Run a hyperparameter sweep over learning rates [1e-4, 1e-3, 1e-2] and
+> batch sizes [32, 64, 128]. Use $SLURM_ARRAY_TASK_ID to index into a flat
+> list of all nine combinations.
+
+Output logs are named `<job-name>-<array-id>-<task-id>.out` so results from
+each task land in separate files.
+
 ### Project directory mode
 
 If you set **PROJECT DIR** on the F2 screen, the entire project tree is
@@ -450,7 +472,7 @@ ruff check .    # lint
 ## Planned
 
 - ~~Support for additional AI providers (OpenAI, local models via Ollama, etc.)~~ Done.
-- Job array support in the submission UI
+- ~~Job array support in the submission UI~~ Done.
 - Hosted tier with managed API key and web dashboard
 - conda-forge package for HPC environments that prefer conda
 - Windows support (WSL2 path handling, no systemd dependency)
