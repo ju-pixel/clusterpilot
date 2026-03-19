@@ -22,11 +22,11 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 
 <video src="https://github.com/user-attachments/assets/7bc688b2-9c35-4215-ae52-04750aaef889" autoplay loop muted playsinline></video>
 
-### F2 — Describe your job and generate a SLURM script
+### F2: Describe your job and generate a SLURM script
 
 ![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit-real.png)
 
-### F1 — Monitor jobs, tail logs in real time, sync results
+### F1: Monitor jobs, tail logs in real time, sync results
 
 ![ClusterPilot F1 Jobs screen](docs/screenshots/tui-jobs.png)
 
@@ -108,7 +108,7 @@ For Ollama, ClusterPilot connects to `http://localhost:11434` by default. To use
 
 Any OpenAI-compatible API (vLLM, LM Studio, etc.) also works with `provider = "openai"` and `api_base_url` pointing at the server.
 
-To switch provider or model, edit `~/.config/clusterpilot/config.toml` directly, or press **EDIT CONFIG** on the F9 screen. Changes take effect on the next script generation — no restart needed.
+To switch provider or model, edit `~/.config/clusterpilot/config.toml` directly, or press **EDIT CONFIG** on the F9 screen. Changes take effect on the next script generation; no restart needed.
 
 ### Adding multiple clusters
 
@@ -157,10 +157,10 @@ generated scripts is accurate for any cluster without manual configuration:
 |---------------------|-------------------------------------------|
 | `$SCRATCH` is set (e.g. `/scratch/jsmith`) | Use `$SCRATCH` for large output; `$SLURM_TMPDIR` for temp files |
 | `$SCRATCH` is unset | Use `$HOME` or the job working directory; `$SLURM_TMPDIR` for temp files |
-| `cluster_type = "drac"` (regardless of probe) | Hard rule: **never** `$HOME` — DRAC home quota is ~50 GB and jobs writing there get killed |
+| `cluster_type = "drac"` (regardless of probe) | Hard rule: **never** `$HOME` (DRAC home quota is ~50 GB and jobs writing there get killed) |
 
 The only reason to set `cluster_type = "drac"` is to get that hard warning.
-For every other cluster, `generic` is correct — the probe handles the rest.
+For every other cluster, `generic` is correct; the probe handles the rest.
 
 ### Upload and download excludes
 
@@ -216,7 +216,7 @@ That's it for normal use. The TUI monitors your jobs and syncs results automatic
 
 ### Background daemon (optional)
 
-If you want job monitoring and notifications to continue after you close the TUI — for example, you submit a job and close your laptop — you can run the poll daemon separately:
+If you want job monitoring and notifications to continue after you close the TUI (for example, you submit a job and close your laptop), you can run the poll daemon separately:
 
 ```bash
 clusterpilot daemon run      # run in the foreground (Ctrl-C to stop)
@@ -242,8 +242,8 @@ Select a job from the queue and use these keys:
 | R   | Rsync results to your local machine |
 | T   | Tail live output (polls every 5 s while running) |
 | L   | Fetch full output log |
-| C   | Clean — delete the remote job directory to reclaim scratch space |
-| K   | Kill — cancel the job (scancel) |
+| C   | Clean: delete the remote job directory to reclaim scratch space |
+| K   | Kill: cancel the job (scancel) |
 | D   | Delete the job record from local history |
 
 **Cleaning up scratch space:** once a job has finished, select it and press **C**. ClusterPilot
@@ -317,14 +317,13 @@ is left untouched.
 
 | Platform | Recommended | Works with caveats | Avoid |
 |----------|-------------|-------------------|-------|
-| Linux    | Konsole, Alacritty, Kitty | GNOME Terminal | — |
-| macOS    | iTerm2 | — | Terminal.app |
-| Windows  | Windows Terminal (WSL2) | — | cmd, PowerShell |
+| Linux    | Konsole, Alacritty, Kitty | GNOME Terminal | - |
+| macOS    | iTerm2 | - | Terminal.app |
+| Windows  | Windows Terminal (WSL2) | - | cmd, PowerShell |
 
 **macOS Terminal.app** renders many Unicode symbols (arrows, icons, box-drawing
 variants) at double character width, which breaks the TUI layout. This is a
-long-standing Terminal.app bug, not a ClusterPilot issue. Use iTerm2 on macOS
-— it is free and handles everything correctly.
+long-standing Terminal.app bug, not a ClusterPilot issue. Use iTerm2 on macOS; it is free and handles everything correctly.
 
 ## Terminal colours
 
@@ -357,7 +356,7 @@ sessions by adding `COLORTERM = truecolor` to the environment section of your
 iTerm2 profile (Profiles → Session → Environment).
 
 The left screenshot below shows correct truecolor rendering. The right shows
-the 16-colour fallback over SSH without `COLORTERM` set — the amber backgrounds
+the 16-colour fallback over SSH without `COLORTERM` set; the amber backgrounds
 are approximated as red by the terminal.
 
 | Correct (truecolor) | 16-colour fallback over SSH |
@@ -371,7 +370,7 @@ and this is the recommended way to use it over SSH.
 
 Mouse clicks work in local terminal windows and in most SSH sessions from
 macOS terminals. However, **SSH into a Linux machine running Wayland** is a
-known exception — mouse events are not reliably forwarded through the SSH
+known exception: mouse events are not reliably forwarded through the SSH
 connection in this configuration, regardless of terminal settings. This is a
 Wayland limitation, not a ClusterPilot bug, and affects most TUI applications.
 
@@ -462,7 +461,7 @@ syntax) live in one place and are injected into the AI prompt automatically.
 ### Your credentials never leave your machine
 
 ClusterPilot uses **your own SSH key and cluster account**. It runs the system
-`ssh` and `rsync` binaries as your local user — the same commands you would
+`ssh` and `rsync` binaries as your local user, the same commands you would
 type yourself. ClusterPilot has no access to your cluster credentials and
 cannot authenticate to any cluster on its own. If you uninstall ClusterPilot,
 your SSH access is completely unaffected.
@@ -476,7 +475,7 @@ transmitted.
 
 > **Do not include sensitive data, unpublished results, or proprietary code
 > in job descriptions.** Some institutions have data governance policies that
-> restrict sending research descriptions to third-party AI services — check
+> restrict sending research descriptions to third-party AI services; check
 > your institution's guidelines if you are unsure. Using a local Ollama model
 > keeps all generation on your own hardware and sends nothing externally.
 
@@ -490,7 +489,7 @@ your research data.
 ### Cluster acceptable use
 
 ClusterPilot uses standard SLURM commands (`sbatch`, `squeue`, `scancel`,
-`sinfo`) and `rsync` over SSH — the same operations any user performs
+`sinfo`) and `rsync` over SSH, the same operations any user performs
 manually. No software is installed on the cluster side. This is consistent
 with the acceptable use policies of Compute Canada / DRAC and Grex. If you
 are on a different cluster and unsure, check with your HPC support team.
