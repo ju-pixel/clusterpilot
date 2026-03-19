@@ -108,6 +108,8 @@ For Ollama, ClusterPilot connects to `http://localhost:11434` by default. To use
 
 Any OpenAI-compatible API (vLLM, LM Studio, etc.) also works with `provider = "openai"` and `api_base_url` pointing at the server.
 
+To switch provider or model, edit `~/.config/clusterpilot/config.toml` directly, or press **EDIT CONFIG** on the F9 screen. Changes take effect on the next script generation — no restart needed.
+
 ### Adding multiple clusters
 
 Add as many `[[clusters]]` blocks as you need. All configured clusters appear
