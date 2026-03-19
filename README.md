@@ -457,6 +457,52 @@ clusterpilot/
 All cluster-specific SLURM quirks (account requirements, scratch paths, GPU
 syntax) live in one place and are injected into the AI prompt automatically.
 
+## Security
+
+### Your credentials never leave your machine
+
+ClusterPilot uses **your own SSH key and cluster account**. It runs the system
+`ssh` and `rsync` binaries as your local user — the same commands you would
+type yourself. ClusterPilot has no access to your cluster credentials and
+cannot authenticate to any cluster on its own. If you uninstall ClusterPilot,
+your SSH access is completely unaffected.
+
+### What is sent to the AI API
+
+When you generate a SLURM script, your job description and any code snippets
+read from your project directory are sent to the AI provider you have
+configured (Anthropic, OpenAI, or a local Ollama model). No other data is
+transmitted.
+
+> **Do not include sensitive data, unpublished results, or proprietary code
+> in job descriptions.** Some institutions have data governance policies that
+> restrict sending research descriptions to third-party AI services — check
+> your institution's guidelines if you are unsure. Using a local Ollama model
+> keeps all generation on your own hardware and sends nothing externally.
+
+### Research data stays on your connection
+
+Result files are rsynced **directly from the cluster to your local machine**
+over your own SSH connection. They do not pass through any ClusterPilot
+infrastructure or third-party service. ClusterPilot has no visibility into
+your research data.
+
+### Cluster acceptable use
+
+ClusterPilot uses standard SLURM commands (`sbatch`, `squeue`, `scancel`,
+`sinfo`) and `rsync` over SSH — the same operations any user performs
+manually. No software is installed on the cluster side. This is consistent
+with the acceptable use policies of Compute Canada / DRAC and Grex. If you
+are on a different cluster and unsure, check with your HPC support team.
+
+### API key security (hosted tester accounts)
+
+If you are using a ClusterPilot-provided tester API key rather than your own,
+treat it like a password: do not commit it to a public repository, share it,
+or include it in screenshots. Each tester key has a per-request spend cap.
+If you suspect a key has been compromised, contact the maintainer to have it
+revoked and reissued.
+
 ## Development
 
 ```bash
