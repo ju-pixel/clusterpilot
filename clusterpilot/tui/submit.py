@@ -179,7 +179,7 @@ class SubmitView(Static):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="submit-left"):
-            with Vertical(id="describe-panel"):
+            with ScrollableContainer(id="describe-panel"):
                 with Horizontal(id="cluster-row"):
                     yield Label("CLUSTER", classes="field-label")
                     yield Select(

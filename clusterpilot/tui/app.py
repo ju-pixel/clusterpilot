@@ -392,9 +392,8 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
 
 #field-help {
     height: auto;
-    max-height: 3;
     margin-top: 0;
-    margin-bottom: 0;
+    margin-bottom: 1;
     padding: 0 1;
     color: $dim;
     background: $bg;
@@ -423,6 +422,7 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
 #generate-row {
     height: 3;
     margin-top: 1;
+    margin-bottom: 1;
     layout: horizontal;
     align: right middle;
 }
