@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     output_tokens   INTEGER NOT NULL DEFAULT 0,
     model_used      TEXT    NOT NULL DEFAULT '',
     remote_cleaned  INTEGER NOT NULL DEFAULT 0,  -- 1 once remote working dir deleted
+    array_spec      TEXT    NOT NULL DEFAULT '',  -- e.g. "0-9" or "1-100%5"; empty for non-array jobs
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -85,6 +86,7 @@ class JobRecord:
     output_tokens: int = 0
     model_used: str = ""
     remote_cleaned: bool = False
+    array_spec: str = ""
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -120,6 +122,7 @@ async def init_db(db: "aiosqlite.Connection") -> None:
         ("output_tokens",  "INTEGER NOT NULL DEFAULT 0"),
         ("model_used",     "TEXT NOT NULL DEFAULT ''"),
         ("remote_cleaned", "INTEGER NOT NULL DEFAULT 0"),
+        ("array_spec",     "TEXT NOT NULL DEFAULT ''"),
     ):
         try:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -137,8 +140,9 @@ async def insert_job(db: "aiosqlite.Connection", job: JobRecord) -> int:
         INSERT INTO jobs (
             job_id, job_name, cluster_name, host, user, account,
             partition, script_path, working_dir, local_dir, status,
-            submitted_at, walltime, input_tokens, output_tokens, model_used
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            submitted_at, walltime, input_tokens, output_tokens, model_used,
+            array_spec
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job.job_id, job.job_name, job.cluster_name, job.host,
@@ -146,6 +150,7 @@ async def insert_job(db: "aiosqlite.Connection", job: JobRecord) -> int:
             job.working_dir, job.local_dir, job.status,
             job.submitted_at, job.walltime,
             job.input_tokens, job.output_tokens, job.model_used,
+            job.array_spec,
         ),
     )
     await db.commit()
@@ -275,7 +280,7 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         row_id, job_id, job_name, cluster_name, host, user, account,
         partition, script_path, working_dir, local_dir, status,
         submitted_at, started_at, finished_at, walltime, log_path, synced,
-        input_tokens, output_tokens, model_used, remote_cleaned,
+        input_tokens, output_tokens, model_used, remote_cleaned, array_spec,
     ) = row
     return JobRecord(
         row_id=row_id,
@@ -300,4 +305,5 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         output_tokens=output_tokens,
         model_used=model_used,
         remote_cleaned=bool(remote_cleaned),
+        array_spec=array_spec or "",
     )

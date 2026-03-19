@@ -75,6 +75,8 @@ def _format_meta(job: JobRecord) -> str:
         ("CLEANED",   "[#6ed86e]yes[/]" if job.remote_cleaned else "[#7a6a50]no[/]"),
         ("AI COST",   cost_str),
     ]
+    if job.array_spec:
+        rows.insert(4, ("ARRAY", f"[#e8a020]{job.array_spec}[/]"))
     return "  ".join(f"[#7a6a50]{k}[/] {v}" for k, v in rows[:4]) + "\n" + \
            "  ".join(f"[#7a6a50]{k}[/] {v}" for k, v in rows[4:])
 

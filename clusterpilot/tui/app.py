@@ -312,6 +312,12 @@ SubmitView {
     layout: horizontal;
 }
 
+#array-row {
+    height: auto;
+    margin-bottom: 0;
+    layout: horizontal;
+}
+
 #extra-files-input {
     width: 1fr;
     background: $bg3;
@@ -320,6 +326,17 @@ SubmitView {
 }
 
 #extra-files-input:focus {
+    border: solid $amberDim;
+}
+
+#array-input {
+    width: 1fr;
+    background: $bg3;
+    border: solid $border2;
+    color: $white;
+}
+
+#array-input:focus {
     border: solid $amberDim;
 }
 

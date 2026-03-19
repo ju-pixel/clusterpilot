@@ -122,7 +122,7 @@ def _extract(script: str, directive: str, default: str) -> str:
     return default
 
 
-def _sanitise_script(script: str, job_name: str) -> str:
+def _sanitise_script(script: str, job_name: str, is_array: bool = False) -> str:
     """Enforce correct SBATCH directives and strip absolute job-dir paths.
 
     The AI reliably deviates from prompt rules in two ways:
@@ -152,8 +152,8 @@ def _sanitise_script(script: str, job_name: str) -> str:
     lines = []
     for line in script.splitlines():
         if re.match(r"^#SBATCH\s+--output=", line):
-            # Relative path only — SLURM expands %x and %j correctly.
-            line = "#SBATCH --output=%x-%j.out"
+            # Relative path only. Array jobs get per-task logs via %A and %a.
+            line = "#SBATCH --output=%x-%A-%a.out" if is_array else "#SBATCH --output=%x-%j.out"
         elif re.match(r"^#SBATCH\s+--chdir=", line):
             # Remove --chdir entirely.  The cd in submit() already sets
             # the correct CWD, and SLURM does not expand ~ in directives.
@@ -218,6 +218,13 @@ class SubmitView(Static):
                         placeholder="data/ladder.jld2, data/config.toml  (comma-separated, relative to PROJECT DIR)",
                         suggester=PathSuggester(base_getter=self._get_project_dir_path),
                         id="extra-files-input",
+                    )
+
+                with Horizontal(id="array-row"):
+                    yield Label("ARRAY", classes="field-label")
+                    yield Input(
+                        placeholder="0-9  or  1-100%5  (optional — leave blank for a single job)",
+                        id="array-input",
                     )
 
                 yield Label("DESCRIBE YOUR JOB", id="describe-label")
@@ -498,6 +505,8 @@ class SubmitView(Static):
             if extra_files_raw else []
         )
 
+        array_spec = self.query_one("#array-input", Input).value.strip()
+
         try:
             async for token in generate_script(
                 description, probe, profile,
@@ -506,6 +515,7 @@ class SubmitView(Static):
                 provider=provider,
                 api_base_url=api_base_url,
                 partition=partition,
+                array_spec=array_spec,
                 script_content=script_content,
                 driver_script=driver_script,
                 manifest_content=manifest_content,
@@ -573,8 +583,10 @@ class SubmitView(Static):
 
         remote_dir = profile.remote_job_dir(job_name)
 
+        array_spec = self.query_one("#array-input", Input).value.strip()
+
         # Enforce correct SBATCH directives regardless of what the model wrote.
-        script = _sanitise_script(script, job_name)
+        script = _sanitise_script(script, job_name, is_array=bool(array_spec))
         self._generated_script = script   # keep TUI display in sync
 
         local_job_dir = Path.cwd() / "clusterpilot_jobs" / job_name
@@ -666,6 +678,7 @@ class SubmitView(Static):
             input_tokens=u.input_tokens,
             output_tokens=u.output_tokens,
             model_used=u.model,
+            array_spec=array_spec,
         )
         async with aiosqlite.connect(app._db_path) as db:
             await init_db(db)
@@ -770,6 +783,14 @@ _HELP_EXTRA_FILES = (
     "Paths are relative to PROJECT DIR. Leave blank if not needed.[/]"
 )
 
+_HELP_ARRAY = (
+    "[#e8a020]ARRAY[/]  [#7a6a50]Optional. SLURM job array spec — e.g. [#f0e8d0]0-9[/][#7a6a50] (10 tasks) "
+    "or [#f0e8d0]1-100%5[/][#7a6a50] (100 tasks, max 5 running at once). Leave blank for a single job. "
+    "Tip: describe how each task index maps to parameters in the job description — "
+    "e.g. [#f0e8d0]'use $SLURM_ARRAY_TASK_ID to select from learning rates [0.001, 0.01, 0.1]'[/][#7a6a50] "
+    "— and the AI will generate the selection logic in the script automatically.[/]"
+)
+
 _HELP_DESCRIPTION = (
     "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]Tell the AI what this job does. "
     "Runtime and modules are inferred from your driver script and project manifest. "
@@ -781,10 +802,11 @@ _HELP_DESCRIPTION = (
 )
 
 _HELP_MAP = {
-    "cluster-select": _HELP_CLUSTER,
+    "cluster-select":   _HELP_CLUSTER,
     "partition-select": _HELP_PARTITION,
     "project-dir-input": _HELP_PROJECT_DIR,
     "script-path-input": _HELP_SCRIPT_PATH,
     "extra-files-input": _HELP_EXTRA_FILES,
+    "array-input":      _HELP_ARRAY,
     "description-input": _HELP_DESCRIPTION,
 }

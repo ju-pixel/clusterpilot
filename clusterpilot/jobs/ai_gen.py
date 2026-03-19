@@ -70,6 +70,7 @@ async def generate_script(
     provider: str = "anthropic",
     api_base_url: str = "",
     partition: str = "",
+    array_spec: str = "",
     script_content: str | None = None,
     driver_script: str | None = None,
     manifest_content: str | None = None,
@@ -114,6 +115,7 @@ async def generate_script(
     system = _build_system_prompt(
         probe, profile,
         partition=partition,
+        array_spec=array_spec,
         script_content=script_content,
         driver_script=driver_script,
         manifest_content=manifest_content,
@@ -195,6 +197,7 @@ def _build_system_prompt(
     profile: ClusterProfile,
     *,
     partition: str = "",
+    array_spec: str = "",
     script_content: str | None = None,
     driver_script: str | None = None,
     manifest_content: str | None = None,
@@ -225,6 +228,25 @@ def _build_system_prompt(
         f"Job working directory: {scratch}/<job-name>/ — the submission harness "
         f"cd's here before sbatch, so the script's CWD is already the job dir."
     )
+
+    # Build array rule block outside the main f-string (Python 3.9 nested f-string limits).
+    if array_spec:
+        output_rule = (
+            f"This is a job array (--array={array_spec}). Write EXACTLY "
+            "`--output=%x-%A-%a.out`. %A is the array master job ID, %a is the task "
+            "index — each task gets its own log. Do NOT use %j for array jobs."
+        )
+        array_rule = (
+            f"2. JOB ARRAY — the user has requested an array with spec [{array_spec}]:\n"
+            f"   Add `--array={array_spec}` to the #SBATCH directives.\n"
+            "   Use `$SLURM_ARRAY_TASK_ID` in the script body to select parameters for each task.\n"
+            "   Each task gets its own output log because --output uses %A and %a (see rule 1).\n"
+            "   CRITICAL: the array spec is a hard constraint — use it exactly as given.\n"
+            "   Do NOT change it. Do NOT use a different range or step.\n\n"
+        )
+    else:
+        output_rule = "Write EXACTLY `--output=%x-%j.out` — nothing else."
+        array_rule = ""
 
     manifest_section = ""
     if manifest_content:
@@ -328,13 +350,14 @@ SSH login: {profile.user}@{profile.host}
    Adding --chdir with ~ breaks on SLURM because ~ is not expanded in #SBATCH
    directives and gets treated as a literal directory name.
 
-   ABSOLUTE RULE FOR --output: write EXACTLY `--output=%x-%j.out` — nothing else.
-   Do NOT write a directory path before %x-%j.out.
-   Do NOT write `--output=~/.../%x-%j.out`.
-   Do NOT write `--output=/home/.../%x-%j.out`.
+   ABSOLUTE RULE FOR --output:
+   {output_rule}
+   Do NOT write a directory path before the % tokens.
+   Do NOT write `--output=~/.../%x-...`.
+   Do NOT write `--output=/home/.../%x-...`.
    The % tokens are relative to the CWD. Any path prefix breaks log discovery.
 
-2. For GPU jobs, add:
+{array_rule}2. For GPU jobs, add:
    --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s
    Choose the partition that has the requested GPU type from the partition list above.
 
