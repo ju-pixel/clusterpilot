@@ -389,7 +389,6 @@ ruff check .    # lint
 - ~~Remote cleanup from F1: delete synced/terminal job directories on the cluster
   to reclaim scratch space without SSH-ing in manually~~
 - ~~Support for additional AI providers (OpenAI, local models via Ollama, etc.)~~
-- ~~Graham and Beluga (Compute Canada) cluster profiles~~
 - ~~Job array support in the submission UI~~
 - ~~conda-forge package for HPC environments that prefer conda~~
 - ~~Cost estimation before submission based on requested resources and account allocation~~
