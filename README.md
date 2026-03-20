@@ -44,8 +44,11 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 ## Installation
 
 ```bash
+# pip
 pip install clusterpilot
-clusterpilot
+
+# conda
+conda install -c conda-forge clusterpilot
 ```
 
 On first run, ClusterPilot creates a starter config at
@@ -389,7 +392,6 @@ ruff check .    # lint
 - Graham and Beluga (Compute Canada) cluster profiles
 - Job array support in the submission UI
 - Hosted tier with managed API key and web dashboard
-- conda-forge package for HPC environments that prefer conda
 - Windows support (WSL2 path handling, no systemd dependency)
 - Cost estimation before submission based on requested resources and account allocation
 
