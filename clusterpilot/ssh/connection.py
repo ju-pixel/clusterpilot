@@ -49,20 +49,25 @@ def open_connection(host: str, user: str) -> None:
     background (ControlPersist=4h). The calling code must have a live TTY
     so the user can type their password or 2FA token.
 
-    Raises subprocess.CalledProcessError if SSH exits non-zero.
+    Raises :class:`SSHError` if SSH exits non-zero.
     """
-    subprocess.run(
-        [
-            "ssh",
-            "-o", "ControlMaster=auto",
-            "-o", f"ControlPath={_CONTROL_PATH}",
-            "-o", "ControlPersist=4h",
-            "-o", "ServerAliveInterval=60",
-            "-N",           # no remote command: just establish the master
-            f"{user}@{host}",
-        ],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "ssh",
+                "-o", "ControlMaster=auto",
+                "-o", f"ControlPath={_CONTROL_PATH}",
+                "-o", "ControlPersist=4h",
+                "-o", "ServerAliveInterval=60",
+                "-N",           # no remote command: just establish the master
+                f"{user}@{host}",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise SSHError(
+            f"SSH to {host} failed (exit {exc.returncode})"
+        ) from exc
 
 
 def close_connection(host: str, user: str) -> None:
