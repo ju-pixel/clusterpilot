@@ -246,7 +246,7 @@ class JobsView(Static):
             self.app.notify(f"Results synced → {local}", severity="information")
         except Exception as exc:
             log_widget.write(f"[#e05050]rsync failed: {exc}[/]")
-            self.app.notify(f"rsync failed: {exc}", severity="error")
+            self.app.notify(f"rsync failed: {exc}", severity="error", markup=False)
 
     @on(Button.Pressed, "#btn-kill")
     def action_kill(self) -> None:
@@ -265,7 +265,7 @@ class JobsView(Static):
             self.app.notify(f"scancel {job.job_id} sent.", severity="warning")
             self._refresh()
         except Exception as exc:
-            self.app.notify(f"Kill failed: {exc}", severity="error")
+            self.app.notify(f"Kill failed: {exc}", severity="error", markup=False)
 
     @on(Button.Pressed, "#btn-tail")
     def action_tail(self) -> None:
@@ -388,7 +388,7 @@ class JobsView(Static):
             await remove_remote_dir(profile.host, profile.user, job.working_dir)
         except SSHError as exc:
             log_widget.write(f"[#e05050]Failed: {exc}[/]")
-            self.app.notify(f"Clean failed: {exc}", severity="error")
+            self.app.notify(f"Clean failed: {exc}", severity="error", markup=False)
             return
         async with aiosqlite.connect(app._db_path) as db:
             await init_db(db)

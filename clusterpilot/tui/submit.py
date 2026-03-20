@@ -359,7 +359,7 @@ class SubmitView(Static):
         try:
             probe = await probe_cluster(profile.name, profile.host, profile.user)
         except Exception as exc:
-            self.app.notify(f"Partition probe failed: {exc}", severity="warning")
+            self.app.notify(f"Partition probe failed: {exc}", severity="warning", markup=False)
             return
 
         # Fetch live partition availability (not cached — always fresh).
@@ -479,7 +479,7 @@ class SubmitView(Static):
         try:
             probe = await probe_cluster(profile.name, profile.host, profile.user)
         except Exception as exc:
-            self.app.notify(f"Cluster probe failed: {exc}", severity="error")
+            self.app.notify(f"Cluster probe failed: {exc}", severity="error", markup=False)
             self.query_one("#btn-generate", Button).disabled = False
             return
 
@@ -526,7 +526,7 @@ class SubmitView(Static):
                 self._generated_script += token
                 script_widget.update(_format_script(self._generated_script))
         except Exception as exc:
-            self.app.notify(f"Generation failed: {exc}", severity="error")
+            self.app.notify(f"Generation failed: {exc}", severity="error", markup=False)
             self.query_one("#btn-generate", Button).disabled = False
             return
 
@@ -601,7 +601,7 @@ class SubmitView(Static):
         try:
             await run_remote(profile.host, profile.user, f"mkdir -p {remote_dir}")
         except Exception as exc:
-            self.app.notify(f"Could not create remote directory: {exc}", severity="error")
+            self.app.notify(f"Could not create remote directory: {exc}", severity="error", markup=False)
             self.query_one("#btn-submit", Button).disabled = False
             return
 
@@ -647,7 +647,7 @@ class SubmitView(Static):
                 # Single-file mode: only the generated script is uploaded.
                 await upload(profile.host, profile.user, local_job_dir, remote_dir)
         except Exception as exc:
-            self.app.notify(f"Upload failed: {exc}", severity="error")
+            self.app.notify(f"Upload failed: {exc}", severity="error", markup=False)
             self.query_one("#btn-submit", Button).disabled = False
             return
 
@@ -658,7 +658,7 @@ class SubmitView(Static):
                 working_dir=remote_dir,
             )
         except SlurmError as exc:
-            self.app.notify(f"sbatch failed: {exc}", severity="error")
+            self.app.notify(f"sbatch failed: {exc}", severity="error", markup=False)
             self.query_one("#btn-submit", Button).disabled = False
             return
 

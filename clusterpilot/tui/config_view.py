@@ -90,4 +90,4 @@ class ConfigView(Static):
             self._refresh_display()
             self.app.notify("Config reloaded.", severity="information")
         except ConfigError as exc:
-            self.app.notify(f"Config error: {exc}", severity="error")
+            self.app.notify(f"Config error: {exc}", severity="error", markup=False)

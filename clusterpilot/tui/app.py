@@ -678,6 +678,7 @@ Button.-error { color: $red; border: solid $redDim; background: $redDim; }
                     f"SSH failed ({profile.host}): {exc}",
                     severity="error",
                     timeout=20,
+                    markup=False,
                 )
 
     def _start_daemon(self) -> None:
