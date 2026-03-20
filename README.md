@@ -127,7 +127,7 @@ cluster_type = "grex"
 
 [[clusters]]
 name = "narval"
-host = "narval.computecanada.ca"
+host = "narval.alliancecan.ca"
 user = "jsmith"
 account = "def-supervisor"
 scratch = "/scratch/jsmith"
