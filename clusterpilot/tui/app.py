@@ -621,18 +621,10 @@ Button.-error { color: $red; border: solid $redDim; background: $redDim; }
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self._db_path) as db:
             await init_db(db)
-        await self._ensure_connections()
         self.query_one(TitleBar).refresh_status()
         self._start_daemon()
         await self._refresh_cost()
         self.set_interval(30, self._refresh_cost)
-        # Re-trigger partition probe after SSH is confirmed ready.  The probe
-        # is also attempted in SubmitView.on_mount, but that fires before
-        # _ensure_connections establishes the socket, so it fails on first run
-        # (BatchMode=yes returns immediately with no socket).  exclusive=True
-        # on the worker means this either cancels the in-flight first attempt
-        # and restarts it, or re-runs from cache if the first already finished.
-        self.query_one(SubmitView)._populate_partitions()
         self._check_for_update()
 
     async def _refresh_cost(self) -> None:
@@ -659,27 +651,35 @@ Button.-error { color: $red; border: solid $redDim; background: $redDim; }
                 timeout=15,
             )
 
-    async def _ensure_connections(self) -> None:
-        for profile in self._config.clusters:
-            if is_connected(profile.host, profile.user):
-                continue
+    def ensure_connected(self, profile: "ClusterProfile") -> bool:
+        """Ensure a ControlMaster socket is open for *profile*.
+
+        Suspends the TUI and prompts for interactive auth if not already
+        connected. Returns True if connected after this call, False if the
+        attempt failed. Safe to call from both sync and async contexts.
+        """
+        if is_connected(profile.host, profile.user):
+            return True
+        self.notify(
+            f"Opening SSH connection to {profile.host} — "
+            "authenticate in the terminal below…",
+            severity="information",
+            timeout=30,
+        )
+        try:
+            with self.suspend():
+                open_connection(profile.host, profile.user)
+            self.notify(f"Connected to {profile.host}", severity="information")
+            self.query_one(TitleBar).refresh_status()
+            return True
+        except Exception as exc:
             self.notify(
-                f"Opening SSH connection to {profile.host} — "
-                "authenticate in the terminal below…",
-                severity="information",
-                timeout=30,
+                f"SSH failed ({profile.host}): {exc}",
+                severity="error",
+                timeout=20,
+                markup=False,
             )
-            try:
-                with self.suspend():
-                    open_connection(profile.host, profile.user)
-                self.notify(f"Connected to {profile.host}", severity="information")
-            except Exception as exc:
-                self.notify(
-                    f"SSH failed ({profile.host}): {exc}",
-                    severity="error",
-                    timeout=20,
-                    markup=False,
-                )
+            return False
 
     def _start_daemon(self) -> None:
         daemon = PollDaemon(self._config, self._db_path)

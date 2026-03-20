@@ -255,7 +255,10 @@ class SubmitView(Static):
     def on_mount(self) -> None:
         self._generated_script = ""
         self._partition_availability: dict[str, PartitionAvailability] = {}
+        self._init_done = False
         self._populate_cluster_select()
+        # Probe immediately in case a ControlMaster socket is already open
+        # from a prior session; fails silently if not connected.
         self._populate_partitions()
 
     def _populate_cluster_select(self) -> None:
@@ -312,6 +315,14 @@ class SubmitView(Static):
         if event.value is not Select.BLANK:
             self._partition_availability = {}
             self.query_one("#partition-select", Select).set_options([])
+            if self._init_done:
+                # User-initiated change: connect if needed before probing.
+                profile = self._selected_profile()
+                if profile:
+                    cast("ClusterPilotApp", self.app).ensure_connected(profile)
+            else:
+                # First event fires from the programmatic set in on_mount.
+                self._init_done = True
             self._populate_partitions()
 
     # ── Partition selection ────────────────────────────────────────────────────

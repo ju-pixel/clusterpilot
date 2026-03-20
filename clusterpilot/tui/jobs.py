@@ -231,6 +231,8 @@ class JobsView(Static):
         if not profile:
             self.app.notify("Cluster not in config.", severity="error")
             return
+        if not app.ensure_connected(profile):
+            return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
         self._log_dirty = True
@@ -260,6 +262,8 @@ class JobsView(Static):
         profile = app._config.get_cluster(job.cluster_name)
         if not profile:
             return
+        if not app.ensure_connected(profile):
+            return
         try:
             await cancel(profile.host, profile.user, job.job_id)
             self.app.notify(f"scancel {job.job_id} sent.", severity="warning")
@@ -278,8 +282,7 @@ class JobsView(Static):
         self._stop_tail_polling()
         app = cast("ClusterPilotApp", self.app)
         profile = app._config.get_cluster(job.cluster_name)
-        if not profile or not is_connected(profile.host, profile.user):
-            self.app.notify("Not connected to cluster.", severity="error")
+        if not profile or not app.ensure_connected(profile):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
@@ -318,8 +321,7 @@ class JobsView(Static):
         self._stop_tail_polling()
         app = cast("ClusterPilotApp", self.app)
         profile = app._config.get_cluster(job.cluster_name)
-        if not profile or not is_connected(profile.host, profile.user):
-            self.app.notify("Not connected to cluster.", severity="error")
+        if not profile or not app.ensure_connected(profile):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
@@ -377,8 +379,7 @@ class JobsView(Static):
         if not profile:
             self.app.notify("Cluster not in config.", severity="error")
             return
-        if not is_connected(profile.host, profile.user):
-            self.app.notify("Not connected to cluster.", severity="error")
+        if not app.ensure_connected(profile):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()

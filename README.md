@@ -1,10 +1,7 @@
 # ClusterPilot
 
-AI-assisted SLURM workflow manager for HPC clusters worldwide.
-
-Generate, submit, and monitor SLURM jobs on any HPC cluster from a terminal UI.
-
-https://juliafrank.net/clusterpilot/
+AI-assisted HPC workflow manager for Compute Canada (DRAC) clusters and the
+University of Manitoba's Grex cluster.
 
 Built by a computational physics PhD student who got tired of doing this manually.
 
@@ -22,34 +19,27 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 
 <video src="https://github.com/user-attachments/assets/7bc688b2-9c35-4215-ae52-04750aaef889" autoplay loop muted playsinline></video>
 
-### F2: Describe your job and generate a SLURM script
+### F2 — Describe your job and generate a SLURM script
 
-![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit-real.png)
+![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit-re1al.png)
 
-### F1: Monitor jobs, tail logs in real time, sync results
+### F1 — Monitor jobs, tail logs in real time, sync results
 
 ![ClusterPilot F1 Jobs screen](docs/screenshots/tui-jobs.png)
 
 ## Supported clusters
 
-ClusterPilot works with **any SLURM cluster worldwide**. Grex and Compute Canada
-(DRAC) clusters have built-in profiles with cluster-specific prompt tuning. Every
-other SLURM cluster uses the generic profile, which works correctly for the vast
-majority of schedulers.
-
-| Cluster | `cluster_type` | Notes |
-|---------|---------------|-------|
-| Grex (UManitoba) | `grex` | Built-in profile |
-| Cedar, Narval, Graham, Beluga (DRAC) | `drac` | Built-in profile |
-| NSF ACCESS, ARCHER2, EuroHPC, university clusters, … | `generic` | Works out of the box |
+| Cluster | Type | Status |
+|---------|------|--------|
+| Grex (`yak.hpc.umanitoba.ca`) | UManitoba | v0.1 target |
+| Cedar, Narval, Graham, Beluga | Compute Canada / DRAC | post-v1 |
 
 ## Requirements
 
 - Python >= 3.9
 - System `ssh` binary with ControlMaster support (standard on macOS/Linux)
-- An API key for your chosen AI provider (Anthropic or OpenAI), or a local Ollama installation
+- An API key for your chosen AI provider (currently Anthropic)
 - (Optional) A free [ntfy.sh](https://ntfy.sh) topic for push notifications
-- **Terminal:** Konsole, Alacritty, or Kitty on Linux; iTerm2 on macOS. macOS Terminal.app is not supported.
 
 ## Installation
 
@@ -62,33 +52,22 @@ On first run, ClusterPilot creates a starter config at
 `~/.config/clusterpilot/config.toml`, prints its location, and exits.
 Edit it to add your cluster username and account, then run `clusterpilot` again.
 
-## Updating
-
-```bash
-pip install --upgrade clusterpilot
-```
-
-That's it. Your config at `~/.config/clusterpilot/config.toml` and job history
-are untouched by updates.
-
 ## Configuration
 
 `~/.config/clusterpilot/config.toml`:
 
 ```toml
 [defaults]
-provider = "anthropic"        # "anthropic", "openai", or "ollama"
-model = "claude-sonnet-4-6"   # model name for the chosen provider
-api_key = ""                  # API key (not required for ollama)
+model = "claude-sonnet-4-6"   # AI model to use for script generation
+api_key = ""                  # or set ANTHROPIC_API_KEY env var
 poll_interval = 300           # seconds between job status checks
 
 [[clusters]]
 name = "grex"
 host = "yak.hpc.umanitoba.ca"
 user = "your_username"
-account = "def-yoursupervisor"   # leave blank if your cluster does not require one
+account = "def-yoursupervisor"
 scratch = "$HOME/clusterpilot_jobs"
-cluster_type = "grex"            # "drac", "grex", or "generic"
 
 [notifications]
 backend = "ntfy"
@@ -209,48 +188,18 @@ at the project root (one pattern per line, same syntax as rsync `--exclude`).
 ## Usage
 
 ```bash
-clusterpilot
+clusterpilot                 # launch the TUI
+clusterpilot daemon run      # run the poll daemon in the foreground
+clusterpilot daemon install  # install systemd user service (Linux)
 ```
-
-That's it for normal use. The TUI monitors your jobs and syncs results automatically while it is open.
-
-### Background daemon (optional)
-
-If you want job monitoring and notifications to continue after you close the TUI (for example, you submit a job and close your laptop), you can run the poll daemon separately:
-
-```bash
-clusterpilot daemon run      # run in the foreground (Ctrl-C to stop)
-clusterpilot daemon install  # install as a systemd user service (Linux)
-```
-
-The daemon polls `squeue` every 5 minutes, sends ntfy notifications on job events, and syncs results on completion. You do not need it if you keep the TUI open.
 
 ### TUI screens
 
 | Key | Screen |
 |-----|--------|
-| F1  | Job list - status, log tail, cancel, remote cleanup |
+| F1  | Job list - status, log tail, cancel |
 | F2  | Submit - describe job, pick partition, generate + review script |
 | F9  | Settings - clusters, SSH, notifications, API key |
-
-### F1 job actions
-
-Select a job from the queue and use these keys:
-
-| Key | Action |
-|-----|--------|
-| R   | Rsync results to your local machine |
-| T   | Tail live output (polls every 5 s while running) |
-| L   | Fetch full output log |
-| C   | Clean: delete the remote job directory to reclaim scratch space |
-| K   | Kill: cancel the job (scancel) |
-| D   | Delete the job record from local history |
-
-**Cleaning up scratch space:** once a job has finished, select it and press **C**. ClusterPilot
-deletes the entire job directory from the cluster (`clusterpilot_jobs/<job-name>/`), including
-uploaded project files, the generated script, and all output. If you have not yet synced the
-results, you will be warned and asked to press C a second time to confirm. The job record stays
-in your local history with a **CLEANED** marker.
 
 ### Submitting a job (F2 workflow)
 
@@ -265,28 +214,6 @@ in your local history with a **CLEANED** marker.
 
 The partition you select is passed to the model as a hard constraint, not a
 suggestion. It will use the correct `--gres` syntax for that partition's hardware.
-
-### Job arrays
-
-Fill in the **ARRAY** field on the F2 screen to submit a SLURM job array
-instead of a single job. The field accepts standard SLURM array syntax:
-
-| Example | Meaning |
-|---------|---------|
-| `0-9` | 10 tasks, indices 0–9 |
-| `1-100%5` | 100 tasks, at most 5 running simultaneously |
-| `0,2,4,8` | Specific indices only |
-
-The generated script uses `$SLURM_ARRAY_TASK_ID` to select parameters per
-task. Describe how each index maps to your parameter space in the job
-description and the AI will generate the selection logic automatically:
-
-> Run a hyperparameter sweep over learning rates [1e-4, 1e-3, 1e-2] and
-> batch sizes [32, 64, 128]. Use $SLURM_ARRAY_TASK_ID to index into a flat
-> list of all nine combinations.
-
-Output logs are named `<job-name>-<array-id>-<task-id>.out` so results from
-each task land in separate files.
 
 ### Project directory mode
 
@@ -311,20 +238,6 @@ reuse the existing socket with sub-second latency.
 ControlMaster flags directly on the command line. Your existing SSH config
 is left untouched.
 
-## Terminal emulator compatibility
-
-**Recommended terminals:**
-
-| Platform | Recommended | Works with caveats | Avoid |
-|----------|-------------|-------------------|-------|
-| Linux    | Konsole, Alacritty, Kitty | GNOME Terminal | - |
-| macOS    | iTerm2 | - | Terminal.app |
-| Windows  | Windows Terminal (WSL2) | - | cmd, PowerShell |
-
-**macOS Terminal.app** renders many Unicode symbols (arrows, icons, box-drawing
-variants) at double character width, which breaks the TUI layout. This is a
-long-standing Terminal.app bug, not a ClusterPilot issue. Use iTerm2 on macOS; it is free and handles everything correctly.
-
 ## Terminal colours
 
 ClusterPilot uses 24-bit RGB colour throughout. Most modern terminal emulators
@@ -332,8 +245,8 @@ support this, but the `COLORTERM` environment variable must be set to `truecolor
 for Textual to detect it. Without it, colours fall back to the nearest 16 ANSI
 colours, which can look significantly different from the intended amber palette.
 
-**macOS (iTerm2):** truecolor works out of the box in a local window.
-No action needed.
+**macOS (iTerm2, Terminal.app):** truecolor works out of the box in a local
+window. No action needed.
 
 **Over SSH:** the `COLORTERM` variable is often not forwarded to the remote
 session. Fix this by adding the following to `~/.bashrc` (or `~/.zshrc`) on
@@ -356,7 +269,7 @@ sessions by adding `COLORTERM = truecolor` to the environment section of your
 iTerm2 profile (Profiles → Session → Environment).
 
 The left screenshot below shows correct truecolor rendering. The right shows
-the 16-colour fallback over SSH without `COLORTERM` set; the amber backgrounds
+the 16-colour fallback over SSH without `COLORTERM` set — the amber backgrounds
 are approximated as red by the terminal.
 
 | Correct (truecolor) | 16-colour fallback over SSH |
@@ -370,7 +283,7 @@ and this is the recommended way to use it over SSH.
 
 Mouse clicks work in local terminal windows and in most SSH sessions from
 macOS terminals. However, **SSH into a Linux machine running Wayland** is a
-known exception: mouse events are not reliably forwarded through the SSH
+known exception — mouse events are not reliably forwarded through the SSH
 connection in this configuration, regardless of terminal settings. This is a
 Wayland limitation, not a ClusterPilot bug, and affects most TUI applications.
 
@@ -456,52 +369,6 @@ clusterpilot/
 All cluster-specific SLURM quirks (account requirements, scratch paths, GPU
 syntax) live in one place and are injected into the AI prompt automatically.
 
-## Security
-
-### Your credentials never leave your machine
-
-ClusterPilot uses **your own SSH key and cluster account**. It runs the system
-`ssh` and `rsync` binaries as your local user, the same commands you would
-type yourself. ClusterPilot has no access to your cluster credentials and
-cannot authenticate to any cluster on its own. If you uninstall ClusterPilot,
-your SSH access is completely unaffected.
-
-### What is sent to the AI API
-
-When you generate a SLURM script, your job description and any code snippets
-read from your project directory are sent to the AI provider you have
-configured (Anthropic, OpenAI, or a local Ollama model). No other data is
-transmitted.
-
-> **Do not include sensitive data, unpublished results, or proprietary code
-> in job descriptions.** Some institutions have data governance policies that
-> restrict sending research descriptions to third-party AI services; check
-> your institution's guidelines if you are unsure. Using a local Ollama model
-> keeps all generation on your own hardware and sends nothing externally.
-
-### Research data stays on your connection
-
-Result files are rsynced **directly from the cluster to your local machine**
-over your own SSH connection. They do not pass through any ClusterPilot
-infrastructure or third-party service. ClusterPilot has no visibility into
-your research data.
-
-### Cluster acceptable use
-
-ClusterPilot uses standard SLURM commands (`sbatch`, `squeue`, `scancel`,
-`sinfo`) and `rsync` over SSH, the same operations any user performs
-manually. No software is installed on the cluster side. This is consistent
-with the acceptable use policies of Compute Canada / DRAC and Grex. If you
-are on a different cluster and unsure, check with your HPC support team.
-
-### API key security (hosted tester accounts)
-
-If you are using a ClusterPilot-provided tester API key rather than your own,
-treat it like a password: do not commit it to a public repository, share it,
-or include it in screenshots. Each tester key has a per-request spend cap.
-If you suspect a key has been compromised, contact the maintainer to have it
-revoked and reissued.
-
 ## Development
 
 ```bash
@@ -516,13 +383,15 @@ ruff check .    # lint
 
 ## Planned
 
-- ~~Support for additional AI providers (OpenAI, local models via Ollama, etc.)~~ Done.
-- ~~Job array support in the submission UI~~ Done.
+- Remote cleanup from F1: delete synced/terminal job directories on the cluster
+  to reclaim scratch space without SSH-ing in manually
+- Support for additional AI providers (OpenAI, local models via Ollama, etc.)
+- Graham and Beluga (Compute Canada) cluster profiles
+- Job array support in the submission UI
 - Hosted tier with managed API key and web dashboard
 - conda-forge package for HPC environments that prefer conda
 - Windows support (WSL2 path handling, no systemd dependency)
-- ~~Remote cleanup from F1: delete synced/terminal job directories on the cluster to reclaim scratch space without SSH-ing in manually~~ Done.
-- ~~Cost estimation before submission based on requested resources and account allocation~~ Done.
+- Cost estimation before submission based on requested resources and account allocation
 
 ## Support
 
