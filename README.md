@@ -1,9 +1,8 @@
 # ClusterPilot
 
-**[clusterpilot.sh](https://clusterpilot.sh)**
-
 AI-assisted HPC workflow manager for Compute Canada (DRAC) clusters and the
-University of Manitoba's Grex cluster.
+University of Manitoba's Grex cluster. 
+clusterpilot.sh
 
 Built by a computational physics PhD student who got tired of doing this manually.
 
