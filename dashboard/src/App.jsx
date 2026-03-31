@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { RedirectToSignIn, useUser, useAuth } from "@clerk/react";
+import { RedirectToSignIn, useUser, useAuth, useClerk } from "@clerk/react";
 import { makeApiClient } from "./api.js";
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -773,6 +773,7 @@ export default function ClusterPilotDashboard() {
 
   const { isSignedIn, isLoaded, getToken } = useAuth();
   const { user } = useUser();
+  const { signOut } = useClerk();
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
 
   useEffect(() => {
@@ -842,12 +843,26 @@ export default function ClusterPilotDashboard() {
         <Glow color={T.amber} style={{ fontFamily: T.mono, fontSize: 17, fontWeight: 700, letterSpacing: "0.18em" }}>
           ◈ CLUSTERPILOT
         </Glow>
-        <div style={{ display: "flex", alignItems: "center", gap: 10,
-          background: T.panel2, border: `1px solid ${T.border2}`,
-          borderRadius: 5, padding: "5px 12px",
-        }}>
-          <Glow color={T.amberDim} style={{ fontFamily: T.mono, fontSize: 14 }}>◈</Glow>
-          <span style={{ fontFamily: T.mono, fontSize: 15, color: T.dim }}>{email}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{
+            background: T.panel2, border: `1px solid ${T.border2}`,
+            borderRadius: 5, padding: "5px 12px",
+            display: "flex", alignItems: "center", gap: 10,
+          }}>
+            <Glow color={T.amberDim} style={{ fontFamily: T.mono, fontSize: 14 }}>◈</Glow>
+            <span style={{ fontFamily: T.mono, fontSize: 15, color: T.dim }}>{email}</span>
+          </div>
+          <button
+            onClick={() => signOut({ redirectUrl: "https://clusterpilot.sh" })}
+            style={{
+              background: "none", border: `1px solid ${T.border3}`,
+              borderRadius: 5, padding: "5px 12px",
+              fontFamily: T.mono, fontSize: 13, color: T.dim,
+              cursor: "pointer",
+            }}
+          >
+            Sign out
+          </button>
         </div>
       </div>
 
