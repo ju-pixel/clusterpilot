@@ -43,6 +43,10 @@ cluster_type = "grex"   # "drac", "grex", or "generic" (any other SLURM cluster)
 backend = "ntfy"
 ntfy_topic = ""              # your ntfy.sh topic string
 ntfy_server = "https://ntfy.sh"
+
+[hosted]
+api_url = "https://api.clusterpilot.sh"
+api_token = ""               # cp-<token> from the dashboard (leave blank for self-hosted)
 """
 
 
@@ -76,6 +80,12 @@ class NotificationConfig:
     backend: str = "ntfy"
     ntfy_topic: str = ""
     ntfy_server: str = "https://ntfy.sh"
+
+
+@dataclass
+class HostedConfig:
+    api_url: str = "https://api.clusterpilot.sh"
+    api_token: str = ""  # cp-<token>; empty means hosted sync is disabled
 
 
 _DEFAULT_UPLOAD_EXCLUDES: list[str] = [
@@ -120,6 +130,7 @@ class Config:
     defaults: Defaults
     clusters: list[ClusterProfile] = field(default_factory=list)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    hosted: HostedConfig = field(default_factory=HostedConfig)
 
     def get_cluster(self, name: str) -> ClusterProfile | None:
         """Return the cluster profile with the given name, or None."""
@@ -218,4 +229,10 @@ def _from_dict(data: dict) -> Config:
         ntfy_server=raw_notify.get("ntfy_server", "https://ntfy.sh"),
     )
 
-    return Config(defaults=defaults, clusters=clusters, notifications=notifications)
+    raw_hosted = data.get("hosted", {})
+    hosted = HostedConfig(
+        api_url=raw_hosted.get("api_url", "https://api.clusterpilot.sh"),
+        api_token=raw_hosted.get("api_token", ""),
+    )
+
+    return Config(defaults=defaults, clusters=clusters, notifications=notifications, hosted=hosted)

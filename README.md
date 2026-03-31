@@ -393,7 +393,7 @@ ruff check .    # lint
 - ~~Job array support in the submission UI~~
 - ~~conda-forge package for HPC environments that prefer conda~~
 - ~~Cost estimation before submission based on requested resources and account allocation~~
-- Hosted tier with managed API key and web dashboard
+- ~~Hosted tier with managed API key and web dashboard~~ — live at [app.clusterpilot.sh](https://app.clusterpilot.sh)
 - Windows support (WSL2 path handling, no systemd dependency)
 
 ## Support
@@ -405,6 +405,4 @@ consider [sponsoring development](https://github.com/sponsors/ju-pixel).
 
 MIT - free to use and self-host.
 
-A hosted tier (managed API key, web dashboard) is planned for researchers who
-want zero setup. Subscribing will also support continued development. The
-self-hosted version will always be fully functional.
+A hosted tier is available at [app.clusterpilot.sh](https://app.clusterpilot.sh) ($3/month, 14-day free trial) for researchers who want zero setup — managed API key, web dashboard, and multi-machine sync included. The self-hosted version is always fully functional.

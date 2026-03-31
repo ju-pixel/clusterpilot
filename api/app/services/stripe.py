@@ -15,6 +15,7 @@ async def create_checkout_session(
     cancel_url: str,
     is_pi_group: bool = False,
     quantity: int = 1,
+    trial_period_days: int = 0,
 ) -> str:
     """Create a Stripe Checkout Session and return the redirect URL."""
     params: dict = {
@@ -25,6 +26,9 @@ async def create_checkout_session(
         "cancel_url": cancel_url,
         "allow_promotion_codes": False,
     }
+
+    if trial_period_days > 0:
+        params["subscription_data"] = {"trial_period_days": trial_period_days}
 
     if is_pi_group:
         params["line_items"][0]["adjustable_quantity"] = {

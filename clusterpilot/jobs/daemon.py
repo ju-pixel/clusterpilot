@@ -29,6 +29,7 @@ from clusterpilot.cluster.slurm import (
 )
 from clusterpilot.config import ClusterProfile, Config
 from clusterpilot.db import DB_PATH, JobRecord, get_active_jobs, init_db, update_status
+from clusterpilot.jobs.sync import sync_job
 from clusterpilot.notify.ntfy import (
     notify_completed,
     notify_eta,
@@ -171,6 +172,7 @@ class PollDaemon:
                 await notify_started(self.config.notifications, job)
             except Exception:
                 log.warning("Failed to send start notification for %s", job.job_id, exc_info=True)
+            await sync_job(job, new_status, self.config.hosted)
 
         elif new_status in TERMINAL_STATES:
             await update_status(
@@ -221,6 +223,7 @@ class PollDaemon:
             await notify_completed(self.config.notifications, job)
         except Exception:
             log.warning("Failed to send completion notification for %s", job.job_id, exc_info=True)
+        await sync_job(job, status, self.config.hosted)
 
     async def _notify_failed(
         self,
@@ -238,6 +241,7 @@ class PollDaemon:
             await notify_failed(self.config.notifications, job, log_tail)
         except Exception:
             log.warning("Failed to send failure notification for %s", job.job_id, exc_info=True)
+        await sync_job(job, status, self.config.hosted, log_tail=log_tail or None)
 
     # ── ETA / low-time notifications ──────────────────────────────────────────
 

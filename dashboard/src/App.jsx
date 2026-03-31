@@ -1,25 +1,26 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { RedirectToSignIn, useUser, useAuth } from "@clerk/react";
+import { makeApiClient } from "./api.js";
 
-// ── Design tokens (matches shared system in product-development-plan-v2) ───────
+// ── Design tokens ─────────────────────────────────────────────────────────────
 const T = {
   bg:       "#0a0a0a",
   panel:    "#0d0d0d",
   panel2:   "#111111",
-  panel3:   "#161616",   // card/row surface
+  panel3:   "#161616",
   border:   "#1a1a1a",
   border2:  "#222222",
   border3:  "#2a2a2a",
-  amber:    "#FFB866",   // CP primary accent
+  amber:    "#FFB866",
   amberDim: "#7a4a18",
   amberLo:  "#1e1000",
-  green:    "#4ade80",   // running / active states
+  green:    "#4ade80",
   greenDim: "#0f3a1f",
   red:      "#f87171",
   redDim:   "#3a0f0f",
-  cyan:     "#67e8f9",   // completed states
+  cyan:     "#67e8f9",
   cyanDim:  "#0f3a40",
-  muted:    "#8899b2",   // steel blue-grey
+  muted:    "#8899b2",
   dim:      "#5a6880",
   vdim:     "#2a2a2a",
   text:     "#fafafa",
@@ -34,59 +35,33 @@ const STATUS = {
   FAILED:    { fg: T.red,   bg: T.redDim,   icon: "✗" },
 };
 
-// ── Sample data ───────────────────────────────────────────────────────────────
-const JOBS = [
-  { id: "15042891", name: "mc_sweep_T100_400",  status: "RUNNING",   cluster: "cedar",  partition: "gpu",    gpus: "A100×2", elapsed: "3:42:17", walltime: "8:00:00",  pct: 46,  submitted: "2026-03-29 09:14", account: "def-mlafond", node: "cdr2345",  mem: "31.2/32G" },
-  { id: "15042654", name: "dipole_N1024_equil", status: "PENDING",   cluster: "narval", partition: "gpu",    gpus: "A100×4", elapsed: null,      walltime: "12:00:00", pct: 0,   submitted: "2026-03-29 09:08", account: "def-mlafond", node: null,        mem: null },
-  { id: "15041998", name: "spinwave_k_scan",    status: "RUNNING",   cluster: "grex",   partition: "stamps", gpus: "V100×4", elapsed: "1:05:44", walltime: "4:00:00",  pct: 27,  submitted: "2026-03-29 08:53", account: "def-stamps",  node: "tatanka2",  mem: "14.8/16G" },
-  { id: "15040777", name: "mc_equil_run_09",    status: "COMPLETED", cluster: "cedar",  partition: "gpu",    gpus: "A100×2", elapsed: "5:11:03", walltime: "6:00:00",  pct: 100, submitted: "2026-03-29 01:22", account: "def-mlafond", node: "cdr2298",   mem: "32.0/32G" },
-  { id: "15039450", name: "benchmark_N128",     status: "FAILED",    cluster: "grex",   partition: "stamps", gpus: "V100×4", elapsed: "0:03:12", walltime: "1:00:00",  pct: 5,   submitted: "2026-03-28 22:10", account: "def-stamps",  node: "tatanka3",  mem: "4.1/8G"  },
-  { id: "15038201", name: "suscept_chi_scan",   status: "COMPLETED", cluster: "narval", partition: "gpu",    gpus: "A100×1", elapsed: "9:58:44", walltime: "10:00:00", pct: 100, submitted: "2026-03-28 18:45", account: "def-mlafond", node: "ng10042",   mem: "7.9/8G"  },
-  { id: "15037090", name: "order_param_sweep",  status: "COMPLETED", cluster: "cedar",  partition: "gpu",    gpus: "A100×2", elapsed: "7:22:01", walltime: "8:00:00",  pct: 100, submitted: "2026-03-28 12:11", account: "def-mlafond", node: "cdr2301",   mem: "31.5/32G" },
-];
-
-const SLURM_SCRIPTS = {
-  "15042891": `#!/bin/bash
-#SBATCH --job-name=mc_sweep_T100_400
-#SBATCH --account=def-mlafond
-#SBATCH --gres=gpu:a100:2
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=08:00:00
-#SBATCH --output=%x-%j.out
-
-module load julia/1.10.4 cuda/12.2
-
-cd $SCRATCH/clusterpilot_jobs/mc_sweep_T100_400
-
-julia --project=. run_simulation.jl \\
-  --config config.toml \\
-  --output $SCRATCH/results/$SLURM_JOB_ID`,
+// ── Cluster metadata (static display info — connections managed by TUI) ───────
+const CLUSTER_META = {
+  cedar:  { full: "cedar.computecanada.ca",  type: "drac" },
+  narval: { full: "narval.computecanada.ca", type: "drac" },
+  grex:   { full: "yak.hpc.umanitoba.ca",    type: "grex" },
 };
 
-const LOGS = {
-  "15042891": [
-    "[ 0.00s] SpinGlassLab v2.1.4 initialising",
-    "[ 0.12s] CUDA device: NVIDIA A100-SXM4-80GB (×2)",
-    "[ 0.13s] Loading assembly: N=1024, periodic BCs",
-    "[ 0.41s] Dipole interaction tensor computed",
-    "[ 0.42s] Starting sweep: T ∈ [100K, 400K], 50 steps",
-    "[892.3s] T=100K done  │ <M>=0.9821 │ χ=0.0031",
-    "[1847s] T=108K done  │ <M>=0.9744 │ χ=0.0038",
-    "[2891s] T=116K done  │ <M>=0.9601 │ χ=0.0052",
-    "[3744s] T=124K done  │ <M>=0.9389 │ χ=0.0079",
-    "[4601s] T=132K done  │ <M>=0.9104 │ χ=0.0118",
-    "[5512s] T=140K done  │ <M>=0.8751 │ χ=0.0181",
-    "[6489s] T=148K done  │ <M>=0.8244 │ χ=0.0294",
-    "[7401s] T=156K ──── currently running ────",
-  ],
-};
+// ── Walltime helpers ──────────────────────────────────────────────────────────
+function walltimeToSeconds(s) {
+  if (!s) return 0;
+  const parts = s.split(":").map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return 0;
+}
 
-const CLUSTERS = [
-  { name: "cedar.computecanada.ca",  short: "cedar",  type: "drac", status: "connected", running: 2, pending: 1 },
-  { name: "narval.computecanada.ca", short: "narval", type: "drac", status: "connected", running: 0, pending: 1 },
-  { name: "yak.hpc.umanitoba.ca",    short: "grex",   type: "grex", status: "connected", running: 1, pending: 0 },
-];
+function walltimePct(consumed, requested) {
+  const c = walltimeToSeconds(consumed);
+  const r = walltimeToSeconds(requested);
+  if (!r || !c) return 0;
+  return Math.min(100, Math.round((c / r) * 100));
+}
+
+function formatDatetime(iso) {
+  if (!iso) return "─";
+  return iso.replace("T", " ").slice(0, 16);
+}
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 function Glow({ color = T.amber, children, style = {} }) {
@@ -162,12 +137,35 @@ function SlurmScript({ src }) {
 
 // ── Pages ─────────────────────────────────────────────────────────────────────
 
-function JobsPage() {
-  const [selectedId, setSelectedId] = useState("15042891");
+function JobsPage({ jobs, loading }) {
+  const [selectedId, setSelectedId] = useState(null);
   const [detailTab, setDetailTab] = useState("script");
 
-  const job = JOBS.find(j => j.id === selectedId);
-  const sc = job ? STATUS[job.status] : null;
+  // Auto-select first job once loaded
+  useEffect(() => {
+    if (jobs.length > 0 && selectedId === null) {
+      setSelectedId(jobs[0].slurm_job_id);
+    }
+  }, [jobs, selectedId]);
+
+  const job = jobs.find(j => j.slurm_job_id === selectedId) ?? null;
+  const sc = job ? (STATUS[job.status] ?? STATUS.PENDING) : null;
+
+  if (loading) {
+    return (
+      <div style={{ padding: 32, fontFamily: T.mono, fontSize: 15, color: T.dim }}>
+        Loading jobs...
+      </div>
+    );
+  }
+
+  if (jobs.length === 0) {
+    return (
+      <div style={{ padding: 32, fontFamily: T.sans, fontSize: 16, color: T.dim }}>
+        No jobs yet. Submit a job from the ClusterPilot TUI and it will appear here.
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flex: 1, overflow: "hidden", gap: 0 }}>
@@ -192,11 +190,12 @@ function JobsPage() {
           ))}
         </div>
 
-        {JOBS.map(j => {
-          const s = STATUS[j.status];
-          const active = j.id === selectedId;
+        {jobs.map(j => {
+          const s = STATUS[j.status] ?? STATUS.PENDING;
+          const active = j.slurm_job_id === selectedId;
+          const pct = walltimePct(j.walltime_consumed, j.walltime_requested);
           return (
-            <div key={j.id} onClick={() => setSelectedId(j.id)} style={{
+            <div key={j.slurm_job_id} onClick={() => setSelectedId(j.slurm_job_id)} style={{
               display: "grid",
               gridTemplateColumns: "200px 130px 100px 110px 230px 160px",
               padding: "11px 20px",
@@ -206,34 +205,34 @@ function JobsPage() {
               cursor: "pointer",
               alignItems: "center",
             }}>
-              {/* name + id */}
+              {/* job id */}
               <div>
-                <div style={{ fontFamily: T.sans, fontSize: 16, color: T.text, fontWeight: active ? 500 : 400 }}>
-                  {j.name}
+                <div style={{ fontFamily: T.mono, fontSize: 15, color: T.text, fontWeight: active ? 500 : 400 }}>
+                  #{j.slurm_job_id}
                 </div>
-                <div style={{ fontFamily: T.mono, fontSize: 14, color: T.dim, marginTop: 2 }}>
-                  #{j.id}
+                <div style={{ fontFamily: T.sans, fontSize: 13, color: T.dim, marginTop: 2 }}>
+                  {j.cluster_name}
                 </div>
               </div>
               {/* status */}
               <div><StatusBadge status={j.status} /></div>
               {/* cluster */}
-              <div style={{ fontFamily: T.mono, fontSize: 15, color: T.muted }}>{j.cluster}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 15, color: T.muted }}>{j.cluster_name}</div>
               {/* partition */}
-              <div style={{ fontFamily: T.mono, fontSize: 15, color: T.dim }}>{j.partition}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 15, color: T.dim }}>{j.partition ?? "─"}</div>
               {/* walltime */}
               <div>
                 <div style={{ fontFamily: T.mono, fontSize: 15, color: s.fg }}>
-                  {j.elapsed ?? "─:──:──"} / {j.walltime}
+                  {j.walltime_consumed ?? "─:──:──"} / {j.walltime_requested ?? "─:──:──"}
                 </div>
-                {j.status !== "PENDING" && (
+                {j.status !== "PENDING" && (j.walltime_consumed || j.walltime_requested) && (
                   <div style={{ marginTop: 5 }}>
-                    <ProgressBar pct={j.pct} color={s.fg} />
+                    <ProgressBar pct={pct} color={s.fg} />
                   </div>
                 )}
               </div>
               {/* submitted */}
-              <div style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>{j.submitted}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>{formatDatetime(j.submitted_at)}</div>
             </div>
           );
         })}
@@ -253,19 +252,16 @@ function JobsPage() {
             background: T.panel,
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-              <span style={{ fontFamily: T.sans, fontSize: 17, fontWeight: 600, color: T.text }}>
-                {job.name}
+              <span style={{ fontFamily: T.mono, fontSize: 16, fontWeight: 600, color: T.text }}>
+                #{job.slurm_job_id}
               </span>
               <StatusBadge status={job.status} />
             </div>
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
               {[
-                ["cluster",   job.cluster],
-                ["partition", job.partition],
-                ["GPUs",      job.gpus],
-                ["node",      job.node ?? "─"],
-                ["mem",       job.mem  ?? "─"],
-                ["account",   job.account],
+                ["cluster",   job.cluster_name],
+                ["partition", job.partition ?? "─"],
+                ["submitted", formatDatetime(job.submitted_at)],
               ].map(([k, v]) => (
                 <div key={k}>
                   <span style={{ fontFamily: T.mono, fontSize: 13, color: T.dim }}>{k} </span>
@@ -296,40 +292,34 @@ function JobsPage() {
           {/* tab content */}
           <div style={{ flex: 1, overflow: "auto", background: T.bg }}>
             {detailTab === "script" && (
-              <SlurmScript src={SLURM_SCRIPTS[job.id]} />
+              <SlurmScript src={job.script} />
             )}
 
             {detailTab === "logs" && (
               <div style={{ padding: "12px 16px" }}>
-                {(LOGS[job.id] ?? ["No log output available."]).map((line, i) => (
-                  <div key={i} style={{
-                    fontFamily: T.mono, fontSize: 15, lineHeight: 1.7,
-                    color: line.includes("error") || line.includes("ERROR") ? T.red
-                         : line.includes("done") || line.includes("completed") ? T.green
-                         : line.includes("running") ? T.amber
-                         : T.muted,
-                  }}>{line}</div>
-                ))}
+                {job.log_tail
+                  ? job.log_tail.split("\n").map((line, i) => (
+                      <div key={i} style={{
+                        fontFamily: T.mono, fontSize: 15, lineHeight: 1.7,
+                        color: line.includes("error") || line.includes("ERROR") ? T.red
+                             : line.includes("done") || line.includes("completed") ? T.green
+                             : line.includes("running") ? T.amber
+                             : T.muted,
+                      }}>{line}</div>
+                    ))
+                  : <div style={{ fontFamily: T.mono, fontSize: 15, color: T.dim, padding: "4px 0" }}>
+                      No log output available.
+                    </div>
+                }
               </div>
             )}
 
             {detailTab === "parameters" && (
               <div style={{ padding: "14px 16px" }}>
-                <pre style={{
-                  margin: 0, fontFamily: T.mono, fontSize: 15, lineHeight: 1.7, color: T.muted,
-                }}>
-{`{
-  "T_min": 100,
-  "T_max": 400,
-  "T_steps": 50,
-  "N": 1024,
-  "replicas": 10,
-  "seed": 42,
-  "boundary": "periodic",
-  "model": "dipole",
-  "output_dir": "$SCRATCH/results"
-}`}
-                </pre>
+                <div style={{ fontFamily: T.mono, fontSize: 15, color: T.dim, lineHeight: 1.7 }}>
+                  Parameters are not captured in this version.
+                  Use Fieldnotes to record simulation parameters alongside this job.
+                </div>
               </div>
             )}
           </div>
@@ -344,9 +334,9 @@ function JobsPage() {
             <span style={{ fontFamily: T.sans, fontSize: 14, color: T.dim }}>
               Fieldnotes run
             </span>
-            {job.id === "15040777" ? (
+            {job.fieldnotes_run_id ? (
               <span style={{ fontFamily: T.mono, fontSize: 14, color: "#3D74F6" }}>
-                → fn://runs/a3f9c1 ↗
+                → fn://runs/{job.fieldnotes_run_id} ↗
               </span>
             ) : (
               <span style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>not linked</span>
@@ -359,6 +349,57 @@ function JobsPage() {
 }
 
 function NotificationsPage() {
+  const { getToken } = useAuth();
+  const api = makeApiClient(getToken);
+
+  const [prefs, setPrefs] = useState(null);
+  const [topic, setTopic] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api.getNotifyPrefs()
+      .then(data => {
+        setPrefs(data);
+        setTopic(data.ntfy_topic ?? "");
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleToggle(key) {
+    if (!prefs) return;
+    const updated = { ...prefs, [key]: !prefs[key] };
+    setPrefs(updated);
+    try {
+      await api.updateNotifyPrefs(updated);
+    } catch {
+      setPrefs(prefs); // revert on error
+    }
+  }
+
+  async function handleSaveTopic() {
+    if (!prefs) return;
+    setSaving(true);
+    try {
+      const updated = { ...prefs, ntfy_topic: topic || null };
+      await api.updateNotifyPrefs(updated);
+      setPrefs(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const TOGGLES = [
+    { label: "Job starts running",  sub: "PENDING → RUNNING",              key: "notify_on_start"         },
+    { label: "Job completes",       sub: "RUNNING → COMPLETED",            key: "notify_on_complete"      },
+    { label: "Job fails",           sub: "RUNNING → FAILED / TIMEOUT",     key: "notify_on_fail"          },
+    { label: "Walltime warning",    sub: "less than 30 minutes remaining",  key: "notify_on_walltime_warn" },
+  ];
+
   return (
     <div style={{ padding: "28px 32px", maxWidth: 560 }}>
       <h2 style={{ margin: "0 0 4px", fontFamily: T.sans, fontSize: 22, fontWeight: 600, color: T.text }}>
@@ -368,39 +409,41 @@ function NotificationsPage() {
         ClusterPilot sends notifications via ntfy.sh or any compatible webhook.
       </p>
 
-      {/* ntfy endpoint */}
+      {/* ntfy topic */}
       <div style={{ marginBottom: 24 }}>
         <label style={{ display: "block", fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: T.muted, marginBottom: 6 }}>
           ntfy.sh topic URL
         </label>
         <div style={{ display: "flex", gap: 8 }}>
-          <input readOnly value="https://ntfy.sh/cp-julia-a8f3k2" style={{
-            flex: 1, background: T.panel2, border: `1px solid ${T.border2}`,
-            borderRadius: 5, padding: "8px 12px",
-            fontFamily: T.mono, fontSize: 15, color: T.text,
-            outline: "none",
-          }} />
-          <button style={btnStyle}>Copy</button>
+          <input
+            value={topic}
+            onChange={e => setTopic(e.target.value)}
+            placeholder="https://ntfy.sh/your-topic"
+            style={{
+              flex: 1, background: T.panel2, border: `1px solid ${T.border2}`,
+              borderRadius: 5, padding: "8px 12px",
+              fontFamily: T.mono, fontSize: 15, color: T.text,
+              outline: "none",
+            }}
+          />
+          <button
+            onClick={() => { if (topic) navigator.clipboard.writeText(topic); }}
+            style={btnStyle}
+          >
+            Copy
+          </button>
+          <button onClick={handleSaveTopic} disabled={saving} style={btnStyle}>
+            {saved ? "Saved" : saving ? "Saving..." : "Save"}
+          </button>
         </div>
-        <p style={{ margin: "6px 0 0", fontFamily: T.sans, fontSize: 14, color: T.dim }}>
-          Subscribe on any device: <span style={{ fontFamily: T.mono, color: T.muted }}>ntfy subscribe cp-julia-a8f3k2</span>
-        </p>
-      </div>
-
-      {/* webhook */}
-      <div style={{ marginBottom: 28 }}>
-        <label style={{ display: "block", fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: T.muted, marginBottom: 6 }}>
-          Webhook URL <span style={{ fontFamily: T.sans, fontWeight: 400, color: T.dim }}>(optional, alternative to ntfy)</span>
-        </label>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input placeholder="https://hooks.slack.com/services/..." style={{
-            flex: 1, background: T.panel2, border: `1px solid ${T.border2}`,
-            borderRadius: 5, padding: "8px 12px",
-            fontFamily: T.mono, fontSize: 15, color: T.dim,
-            outline: "none",
-          }} />
-          <button style={btnStyle}>Save</button>
-        </div>
+        {topic && (
+          <p style={{ margin: "6px 0 0", fontFamily: T.sans, fontSize: 14, color: T.dim }}>
+            Subscribe on any device:{" "}
+            <span style={{ fontFamily: T.mono, color: T.muted }}>
+              ntfy subscribe {topic.split("/").pop()}
+            </span>
+          </p>
+        )}
       </div>
 
       {/* event toggles */}
@@ -408,51 +451,97 @@ function NotificationsPage() {
         <div style={{ fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: T.muted, marginBottom: 12 }}>
           Send a notification when
         </div>
-        {[
-          { label: "Job starts running",      sub: "PENDING → RUNNING",              on: true  },
-          { label: "Job completes",           sub: "RUNNING → COMPLETED",            on: true  },
-          { label: "Job fails",               sub: "RUNNING → FAILED / TIMEOUT",     on: true  },
-          { label: "Walltime warning",        sub: "less than 30 minutes remaining",  on: false },
-        ].map(item => (
-          <div key={item.label} style={{
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "12px 16px",
-            background: T.panel2, border: `1px solid ${T.border}`,
-            borderRadius: 6, marginBottom: 8,
-          }}>
-            <div>
-              <div style={{ fontFamily: T.sans, fontSize: 16, color: T.text }}>{item.label}</div>
-              <div style={{ fontFamily: T.mono, fontSize: 14, color: T.dim, marginTop: 2 }}>{item.sub}</div>
-            </div>
-            {/* toggle */}
-            <div style={{
-              width: 40, height: 22, borderRadius: 11,
-              background: item.on ? T.amber : T.border2,
-              position: "relative", cursor: "pointer", flexShrink: 0,
-              transition: "background 0.2s",
+        {TOGGLES.map(item => {
+          const on = prefs ? prefs[item.key] : false;
+          return (
+            <div key={item.key} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "12px 16px",
+              background: T.panel2, border: `1px solid ${T.border}`,
+              borderRadius: 6, marginBottom: 8,
             }}>
-              <div style={{
-                position: "absolute", top: 3,
-                left: item.on ? 20 : 3,
-                width: 16, height: 16, borderRadius: "50%",
-                background: T.text, transition: "left 0.2s",
-              }} />
+              <div>
+                <div style={{ fontFamily: T.sans, fontSize: 16, color: T.text }}>{item.label}</div>
+                <div style={{ fontFamily: T.mono, fontSize: 14, color: T.dim, marginTop: 2 }}>{item.sub}</div>
+              </div>
+              <div
+                onClick={() => handleToggle(item.key)}
+                style={{
+                  width: 40, height: 22, borderRadius: 11,
+                  background: on ? T.amber : T.border2,
+                  position: "relative", cursor: "pointer", flexShrink: 0,
+                  transition: "background 0.2s",
+                }}
+              >
+                <div style={{
+                  position: "absolute", top: 3,
+                  left: on ? 20 : 3,
+                  width: 16, height: 16, borderRadius: "50%",
+                  background: T.text, transition: "left 0.2s",
+                }} />
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function AccountPage() {
+function AccountPage({ email, userInfo }) {
+  const { getToken } = useAuth();
+  const api = makeApiClient(getToken);
+
+  const [keyInfo, setKeyInfo] = useState(undefined); // undefined = loading, null = no key
+  const [rotating, setRotating] = useState(false);
+  const [newKey, setNewKey] = useState(null); // shown once after issue/rotate
+  const [billingLoading, setBillingLoading] = useState(false);
+
+  useEffect(() => {
+    api.getKeys()
+      .then(setKeyInfo)
+      .catch(() => {
+        // 404 means no key issued yet — that's a valid state
+        setKeyInfo(null);
+      });
+  }, []);
+
+  async function handleIssueOrRotate() {
+    setRotating(true);
+    setNewKey(null);
+    try {
+      const result = keyInfo === null
+        ? await api.issueKey()
+        : await api.rotateKey();
+      setNewKey(result.key);
+      setKeyInfo(result);
+    } catch {
+      // ignore
+    } finally {
+      setRotating(false);
+    }
+  }
+
+  async function handleBillingPortal() {
+    setBillingLoading(true);
+    try {
+      const { url } = await api.getBillingPortal();
+      window.location.href = url;
+    } catch {
+      setBillingLoading(false);
+    }
+  }
+
+  const hasKey = keyInfo !== null && keyInfo !== undefined;
+  const keyDisplay = newKey ?? (hasKey ? keyInfo.key : keyInfo === undefined ? "Loading..." : "No key issued yet");
+
   return (
     <div style={{ padding: "28px 32px", maxWidth: 560 }}>
       <h2 style={{ margin: "0 0 4px", fontFamily: T.sans, fontSize: 22, fontWeight: 600, color: T.text }}>
         Account
       </h2>
       <p style={{ margin: "0 0 28px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
-        julia@institution.ca
+        {email}
       </p>
 
       {/* managed API key */}
@@ -460,17 +549,35 @@ function AccountPage() {
         <p style={{ margin: "0 0 12px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
           ClusterPilot uses this key for SLURM script generation. You do not need your own Anthropic account.
         </p>
+        {newKey && (
+          <div style={{
+            background: T.amberLo, border: `1px solid ${T.amber}44`,
+            borderRadius: 5, padding: "8px 12px", marginBottom: 10,
+            fontFamily: T.sans, fontSize: 14, color: T.amber,
+          }}>
+            Copy this key now — it will not be shown again.
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <div style={{
             flex: 1, background: T.panel2, border: `1px solid ${T.border2}`,
             borderRadius: 5, padding: "8px 12px",
             fontFamily: T.mono, fontSize: 15, color: T.dim,
-            letterSpacing: "0.1em",
-          }}>sk-ant-•••••••••••••••••••••••••••••••••••f3kQ</div>
-          <button style={btnStyle}>Rotate</button>
+            letterSpacing: "0.05em", wordBreak: "break-all",
+          }}>{keyDisplay}</div>
+          {newKey && (
+            <button onClick={() => navigator.clipboard.writeText(newKey)} style={btnStyle}>
+              Copy
+            </button>
+          )}
+          <button onClick={handleIssueOrRotate} disabled={rotating || keyInfo === undefined} style={btnStyle}>
+            {rotating ? "..." : hasKey ? "Rotate" : "Issue key"}
+          </button>
         </div>
         <p style={{ margin: "6px 0 0", fontFamily: T.sans, fontSize: 14, color: T.dim }}>
-          Last rotated: never. Rotating issues a new key and invalidates the current one immediately.
+          {hasKey
+            ? "Rotating issues a new key and invalidates the current one immediately."
+            : "Issue a key to start using the managed API from the ClusterPilot TUI."}
         </p>
       </Section>
 
@@ -483,13 +590,16 @@ function AccountPage() {
         }}>
           <div>
             <div style={{ fontFamily: T.sans, fontSize: 17, fontWeight: 600, color: T.text }}>
-              Researcher <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>$7 / month</span>
+              Researcher{" "}
+              <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>$3 / month</span>
             </div>
             <div style={{ fontFamily: T.sans, fontSize: 15, color: T.dim, marginTop: 3 }}>
-              Renews 29 Apr 2026
+              {userInfo?.subscription_status ?? "loading..."}
             </div>
           </div>
-          <button style={btnStyle}>Manage billing ↗</button>
+          <button onClick={handleBillingPortal} disabled={billingLoading} style={btnStyle}>
+            {billingLoading ? "..." : "Manage billing ↗"}
+          </button>
         </div>
       </Section>
 
@@ -508,11 +618,12 @@ function AccountPage() {
               Revokes managed API key at period end. Local tool still works.
             </div>
           </div>
-          <button style={{
-            ...btnStyle,
-            background: T.redDim, border: `1px solid ${T.red}66`,
-            color: T.red,
-          }}>Cancel</button>
+          <button
+            onClick={handleBillingPortal}
+            style={{ ...btnStyle, background: T.redDim, border: `1px solid ${T.red}66`, color: T.red }}
+          >
+            Cancel
+          </button>
         </div>
       </Section>
     </div>
@@ -549,17 +660,127 @@ const NAV = [
   { id: "account",       icon: "◈", label: "Account"       },
 ];
 
+function SubscribeGate({ email, getToken }) {
+  const api = makeApiClient(getToken);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubscribe() {
+    setLoading(true);
+    try {
+      const { url } = await api.createCheckout();
+      window.location.href = url;
+    } catch {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{
+      background: T.bg, minHeight: "100vh", display: "flex",
+      flexDirection: "column", alignItems: "center", justifyContent: "center",
+      fontFamily: T.sans, padding: "0 24px",
+    }}>
+      <Glow color={T.amber} style={{ fontFamily: T.mono, fontSize: 17, fontWeight: 700, letterSpacing: "0.18em", marginBottom: 40 }}>
+        ◈ CLUSTERPILOT
+      </Glow>
+      <div style={{
+        background: T.panel, border: `1px solid ${T.border2}`,
+        borderRadius: 10, padding: "36px 40px", maxWidth: 460, width: "100%",
+      }}>
+        <h2 style={{ margin: "0 0 8px", fontFamily: T.sans, fontSize: 22, fontWeight: 700, color: T.text }}>
+          Start your free trial
+        </h2>
+        <p style={{ margin: "0 0 28px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
+          14 days free, then $3 / month. Cancel any time.
+        </p>
+        <div style={{ marginBottom: 28 }}>
+          {[
+            "Managed API key — no Anthropic account needed",
+            "Web dashboard for all job history",
+            "Multi-machine sync — one view across all clusters",
+            "Priority support",
+          ].map(f => (
+            <div key={f} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <span style={{ color: T.amber, fontFamily: T.mono, fontSize: 14 }}>✓</span>
+              <span style={{ fontFamily: T.sans, fontSize: 15, color: T.muted }}>{f}</span>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={handleSubscribe}
+          disabled={loading}
+          style={{
+            width: "100%", padding: "12px 0",
+            background: T.amber, border: "none", borderRadius: 6,
+            fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.bg,
+            cursor: loading ? "not-allowed" : "pointer",
+            opacity: loading ? 0.7 : 1,
+          }}
+        >
+          {loading ? "Redirecting..." : "Start free trial →"}
+        </button>
+        <p style={{ margin: "14px 0 0", fontFamily: T.mono, fontSize: 13, color: T.dim, textAlign: "center" }}>
+          {email}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function ClusterPilotDashboard() {
   const [activeNav, setActiveNav] = useState("jobs");
-  const { isSignedIn, isLoaded } = useAuth();
+  const [jobs, setJobs] = useState([]);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [userInfo, setUserInfo] = useState(null);
+
+  const { isSignedIn, isLoaded, getToken } = useAuth();
   const { user } = useUser();
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const api = makeApiClient(getToken);
+    api.getJobs()
+      .then(data => { setJobs(data); setJobsLoading(false); })
+      .catch(() => setJobsLoading(false));
+    api.getMe().then(setUserInfo).catch(() => {});
+  }, [isSignedIn, getToken]);
 
   if (!isLoaded) return null;
   if (!isSignedIn) return <RedirectToSignIn />;
 
-  const running = JOBS.filter(j => j.status === "RUNNING").length;
-  const pending = JOBS.filter(j => j.status === "PENDING").length;
+  // Show subscribe gate for free users once userInfo has loaded
+  const subStatus = userInfo?.subscription_status;
+  if (userInfo && subStatus !== "active" && subStatus !== "trialing") {
+    return <SubscribeGate email={email} getToken={getToken} />;
+  }
+
+  const running = jobs.filter(j => j.status === "RUNNING").length;
+  const pending = jobs.filter(j => j.status === "PENDING").length;
+
+  // Derive per-cluster counts from live jobs
+  const clusterCounts = {};
+  jobs.forEach(j => {
+    if (!clusterCounts[j.cluster_name]) clusterCounts[j.cluster_name] = { running: 0, pending: 0 };
+    if (j.status === "RUNNING")  clusterCounts[j.cluster_name].running++;
+    if (j.status === "PENDING")  clusterCounts[j.cluster_name].pending++;
+  });
+
+  // Build sidebar cluster list from seen clusters, falling back to CLUSTER_META for display info
+  const seenClusters = Object.keys(clusterCounts);
+  const sidebarClusters = seenClusters.length > 0
+    ? seenClusters.map(name => ({
+        short: name,
+        type: CLUSTER_META[name]?.type ?? null,
+        running: clusterCounts[name].running,
+        pending: clusterCounts[name].pending,
+      }))
+    : Object.entries(CLUSTER_META).map(([name, meta]) => ({
+        short: name,
+        type: meta.type,
+        running: 0,
+        pending: 0,
+      }));
 
   return (
     <div style={{
@@ -633,12 +854,12 @@ export default function ClusterPilotDashboard() {
             padding: "14px 0 8px",
           }}>
             <SectionLabel>Clusters</SectionLabel>
-            {CLUSTERS.map(c => (
-              <div key={c.name} style={{
+            {sidebarClusters.map(c => (
+              <div key={c.short} style={{
                 display: "flex", alignItems: "center",
                 padding: "6px 16px", gap: 8,
               }}>
-                <Dot color={c.status === "connected" ? T.green : T.red} />
+                <Dot color={T.green} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontFamily: T.mono, fontSize: 15, color: T.muted }}>{c.short}</div>
                   <div style={{ fontFamily: T.mono, fontSize: 13, color: T.dim }}>
@@ -649,9 +870,11 @@ export default function ClusterPilotDashboard() {
                       : "idle"}
                   </div>
                 </div>
-                <span style={{ fontFamily: T.mono, fontSize: 12, color: T.border3, textTransform: "uppercase" }}>
-                  {c.type}
-                </span>
+                {c.type && (
+                  <span style={{ fontFamily: T.mono, fontSize: 12, color: T.border3, textTransform: "uppercase" }}>
+                    {c.type}
+                  </span>
+                )}
               </div>
             ))}
 
@@ -697,9 +920,9 @@ export default function ClusterPilotDashboard() {
 
           {/* page content */}
           <div style={{ flex: 1, overflow: "auto", display: "flex" }}>
-            {activeNav === "jobs"          && <JobsPage />}
+            {activeNav === "jobs"          && <JobsPage jobs={jobs} loading={jobsLoading} />}
             {activeNav === "notifications" && <NotificationsPage />}
-            {activeNav === "account"       && <AccountPage />}
+            {activeNav === "account"       && <AccountPage email={email} userInfo={userInfo} />}
           </div>
         </div>
       </div>

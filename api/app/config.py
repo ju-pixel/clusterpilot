@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # App
     environment: str = "development"
-    cors_origins: list[str] = ["http://localhost:5173", "https://clusterpilot.sh"]
+    cors_origins: list[str] = ["http://localhost:5173", "https://clusterpilot.sh", "https://app.clusterpilot.sh"]
 
 
 settings = Settings()  # type: ignore[call-arg]

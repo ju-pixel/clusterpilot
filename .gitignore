@@ -231,3 +231,6 @@ config.toml
 # Design files kept in repo (intentionally tracked)
 # hpc-app-flow.jsx and clusterpilot-tui.jsx are design references
 CLAUDE.md
+
+# Local Netlify folder
+.netlify
