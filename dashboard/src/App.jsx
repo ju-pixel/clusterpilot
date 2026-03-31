@@ -496,6 +496,8 @@ function AccountPage({ email, userInfo }) {
   const [rotating, setRotating] = useState(false);
   const [newKey, setNewKey] = useState(null); // shown once after issue/rotate
   const [billingLoading, setBillingLoading] = useState(false);
+  const [keyError, setKeyError] = useState(null);
+  const [billingError, setBillingError] = useState(null);
 
   useEffect(() => {
     api.getKeys()
@@ -509,14 +511,15 @@ function AccountPage({ email, userInfo }) {
   async function handleIssueOrRotate() {
     setRotating(true);
     setNewKey(null);
+    setKeyError(null);
     try {
       const result = keyInfo === null
         ? await api.issueKey()
         : await api.rotateKey();
       setNewKey(result.key);
       setKeyInfo(result);
-    } catch {
-      // ignore
+    } catch (err) {
+      setKeyError(err.message || "Request failed.");
     } finally {
       setRotating(false);
     }
@@ -524,10 +527,12 @@ function AccountPage({ email, userInfo }) {
 
   async function handleBillingPortal() {
     setBillingLoading(true);
+    setBillingError(null);
     try {
       const { url } = await api.getBillingPortal();
       window.location.href = url;
-    } catch {
+    } catch (err) {
+      setBillingError(err.message || "Could not open billing portal.");
       setBillingLoading(false);
     }
   }
@@ -544,6 +549,19 @@ function AccountPage({ email, userInfo }) {
         {email}
       </p>
 
+      {/* trial banner */}
+      {userInfo?.subscription_status === "trialing" && (
+        <div style={{
+          background: T.amberLo, border: `1px solid ${T.amber}55`,
+          borderRadius: 6, padding: "10px 14px", marginBottom: 24,
+          fontFamily: T.sans, fontSize: 15, color: T.amber,
+          display: "flex", alignItems: "center", gap: 8,
+        }}>
+          <span style={{ fontFamily: T.mono }}>◈</span>
+          You are on a 14-day free trial. No charge until the trial ends.
+        </div>
+      )}
+
       {/* managed API key */}
       <Section title="Managed API Key">
         <p style={{ margin: "0 0 12px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
@@ -556,6 +574,15 @@ function AccountPage({ email, userInfo }) {
             fontFamily: T.sans, fontSize: 14, color: T.amber,
           }}>
             Copy this key now — it will not be shown again.
+          </div>
+        )}
+        {keyError && (
+          <div style={{
+            background: T.redDim, border: `1px solid ${T.red}55`,
+            borderRadius: 5, padding: "8px 12px", marginBottom: 10,
+            fontFamily: T.mono, fontSize: 13, color: T.red,
+          }}>
+            {keyError}
           </div>
         )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -594,13 +621,24 @@ function AccountPage({ email, userInfo }) {
               <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>$3 / month</span>
             </div>
             <div style={{ fontFamily: T.sans, fontSize: 15, color: T.dim, marginTop: 3 }}>
-              {userInfo?.subscription_status ?? "loading..."}
+              {userInfo?.subscription_status === "trialing" ? "Free trial active"
+                : userInfo?.subscription_status === "active" ? "Active"
+                : userInfo?.subscription_status ?? "loading..."}
             </div>
           </div>
           <button onClick={handleBillingPortal} disabled={billingLoading} style={btnStyle}>
             {billingLoading ? "..." : "Manage billing ↗"}
           </button>
         </div>
+        {billingError && (
+          <div style={{
+            background: T.redDim, border: `1px solid ${T.red}55`,
+            borderRadius: 5, padding: "8px 12px", marginTop: 8,
+            fontFamily: T.mono, fontSize: 13, color: T.red,
+          }}>
+            {billingError}
+          </div>
+        )}
       </Section>
 
       {/* danger zone */}
