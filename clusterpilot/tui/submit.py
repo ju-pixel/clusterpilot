@@ -22,6 +22,7 @@ from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
 from clusterpilot.jobs.env_detect import analyze_script
+from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import run_remote
 from clusterpilot.ssh.rsync import read_ignore_file, upload, upload_file
 
@@ -497,7 +498,13 @@ class SubmitView(Static):
         provider = app._config.provider
         api_key = app._config.api_key
         api_base_url = app._config.api_base_url
-        if not api_key and provider != "ollama":
+        hosted = app._config.hosted
+
+        # Hosted tier: route through the managed proxy instead of calling Anthropic directly.
+        if hosted.api_token and not api_key and provider == "anthropic":
+            api_key = hosted.api_token
+            api_base_url = hosted.api_url.rstrip("/") + "/proxy"
+        elif not api_key and provider != "ollama":
             env_var = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
             self.app.notify(
                 f"No API key. Set api_key in config or {env_var} env var.",
@@ -694,6 +701,9 @@ class SubmitView(Static):
         async with aiosqlite.connect(app._db_path) as db:
             await init_db(db)
             await insert_job(db, record)
+
+        # Sync PENDING state immediately so the job appears in the dashboard.
+        await sync_job(record, "PENDING", app._config.hosted)
 
         self.app.notify(
             f"✓ Job submitted! ID: {job_id}  →  switching to JOBS view",

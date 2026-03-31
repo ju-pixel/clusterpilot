@@ -33,6 +33,8 @@ const STATUS = {
   PENDING:   { fg: T.amber, bg: T.amberLo,  icon: "◈" },
   COMPLETED: { fg: T.cyan,  bg: T.cyanDim,  icon: "✓" },
   FAILED:    { fg: T.red,   bg: T.redDim,   icon: "✗" },
+  CANCELLED: { fg: T.red,   bg: T.redDim,   icon: "✗" },
+  TIMEOUT:   { fg: T.red,   bg: T.redDim,   icon: "⏰" },
 };
 
 // ── Cluster metadata (static display info — connections managed by TUI) ───────
@@ -205,13 +207,13 @@ function JobsPage({ jobs, loading }) {
               cursor: "pointer",
               alignItems: "center",
             }}>
-              {/* job id */}
+              {/* job id + name */}
               <div>
                 <div style={{ fontFamily: T.mono, fontSize: 15, color: T.text, fontWeight: active ? 500 : 400 }}>
-                  #{j.slurm_job_id}
+                  {j.job_name ?? `#${j.slurm_job_id}`}
                 </div>
                 <div style={{ fontFamily: T.sans, fontSize: 13, color: T.dim, marginTop: 2 }}>
-                  {j.cluster_name}
+                  #{j.slurm_job_id} · {j.cluster_name}
                 </div>
               </div>
               {/* status */}
@@ -252,9 +254,16 @@ function JobsPage({ jobs, loading }) {
             background: T.panel,
           }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-              <span style={{ fontFamily: T.mono, fontSize: 16, fontWeight: 600, color: T.text }}>
-                #{job.slurm_job_id}
-              </span>
+              <div>
+                <span style={{ fontFamily: T.mono, fontSize: 16, fontWeight: 600, color: T.text }}>
+                  {job.job_name ?? `#${job.slurm_job_id}`}
+                </span>
+                {job.job_name && (
+                  <span style={{ fontFamily: T.mono, fontSize: 13, color: T.dim, marginLeft: 10 }}>
+                    #{job.slurm_job_id}
+                  </span>
+                )}
+              </div>
               <StatusBadge status={job.status} />
             </div>
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>

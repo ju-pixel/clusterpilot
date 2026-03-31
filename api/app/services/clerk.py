@@ -4,7 +4,7 @@ import time
 from functools import lru_cache
 
 import httpx
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwk, jwt
 from svix.webhooks import Webhook, WebhookVerificationError
@@ -43,7 +43,7 @@ async def _refresh_jwks(issuer: str) -> dict:
 
 
 async def verify_clerk_jwt(
-    credentials: HTTPAuthorizationCredentials = _bearer,  # type: ignore[assignment]
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> str:
     """Verify a Clerk-issued JWT and return the clerk_id (sub claim)."""
     token = credentials.credentials

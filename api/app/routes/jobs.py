@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import get_current_user, get_db
+from app.deps import get_current_user, get_current_user_by_cp_key, get_db
 from app.models import Job, User
 from app.schemas import JobOut, JobUpsert
 
@@ -41,7 +41,7 @@ async def get_job(
 @router.post("", response_model=JobOut, status_code=status.HTTP_200_OK)
 async def upsert_job(
     payload: JobUpsert,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_by_cp_key),
     db: AsyncSession = Depends(get_db),
 ) -> Job:
     """Idempotent upsert: daemon calls this on each state change.

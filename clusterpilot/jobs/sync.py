@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -56,11 +57,23 @@ async def sync_job(
     if job.elapsed_seconds is not None:
         walltime_consumed = _elapsed_to_walltime(job.elapsed_seconds)
 
+    # Read the script from the local staging directory if it exists.
+    script_content: Optional[str] = None
+    if job.local_dir and job.job_name:
+        script_path = Path(job.local_dir) / f"{job.job_name}.sh"
+        if script_path.exists():
+            try:
+                script_content = script_path.read_text()
+            except OSError:
+                pass
+
     payload: dict = {
         "slurm_job_id": job.job_id,
+        "job_name": job.job_name or None,
         "cluster_name": job.cluster_name,
         "partition": job.partition or None,
         "status": status,
+        "script": script_content,
         "walltime_requested": job.walltime or None,
         "walltime_consumed": walltime_consumed,
         "submitted_at": _ts(job.submitted_at),

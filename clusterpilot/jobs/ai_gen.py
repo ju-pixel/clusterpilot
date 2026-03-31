@@ -16,7 +16,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import json
+
 import anthropic
+import httpx
 import openai
 
 from clusterpilot.cluster.probe import ClusterProbe
@@ -124,8 +127,14 @@ async def generate_script(
     )
 
     if provider == "anthropic":
-        async for token in _stream_anthropic(system, description, model, api_key, api_base_url, usage):
-            yield token
+        # When routing through the CP proxy, bypass the Anthropic SDK and parse
+        # SSE events directly — the SDK's internal state machine breaks on proxied responses.
+        if api_base_url and "/proxy" in api_base_url:
+            async for token in _stream_proxy(system, description, model, api_key, api_base_url, usage):
+                yield token
+        else:
+            async for token in _stream_anthropic(system, description, model, api_key, api_base_url, usage):
+                yield token
     else:
         # "openai" and "ollama" both use the OpenAI-compatible API.
         effective_base_url = api_base_url or (
@@ -156,10 +165,57 @@ async def _stream_anthropic(
         async for token in stream.text_stream:
             yield token
         if usage is not None:
-            final = await stream.get_final_message()
-            usage.model = model
-            usage.input_tokens = final.usage.input_tokens
-            usage.output_tokens = final.usage.output_tokens
+            try:
+                final = await stream.get_final_message()
+                usage.model = model
+                usage.input_tokens = final.usage.input_tokens
+                usage.output_tokens = final.usage.output_tokens
+            except Exception:
+                usage.model = model  # tokens stay 0 — not fatal
+
+
+async def _stream_proxy(
+    system: str,
+    description: str,
+    model: str,
+    api_key: str,
+    api_base_url: str,
+    usage: ApiUsage | None,
+) -> AsyncIterator[str]:
+    """Generate via the ClusterPilot hosted proxy using a single non-streaming call.
+
+    Uses /proxy/generate (non-SSE) to avoid Fly.io response-buffering issues with
+    text/event-stream. Yields the full text in small chunks to keep the TUI display
+    updating progressively.
+    """
+    url = api_base_url.rstrip("/") + "/generate"
+    payload = {
+        "model": model,
+        "max_tokens": _MAX_TOKENS,
+        "system": system,
+        "messages": [{"role": "user", "content": description}],
+    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            url,
+            json=payload,
+            headers={"x-api-key": api_key},
+        )
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Proxy returned HTTP {resp.status_code}: {resp.text[:300]}")
+
+    data = resp.json()
+    text: str = data.get("text", "")
+    if usage is not None:
+        usage.model = model
+        usage.input_tokens = data.get("input_tokens", 0)
+        usage.output_tokens = data.get("output_tokens", 0)
+
+    # Yield in small chunks so the script panel updates progressively.
+    chunk_size = 40
+    for i in range(0, len(text), chunk_size):
+        yield text[i : i + chunk_size]
 
 
 async def _stream_openai(

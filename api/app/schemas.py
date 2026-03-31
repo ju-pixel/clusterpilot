@@ -29,6 +29,7 @@ class UserOut(BaseModel):
 class JobUpsert(BaseModel):
     """Sent by the local daemon on each job state change."""
     slurm_job_id: str
+    job_name: Optional[str] = None
     cluster_name: str
     partition: Optional[str] = None
     status: str
@@ -44,6 +45,7 @@ class JobUpsert(BaseModel):
 class JobOut(BaseModel):
     id: int
     slurm_job_id: str
+    job_name: Optional[str]
     cluster_name: str
     partition: Optional[str]
     status: str

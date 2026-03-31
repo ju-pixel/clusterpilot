@@ -50,6 +50,8 @@ def _render(app: "ClusterPilotApp") -> str:
     lines.append(_row("Model", cfg.model))
     if cfg.provider == "ollama":
         api_display = "[#7a6a50](not required for ollama)[/]"
+    elif cfg.hosted.api_token:
+        api_display = "[#7a6a50](using managed key — see Hosted tier below)[/]"
     elif cfg.api_key:
         api_display = f"[#7a6a50]{cfg.api_key[:8]}…[/]"
     else:
@@ -59,6 +61,17 @@ def _render(app: "ClusterPilotApp") -> str:
     if cfg.api_base_url:
         lines.append(_row("Base URL", cfg.api_base_url))
     lines.append(_row("Poll interval", f"{cfg.poll_interval}s"))
+    lines.append("\n")
+
+    lines.append("[bold #e8a020]HOSTED TIER[/]\n")
+    lines.append(_row("API URL", cfg.hosted.api_url))
+    if cfg.hosted.api_token:
+        masked = cfg.hosted.api_token[:6] + "…"
+        lines.append(_row("Token", f"[#7a6a50]{masked}[/] [#50c050](active)[/]"))
+    else:
+        lines.append(
+            f"[#7a6a50]{'Token':<20}[/] [#7a6a50](not set — issue one from the dashboard)[/]\n"
+        )
 
     return "".join(lines)
 

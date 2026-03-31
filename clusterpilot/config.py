@@ -172,6 +172,14 @@ class ConfigError(Exception):
     """Raised when the config file cannot be parsed or is missing required fields."""
 
 
+_HOSTED_SECTION = """\
+
+[hosted]
+api_url = "https://api.clusterpilot.sh"
+api_token = ""               # cp-<token> from the dashboard (leave blank for self-hosted)
+"""
+
+
 def load_config(path: Path = CONFIG_PATH) -> Config:
     """Load and parse config.toml. Raises ConfigError on missing file or bad TOML."""
     if not path.exists():
@@ -184,6 +192,11 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
             data = tomllib.load(f)
     except Exception as exc:
         raise ConfigError(f"Failed to parse {path}: {exc}") from exc
+
+    # Migration: append [hosted] section if missing (configs created before hosted tier).
+    if "hosted" not in data:
+        with open(path, "a") as f:
+            f.write(_HOSTED_SECTION)
 
     return _from_dict(data)
 

@@ -54,6 +54,7 @@ class Job(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     slurm_job_id: Mapped[str] = mapped_column(String, nullable=False)
+    job_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     cluster_name: Mapped[str] = mapped_column(String, nullable=False)
     partition: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)  # PENDING/RUNNING/COMPLETED/FAILED/CANCELLED

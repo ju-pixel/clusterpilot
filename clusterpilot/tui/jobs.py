@@ -1,6 +1,9 @@
 """F1 JOBS view — job list + detail panel + action buttons."""
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import logging
 import time
 from typing import TYPE_CHECKING, cast
 
@@ -10,11 +13,14 @@ from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical
 from textual.widgets import Button, Label, ListItem, ListView, RichLog, Static
 
-from clusterpilot.cluster.slurm import cancel, cat_log, find_log, tail_log
-from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db, mark_remote_cleaned
+from clusterpilot.cluster.slurm import TERMINAL_STATES, cancel, cat_log, find_log, job_status, tail_log
+from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db, mark_remote_cleaned, update_status
 from clusterpilot.jobs.ai_gen import _PRICING
+from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import SSHError, is_connected, remove_remote_dir
 from clusterpilot.ssh.rsync import download
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
@@ -267,9 +273,32 @@ class JobsView(Static):
         try:
             await cancel(profile.host, profile.user, job.job_id)
             self.app.notify(f"scancel {job.job_id} sent.", severity="warning")
-            self._refresh()
         except Exception as exc:
             self.app.notify(f"Kill failed: {exc}", severity="error", markup=False)
+            return
+
+        # Give SLURM a moment to process the cancellation, then immediately
+        # update the local DB and sync — no need to wait for the next daemon poll.
+        await asyncio.sleep(3)
+        try:
+            new_status = await job_status(profile.host, profile.user, job.job_id)
+            if new_status and new_status != job.status:
+                now = time.time()
+                async with aiosqlite.connect(app._db_path) as db:
+                    await init_db(db)
+                    await update_status(
+                        db, job.job_id, job.cluster_name, new_status,
+                        finished_at=now if new_status in TERMINAL_STATES else None,
+                    )
+                updated = dataclasses.replace(
+                    job, status=new_status,
+                    finished_at=now if new_status in TERMINAL_STATES else job.finished_at,
+                )
+                await sync_job(updated, new_status, app._config.hosted)
+        except Exception:
+            log.warning("Post-kill status check failed for %s — daemon will catch it", job.job_id, exc_info=True)
+
+        self._refresh()
 
     @on(Button.Pressed, "#btn-tail")
     def action_tail(self) -> None:
