@@ -223,7 +223,15 @@ class PollDaemon:
             await notify_completed(self.config.notifications, job)
         except Exception:
             log.warning("Failed to send completion notification for %s", job.job_id, exc_info=True)
-        await sync_job(job, status, self.config.hosted)
+
+        # Fetch the log tail for the dashboard.
+        log_tail = ""
+        if job.log_path:
+            try:
+                log_tail = await tail_log(profile.host, profile.user, job.log_path)
+            except SSHError:
+                pass
+        await sync_job(job, status, self.config.hosted, log_tail=log_tail or None)
 
     async def _notify_failed(
         self,
@@ -232,9 +240,20 @@ class PollDaemon:
         status: str,
     ) -> None:
         log_tail = ""
-        if job.log_path:
+        log_path = job.log_path
+        if not log_path:
+            # Job may have run briefly without the daemon catching the RUNNING
+            # transition (e.g., cancelled faster than the poll interval).
             try:
-                log_tail = await tail_log(profile.host, profile.user, job.log_path)
+                log_path = await find_log(
+                    profile.host, profile.user,
+                    job.job_name, job.job_id, job.working_dir,
+                )
+            except SSHError:
+                pass
+        if log_path:
+            try:
+                log_tail = await tail_log(profile.host, profile.user, log_path)
             except SSHError:
                 pass
         try:

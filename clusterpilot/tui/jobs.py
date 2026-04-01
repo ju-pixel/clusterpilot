@@ -294,7 +294,23 @@ class JobsView(Static):
                     job, status=new_status,
                     finished_at=now if new_status in TERMINAL_STATES else job.finished_at,
                 )
-                await sync_job(updated, new_status, app._config.hosted)
+                # Fetch the log tail for the dashboard.
+                log_tail: str | None = None
+                log_path = job.log_path
+                if not log_path:
+                    try:
+                        log_path = await find_log(
+                            profile.host, profile.user,
+                            job.job_name, job.job_id, job.working_dir,
+                        )
+                    except Exception:
+                        pass
+                if log_path:
+                    try:
+                        log_tail = await tail_log(profile.host, profile.user, log_path)
+                    except Exception:
+                        pass
+                await sync_job(updated, new_status, app._config.hosted, log_tail=log_tail)
         except Exception:
             log.warning("Post-kill status check failed for %s — daemon will catch it", job.job_id, exc_info=True)
 
