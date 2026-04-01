@@ -14,7 +14,7 @@ async def send_welcome_email(to_email: str) -> None:
         "subject": "Welcome to ClusterPilot",
         "html": (
             "<p>Your ClusterPilot account is ready.</p>"
-            "<p>Visit <a href='https://clusterpilot.sh/dashboard'>clusterpilot.sh/dashboard</a> "
+            "<p>Visit <a href='https://app.clusterpilot.sh'>app.clusterpilot.sh</a> "
             "to connect your first cluster.</p>"
         ),
     })
@@ -40,6 +40,6 @@ async def send_payment_failed_email(to_email: str) -> None:
         "html": (
             "<p>We could not process your last ClusterPilot payment.</p>"
             "<p>Please update your payment method in the "
-            "<a href='https://clusterpilot.sh/dashboard'>Account tab</a>.</p>"
+            "<a href='https://app.clusterpilot.sh'>Account tab</a>.</p>"
         ),
     })
