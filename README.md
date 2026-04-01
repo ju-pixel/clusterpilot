@@ -1,8 +1,7 @@
 # ClusterPilot
 
-AI-assisted HPC workflow manager for Compute Canada (DRAC) clusters and the
-University of Manitoba's Grex cluster. 
-clusterpilot.sh
+AI-assisted HPC workflow manager for any SLURM-managed cluster.
+[clusterpilot.sh](https://clusterpilot.sh)
 
 Built by a computational physics PhD student who got tired of doing this manually.
 
@@ -30,10 +29,20 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 
 ## Supported clusters
 
-| Cluster | Type | Status |
-|---------|------|--------|
-| Grex (`yak.hpc.umanitoba.ca`) | UManitoba | v0.1 target |
-| Cedar, Narval, Graham, Beluga | Compute Canada / DRAC | post-v1 |
+ClusterPilot works with **any SLURM cluster** — if you can SSH into it and run
+`sbatch`, it will work. There are three cluster types that control which
+SLURM quirks are injected into the generated script:
+
+| `cluster_type` | Use for |
+|---------------|---------|
+| `generic` | Any SLURM cluster (default if omitted) |
+| `drac` | Compute Canada / Alliance (Cedar, Narval, Graham, Beluga) |
+| `grex` | University of Manitoba Grex |
+
+Both `drac` and `grex` are specialisations of `generic` — they add
+cluster-specific rules (mandatory `--account=`, correct `$SCRATCH` path,
+GPU syntax) that the AI would otherwise have to guess. For every other cluster,
+`generic` is the right choice and the probe handles the rest automatically.
 
 ## Requirements
 
@@ -55,6 +64,59 @@ conda install -c conda-forge clusterpilot
 On first run, ClusterPilot creates a starter config at
 `~/.config/clusterpilot/config.toml`, prints its location, and exits.
 Edit it to add your cluster username and account, then run `clusterpilot` again.
+
+## Hosted tier
+
+A hosted tier is available at [app.clusterpilot.sh](https://app.clusterpilot.sh)
+for researchers who want zero API key setup and a web dashboard.
+
+**$3/month, 14-day free trial. The self-hosted version is always fully functional.**
+
+### What you get
+
+| | Self-hosted (free) | Hosted tier |
+|--|--|--|
+| TUI, job submission, monitoring | ✓ | ✓ |
+| Push notifications (ntfy.sh) | ✓ | ✓ |
+| AI script generation | Bring your own API key | Managed — no key needed |
+| Web dashboard | — | ✓ app.clusterpilot.sh |
+| Multi-machine sync | — | ✓ |
+
+### Managed API key
+
+With the hosted tier you do not need an Anthropic (or OpenAI) account. ClusterPilot
+issues you a `cp-` token that the TUI uses to route generation requests through the
+managed proxy. Set it in your config and the AI tab works out of the box:
+
+```toml
+[hosted]
+api_url = "https://api.clusterpilot.sh"
+api_token = "cp-your-token-here"
+```
+
+### Web dashboard and multi-machine sync
+
+Every job you submit is synced to the web dashboard automatically — including
+the generated SLURM script, job status, and log output. The dashboard updates
+within seconds of each state change (PENDING → RUNNING → COMPLETED/FAILED).
+
+The `cp-` token is the identity key. Any machine that has the same token in its
+config will sync jobs to the same dashboard view:
+
+```
+MacBook (writing + submission)       Linux workstation (heavy SSH work)
+  api_token = "cp-abc123..."           api_token = "cp-abc123..."
+         │                                    │
+         └──────────────┬─────────────────────┘
+                        ▼
+             app.clusterpilot.sh
+             (all jobs, all machines, one view)
+```
+
+To use ClusterPilot from multiple machines: generate a key once from the Account
+page of the dashboard, then paste the same token into
+`~/.config/clusterpilot/config.toml` on each machine. No per-machine registration
+or pairing is required.
 
 ## Configuration
 
@@ -404,5 +466,3 @@ consider [sponsoring development](https://github.com/sponsors/ju-pixel).
 ## Licence
 
 MIT - free to use and self-host.
-
-A hosted tier is available at [app.clusterpilot.sh](https://app.clusterpilot.sh) ($3/month, 14-day free trial) for researchers who want zero setup — managed API key, web dashboard, and multi-machine sync included. The self-hosted version is always fully functional.
