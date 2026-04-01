@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.deps import get_current_user, get_db
 from app.models import User
-from app.schemas import UserOut
+from app.schemas import PICheckoutRequest, UserOut
 from app.services.stripe import create_checkout_session, create_customer_portal_session, get_or_create_customer
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -53,5 +53,38 @@ async def create_checkout(
         success_url="https://app.clusterpilot.sh?subscribed=1",
         cancel_url="https://app.clusterpilot.sh",
         trial_period_days=14,
+    )
+    return {"url": url}
+
+
+@router.post("/me/checkout-pi")
+async def create_pi_checkout(
+    body: PICheckoutRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Create a Stripe Checkout Session for a PI group bundle (min 3 seats, 15% off)."""
+    if body.quantity < 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Minimum quantity for a group bundle is 3 seats.",
+        )
+
+    customer_id = current_user.stripe_customer_id
+    if not customer_id:
+        customer_id = await get_or_create_customer(
+            email=current_user.email,
+            clerk_id=current_user.clerk_id,
+        )
+        current_user.stripe_customer_id = customer_id
+        await db.commit()
+
+    url = await create_checkout_session(
+        customer_id=customer_id,
+        price_id=settings.stripe_price_id_monthly,
+        success_url="https://app.clusterpilot.sh?subscribed=1",
+        cancel_url="https://app.clusterpilot.sh",
+        is_pi_group=True,
+        quantity=body.quantity,
     )
     return {"url": url}

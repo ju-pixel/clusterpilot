@@ -36,6 +36,7 @@ async def create_checkout_session(
             "minimum": 3,
         }
         params["discounts"] = [{"coupon": settings.stripe_coupon_pi_group}]
+        params["metadata"] = {"type": "pi_bundle", "quantity": str(quantity)}
 
     session = stripe.checkout.Session.create(**params)
     return session.url  # type: ignore[return-value]

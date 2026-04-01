@@ -507,6 +507,7 @@ function AccountPage({ email, userInfo }) {
   const [billingLoading, setBillingLoading] = useState(false);
   const [keyError, setKeyError] = useState(null);
   const [billingError, setBillingError] = useState(null);
+  const [invites, setInvites] = useState(null); // null = not loaded yet
 
   useEffect(() => {
     api.getKeys()
@@ -515,6 +516,9 @@ function AccountPage({ email, userInfo }) {
         // 404 means no key issued yet — that's a valid state
         setKeyInfo(null);
       });
+    api.getInvites()
+      .then(setInvites)
+      .catch(() => setInvites([]));
   }, []);
 
   async function handleIssueOrRotate() {
@@ -650,6 +654,34 @@ function AccountPage({ email, userInfo }) {
         )}
       </Section>
 
+      {/* group seats — only shown if this user has issued invite codes */}
+      {invites !== null && invites.length > 0 && (
+        <Section title="Group Seats">
+          <p style={{ margin: "0 0 14px", fontFamily: T.sans, fontSize: 15, color: T.dim }}>
+            {invites.filter(c => c.redeemed).length} of {invites.length} seats redeemed.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {invites.map(invite => (
+              <div key={invite.code} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                background: T.panel2, border: `1px solid ${T.border2}`,
+                borderRadius: 5, padding: "8px 14px",
+              }}>
+                <span style={{ fontFamily: T.mono, fontSize: 16, letterSpacing: "0.1em", color: T.text }}>
+                  {invite.code}
+                </span>
+                <span style={{
+                  fontFamily: T.mono, fontSize: 13,
+                  color: invite.redeemed ? T.cyan : T.dim,
+                }}>
+                  {invite.redeemed ? "redeemed" : "pending"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
       {/* danger zone */}
       <Section title="Danger Zone">
         <div style={{
@@ -710,6 +742,12 @@ const NAV = [
 function SubscribeGate({ email, getToken }) {
   const api = makeApiClient(getToken);
   const [loading, setLoading] = useState(false);
+  const [piLoading, setPiLoading] = useState(false);
+  const [piQty, setPiQty] = useState(3);
+  const [redeemMode, setRedeemMode] = useState(false);
+  const [redeemCode, setRedeemCode] = useState("");
+  const [redeemLoading, setRedeemLoading] = useState(false);
+  const [redeemError, setRedeemError] = useState(null);
 
   async function handleSubscribe() {
     setLoading(true);
@@ -718,6 +756,28 @@ function SubscribeGate({ email, getToken }) {
       window.location.href = url;
     } catch {
       setLoading(false);
+    }
+  }
+
+  async function handlePiCheckout() {
+    setPiLoading(true);
+    try {
+      const { url } = await api.createPiCheckout(piQty);
+      window.location.href = url;
+    } catch {
+      setPiLoading(false);
+    }
+  }
+
+  async function handleRedeem() {
+    setRedeemLoading(true);
+    setRedeemError(null);
+    try {
+      await api.redeemInvite(redeemCode.trim());
+      window.location.reload();
+    } catch (err) {
+      setRedeemError(err.message || "Invalid or already-used code.");
+      setRedeemLoading(false);
     }
   }
 
@@ -730,46 +790,155 @@ function SubscribeGate({ email, getToken }) {
       <Glow color={T.amber} style={{ fontFamily: T.mono, fontSize: 17, fontWeight: 700, letterSpacing: "0.18em", marginBottom: 40 }}>
         ◈ CLUSTERPILOT
       </Glow>
-      <div style={{
-        background: T.panel, border: `1px solid ${T.border2}`,
-        borderRadius: 10, padding: "36px 40px", maxWidth: 460, width: "100%",
-      }}>
-        <h2 style={{ margin: "0 0 8px", fontFamily: T.sans, fontSize: 22, fontWeight: 700, color: T.text }}>
-          Start your free trial
-        </h2>
-        <p style={{ margin: "0 0 28px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
-          14 days free, then $3 / month. Cancel any time.
-        </p>
-        <div style={{ marginBottom: 28 }}>
-          {[
-            "Managed API key — no Anthropic account needed",
-            "Web dashboard for all job history",
-            "Multi-machine sync — one view across all clusters",
-            "Priority support",
-          ].map(f => (
-            <div key={f} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-              <span style={{ color: T.amber, fontFamily: T.mono, fontSize: 14 }}>✓</span>
-              <span style={{ fontFamily: T.sans, fontSize: 15, color: T.muted }}>{f}</span>
-            </div>
-          ))}
+
+      {redeemMode ? (
+        <div style={{
+          background: T.panel, border: `1px solid ${T.border2}`,
+          borderRadius: 10, padding: "36px 40px", maxWidth: 460, width: "100%",
+        }}>
+          <h2 style={{ margin: "0 0 8px", fontFamily: T.sans, fontSize: 22, fontWeight: 700, color: T.text }}>
+            Redeem invite code
+          </h2>
+          <p style={{ margin: "0 0 20px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
+            Enter the code your PI shared with you.
+          </p>
+          <input
+            value={redeemCode}
+            onChange={e => setRedeemCode(e.target.value.toUpperCase())}
+            placeholder="e.g. A3F2B891"
+            style={{
+              width: "100%", boxSizing: "border-box",
+              background: T.panel2, border: `1px solid ${T.border2}`,
+              borderRadius: 5, padding: "10px 12px", marginBottom: 12,
+              fontFamily: T.mono, fontSize: 18, color: T.text,
+              letterSpacing: "0.1em", textAlign: "center",
+            }}
+          />
+          {redeemError && (
+            <div style={{
+              background: T.redDim, border: `1px solid ${T.red}55`,
+              borderRadius: 5, padding: "8px 12px", marginBottom: 12,
+              fontFamily: T.mono, fontSize: 13, color: T.red,
+            }}>{redeemError}</div>
+          )}
+          <button
+            onClick={handleRedeem}
+            disabled={redeemLoading || !redeemCode.trim()}
+            style={{
+              width: "100%", padding: "12px 0",
+              background: T.amber, border: "none", borderRadius: 6,
+              fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.bg,
+              cursor: (redeemLoading || !redeemCode.trim()) ? "not-allowed" : "pointer",
+              opacity: (redeemLoading || !redeemCode.trim()) ? 0.7 : 1,
+            }}
+          >
+            {redeemLoading ? "Checking..." : "Redeem →"}
+          </button>
+          <button
+            onClick={() => setRedeemMode(false)}
+            style={{ ...btnStyle, width: "100%", marginTop: 10, textAlign: "center" }}
+          >
+            Back
+          </button>
         </div>
-        <button
-          onClick={handleSubscribe}
-          disabled={loading}
-          style={{
-            width: "100%", padding: "12px 0",
-            background: T.amber, border: "none", borderRadius: 6,
-            fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.bg,
-            cursor: loading ? "not-allowed" : "pointer",
-            opacity: loading ? 0.7 : 1,
-          }}
-        >
-          {loading ? "Redirecting..." : "Start free trial →"}
-        </button>
-        <p style={{ margin: "14px 0 0", fontFamily: T.mono, fontSize: 13, color: T.dim, textAlign: "center" }}>
-          {email}
-        </p>
-      </div>
+      ) : (
+        <>
+          <div style={{
+            background: T.panel, border: `1px solid ${T.border2}`,
+            borderRadius: 10, padding: "36px 40px", maxWidth: 460, width: "100%",
+            marginBottom: 16,
+          }}>
+            <h2 style={{ margin: "0 0 8px", fontFamily: T.sans, fontSize: 22, fontWeight: 700, color: T.text }}>
+              Start your free trial
+            </h2>
+            <p style={{ margin: "0 0 28px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
+              14 days free, then $3 / month. Cancel any time.
+            </p>
+            <div style={{ marginBottom: 28 }}>
+              {[
+                "Managed API key — no Anthropic account needed",
+                "Web dashboard for all job history",
+                "Multi-machine sync — one view across all clusters",
+                "Priority support",
+              ].map(f => (
+                <div key={f} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <span style={{ color: T.amber, fontFamily: T.mono, fontSize: 14 }}>✓</span>
+                  <span style={{ fontFamily: T.sans, fontSize: 15, color: T.muted }}>{f}</span>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={handleSubscribe}
+              disabled={loading}
+              style={{
+                width: "100%", padding: "12px 0",
+                background: T.amber, border: "none", borderRadius: 6,
+                fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.bg,
+                cursor: loading ? "not-allowed" : "pointer",
+                opacity: loading ? 0.7 : 1,
+              }}
+            >
+              {loading ? "Redirecting..." : "Start free trial →"}
+            </button>
+            <p style={{ margin: "14px 0 0", fontFamily: T.mono, fontSize: 13, color: T.dim, textAlign: "center" }}>
+              {email}
+            </p>
+          </div>
+
+          <div style={{
+            background: T.panel, border: `1px solid ${T.border2}`,
+            borderRadius: 10, padding: "28px 40px", maxWidth: 460, width: "100%",
+          }}>
+            <h3 style={{ margin: "0 0 6px", fontFamily: T.sans, fontSize: 17, fontWeight: 600, color: T.text }}>
+              Buying for your group?
+            </h3>
+            <p style={{ margin: "0 0 18px", fontFamily: T.sans, fontSize: 15, color: T.dim }}>
+              15% off for 3 or more seats. You get one invite code per seat to share with your researchers.
+            </p>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+              <label style={{ fontFamily: T.sans, fontSize: 15, color: T.muted, whiteSpace: "nowrap" }}>
+                Seats:
+              </label>
+              <input
+                type="number"
+                min={3}
+                value={piQty}
+                onChange={e => setPiQty(Math.max(3, parseInt(e.target.value) || 3))}
+                style={{
+                  width: 70, background: T.panel2, border: `1px solid ${T.border2}`,
+                  borderRadius: 5, padding: "7px 10px",
+                  fontFamily: T.mono, fontSize: 15, color: T.text, textAlign: "center",
+                }}
+              />
+              <span style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>
+                × $2.55 / month
+              </span>
+            </div>
+            <button
+              onClick={handlePiCheckout}
+              disabled={piLoading}
+              style={{
+                width: "100%", padding: "11px 0",
+                background: "transparent", border: `1.5px solid ${T.amber}`,
+                borderRadius: 6, fontFamily: T.sans, fontSize: 16, fontWeight: 600,
+                color: T.amber, cursor: piLoading ? "not-allowed" : "pointer",
+                opacity: piLoading ? 0.7 : 1,
+              }}
+            >
+              {piLoading ? "Redirecting..." : "Buy group seats →"}
+            </button>
+            <p style={{ margin: "12px 0 0", fontFamily: T.sans, fontSize: 14, color: T.dim, textAlign: "center" }}>
+              Have a code from your PI?{" "}
+              <span
+                onClick={() => setRedeemMode(true)}
+                style={{ color: T.amber, cursor: "pointer", textDecoration: "underline" }}
+              >
+                Redeem it here
+              </span>
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }

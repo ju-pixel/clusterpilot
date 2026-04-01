@@ -14,6 +14,7 @@ class UserOut(BaseModel):
     email: str
     subscription_status: str
     managed_api_key_prefix: Optional[str]
+    sponsored_by_user_id: Optional[int]
     notify_on_start: bool
     notify_on_complete: bool
     notify_on_fail: bool
@@ -89,6 +90,25 @@ class NotifyPrefsOut(BaseModel):
     ntfy_topic: Optional[str]
 
     model_config = {"from_attributes": True}
+
+
+# ---------- PI seat bundles ----------
+
+class PICheckoutRequest(BaseModel):
+    quantity: int  # validated >= 3 in the route
+
+
+class InviteCodeOut(BaseModel):
+    code: str
+    redeemed: bool
+    redeemed_at: Optional[datetime]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class RedeemRequest(BaseModel):
+    code: str
 
 
 # ---------- Health ----------

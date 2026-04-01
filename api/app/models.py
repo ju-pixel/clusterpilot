@@ -17,6 +17,25 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+class InviteCode(Base):
+    __tablename__ = "invite_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(16), unique=True, nullable=False, index=True)
+    pi_user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    redeemed_by_user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    redeemed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    pi_user: Mapped["User"] = relationship("User", foreign_keys=[pi_user_id], back_populates="issued_invite_codes")
+    redeemed_by: Mapped[Optional["User"]] = relationship("User", foreign_keys=[redeemed_by_user_id])
+
+    @property
+    def redeemed(self) -> bool:
+        return self.redeemed_by_user_id is not None
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -28,6 +47,9 @@ class User(Base):
     # Managed API key: only the bcrypt hash and a 4-char prefix for display
     managed_api_key_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     managed_api_key_prefix: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # PI group: set when this user's access is sponsored by a PI's seat bundle
+    sponsored_by_user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+
     # Notification preferences
     notify_on_start: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notify_on_complete: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -41,6 +63,9 @@ class User(Base):
     )
 
     jobs: Mapped[List[Job]] = relationship("Job", back_populates="user", lazy="select")
+    issued_invite_codes: Mapped[List["InviteCode"]] = relationship(
+        "InviteCode", foreign_keys="InviteCode.pi_user_id", back_populates="pi_user", lazy="select"
+    )
 
 
 class Job(Base):

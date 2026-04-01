@@ -27,6 +27,11 @@ database_url = os.environ.get("DATABASE_URL")
 if not database_url:
     raise RuntimeError("DATABASE_URL environment variable must be set to run migrations")
 
+# Fly sets postgres:// with ?sslmode=require — asyncpg accepts neither.
+database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
+if "?" in database_url:
+    database_url = database_url.split("?")[0]
+
 config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = Base.metadata
@@ -55,6 +60,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"ssl": False},
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

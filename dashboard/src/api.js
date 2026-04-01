@@ -27,7 +27,10 @@ export function makeApiClient(getToken) {
     rotateKey:         ()      => req('POST', '/keys/rotate'),
     getNotifyPrefs:    ()      => req('GET',  '/notify/preferences'),
     updateNotifyPrefs: (prefs) => req('PUT',  '/notify/preferences', prefs),
-    getBillingPortal:  ()      => req('POST', '/users/me/billing-portal'),
-    createCheckout:    ()      => req('POST', '/users/me/checkout'),
+    getBillingPortal:  ()           => req('POST', '/users/me/billing-portal'),
+    createCheckout:    ()           => req('POST', '/users/me/checkout'),
+    createPiCheckout:  (quantity)   => req('POST', '/users/me/checkout-pi', { quantity }),
+    getInvites:        ()           => req('GET',  '/invites'),
+    redeemInvite:      (code)       => req('POST', '/invites/redeem', { code }),
   }
 }
