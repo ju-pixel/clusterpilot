@@ -1,0 +1,154 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: #000;
+  color: #fafafa;
+  font-family: 'DM Sans', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── responsive nav ─────────────────────────────────────────────────────── */
+.nav-links    { display: flex; }
+.nav-cta      { display: block; }
+.nav-hamburger { display: none; }
+
+@media (max-width: 768px) {
+  .nav-links     { display: none; }
+  .nav-cta       { display: none; }
+  .nav-hamburger { display: flex; }
+}
+
+/* ─── mobile menu ────────────────────────────────────────────────────────── */
+.mobile-menu {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 24px 20px;
+  border-top: 1px solid #1a1a1a;
+}
+.mobile-menu.open { display: flex; }
+
+/* ─── hero layout ────────────────────────────────────────────────────────── */
+.hero-columns {
+  display: flex;
+  align-items: center;
+  gap: 48px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 88px 48px 80px;
+}
+.hero-left  { flex: 1; min-width: 0; }
+.hero-right { flex: 1; min-width: 0; }
+
+@media (max-width: 900px) {
+  .hero-columns { flex-direction: column; padding: 64px 24px 48px; gap: 32px; }
+  .hero-right   { display: none; }
+}
+
+/* ─── steps grid ──────────────────────────────────────────────────────────── */
+.steps-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0;
+  position: relative;
+}
+
+@media (max-width: 900px) {
+  .steps-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+  .steps-grid { grid-template-columns: 1fr; }
+}
+
+/* ─── features grid ───────────────────────────────────────────────────────── */
+.features-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid #2a2a2a;
+}
+
+@media (max-width: 768px) {
+  .features-row { grid-template-columns: 1fr; }
+}
+
+/* ─── pricing grid ────────────────────────────────────────────────────────── */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 48px;
+}
+
+@media (max-width: 768px) {
+  .pricing-grid { grid-template-columns: 1fr; }
+}
+
+/* ─── audience grid ───────────────────────────────────────────────────────── */
+.audience-section {
+  display: flex;
+  gap: 64px;
+  align-items: flex-start;
+}
+
+@media (max-width: 768px) {
+  .audience-section { flex-direction: column; gap: 32px; }
+}
+
+/* ─── footer ──────────────────────────────────────────────────────────────── */
+.footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+@media (max-width: 600px) {
+  .footer-inner { flex-direction: column; align-items: flex-start; gap: 16px; }
+}
+
+/* ─── feature cell hover (amber sweep) ──────────────────────────────────── */
+.feature-cell {
+  position: relative;
+  overflow: hidden;
+  transition: background 0.2s;
+  border-right: 1px solid #2a2a2a;
+  padding: 36px 28px;
+}
+.feature-cell:last-child { border-right: none; }
+.feature-cell:hover { background: #1a1a1a; }
+
+.feature-cell-bar {
+  position: absolute;
+  bottom: 0; left: 0;
+  height: 2px;
+  background: #FFB866;
+  width: 0;
+  transition: width 0.3s ease;
+}
+.feature-cell:hover .feature-cell-bar { width: 100%; }
+
+/* ─── blog prose ──────────────────────────────────────────────────────────── */
+.cp-prose { font-size: 17px; line-height: 1.75; color: #c8c8c8; }
+.cp-prose p  { margin-bottom: 20px; }
+.cp-prose h2 { font-size: 22px; font-weight: 700; color: #fafafa; margin: 36px 0 14px; }
+.cp-prose ul { padding-left: 22px; margin-bottom: 20px; }
+.cp-prose li { margin-bottom: 8px; }
+.cp-prose code {
+  background: #141414;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-family: 'DM Mono', 'Courier New', monospace;
+  font-size: 15px;
+  color: #a78bfa;
+}
+.cp-prose pre {
+  background: #111;
+  border: 1px solid #222;
+  border-radius: 6px;
+  padding: 20px;
+  overflow-x: auto;
+  margin-bottom: 20px;
+}
+.cp-prose pre code { background: none; padding: 0; color: #fafafa; font-size: 14px; }
