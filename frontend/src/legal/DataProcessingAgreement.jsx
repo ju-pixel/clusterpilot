@@ -31,7 +31,7 @@ export default function DataProcessingAgreement() {
       <H2>2. Subject matter and duration</H2>
       <P>
         The Processor will process personal data on behalf of the Controller for the duration
-        of the Controller's subscription to the hosted tier, and for a period not exceeding
+        of the Controller&apos;s subscription to the hosted tier, and for a period not exceeding
         30 days after termination (to allow for deletion).
       </P>
 
@@ -56,7 +56,7 @@ export default function DataProcessingAgreement() {
         'Process personal data only on documented instructions from the Controller (including those set out in these Terms and this DPA), unless required to do otherwise by applicable law.',
         'Ensure that persons authorised to process personal data have committed to confidentiality.',
         'Implement appropriate technical and organisational security measures in accordance with Article 32 GDPR (see section 7).',
-        'Not engage sub-processors without the Controller's prior authorisation (see section 5).',
+        'Not engage sub-processors without the Controller\u2019s prior authorisation (see section 5).',
         'Assist the Controller in responding to data subject rights requests insofar as this is possible given the nature of the processing.',
         'Delete or return all personal data on request at the end of the contract.',
         'Make available to the Controller all information necessary to demonstrate compliance with Article 28 GDPR.',
@@ -127,7 +127,7 @@ export default function DataProcessingAgreement() {
 
       <H2>10. Return and deletion of data</H2>
       <P>
-        On termination of the Services, the Processor will, at the Controller's choice,
+        On termination of the Services, the Processor will, at the Controller&apos;s choice,
         return or delete all personal data within 30 days. Deletion is permanent and
         irreversible. Billing records may be retained beyond this period where required
         by applicable law.
