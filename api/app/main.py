@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import Base, get_engine
-from app.routes import auth, health, invites, jobs, keys, notify, proxy, stripe_hooks, users
+from app.routes import auth, email, health, invites, jobs, keys, notify, proxy, stripe_hooks, users
 
 
 @asynccontextmanager
@@ -36,6 +36,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(email.router)
 app.include_router(stripe_hooks.router)
 app.include_router(jobs.router)
 app.include_router(keys.router)

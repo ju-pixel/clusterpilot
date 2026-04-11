@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # Resend
     resend_api_key: str            # re_...
     resend_from_address: str = "ClusterPilot <hello@clusterpilot.sh>"
+    resend_forward_to: str = "clusterpilot@juliafrank.net"
+    resend_webhook_secret: str = ""  # whsec_... from Resend inbound webhook settings
 
     # Anthropic master key (used by the proxy endpoint)
     anthropic_api_key: str  # ANTHROPIC_API_KEY env var

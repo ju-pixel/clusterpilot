@@ -128,6 +128,7 @@ function Nav() {
           <a href="#pricing"      style={linkStyle}>Pricing</a>
           <a href="https://github.com/ju-pixel/clusterpilot" target="_blank" rel="noreferrer" style={linkStyle}>GitHub</a>
           <a href="/blog"         style={linkStyle}>Blog</a>
+          <a href="/support"      style={linkStyle}>Support</a>
         </div>
 
         {/* Desktop CTA */}
@@ -163,6 +164,7 @@ function Nav() {
         <a href="#pricing"      onClick={() => setMenuOpen(false)} style={mobileLink}>Pricing</a>
         <a href="https://github.com/ju-pixel/clusterpilot" target="_blank" rel="noreferrer" style={mobileLink}>GitHub</a>
         <a href="/blog"         onClick={() => setMenuOpen(false)} style={mobileLink}>Blog</a>
+        <a href="/support"      onClick={() => setMenuOpen(false)} style={mobileLink}>Support</a>
         <div style={{ paddingTop: 12 }}>
           <a href="https://app.clusterpilot.sh" target="_blank" rel="noreferrer">
             <button style={{
@@ -799,6 +801,7 @@ function Footer() {
               ['GitHub', 'https://github.com/ju-pixel/clusterpilot'],
               ['PyPI', 'https://pypi.org/project/clusterpilot/'],
               ['Blog', '/blog'],
+              ['Support', '/support'],
               ['juliafrank.net', 'https://juliafrank.net'],
               ['MIT Licence', 'https://github.com/ju-pixel/clusterpilot?tab=MIT-1-ov-file#readme'],
             ].map(([label, href]) => (
@@ -808,6 +811,22 @@ function Footer() {
                 style={{ fontFamily: mono, fontSize: 13, color: T.muted, textDecoration: 'none' }}
                 onMouseEnter={e => e.currentTarget.style.color = T.text}
                 onMouseLeave={e => e.currentTarget.style.color = T.muted}
+              >
+                {label}
+              </a>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 16, borderTop: `1px solid ${T.border2}`, paddingTop: 16, width: '100%' }}>
+            {[
+              ['Privacy Policy', '/privacy'],
+              ['Terms of Service', '/terms'],
+              ['Data Processing Agreement', '/dpa'],
+              ['Acceptable Use Policy', '/acceptable-use'],
+            ].map(([label, href]) => (
+              <a key={label} href={href}
+                style={{ fontFamily: mono, fontSize: 12, color: T.dim, textDecoration: 'none' }}
+                onMouseEnter={e => e.currentTarget.style.color = T.muted}
+                onMouseLeave={e => e.currentTarget.style.color = T.dim}
               >
                 {label}
               </a>
