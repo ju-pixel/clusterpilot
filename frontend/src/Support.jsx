@@ -177,9 +177,67 @@ export default function Support() {
         <h1 style={{ fontFamily: mono, fontSize: 32, color: T.amber, fontWeight: 500, marginBottom: 8 }}>
           Get in touch.
         </h1>
-        <p style={{ color: T.muted, fontSize: 15, marginBottom: 56, maxWidth: 480 }}>
+        <p style={{ color: T.muted, fontSize: 15, marginBottom: 32, maxWidth: 480 }}>
           We typically reply within one business day.
         </p>
+
+        {/* Feature requests → Featurebase board */}
+        <div
+          className="support-roadmap-card"
+          style={{
+            border: `1px solid ${T.border}`,
+            borderRadius: 8,
+            background: T.bg2,
+            padding: '24px 28px',
+            marginBottom: 56,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 24,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ maxWidth: 560 }}>
+            <p style={{
+              fontFamily: mono, fontSize: 12, color: T.amber,
+              marginBottom: 8, letterSpacing: '0.05em',
+            }}>
+              ROADMAP
+            </p>
+            <p style={{
+              fontFamily: mono, fontSize: 18, color: T.text,
+              marginBottom: 6, fontWeight: 500,
+            }}>
+              Want a feature, not a fix?
+            </p>
+            <p style={{ fontSize: 14, color: T.muted, lineHeight: 1.55, margin: 0 }}>
+              Vote on roadmap items or post a new request at{' '}
+              <a
+                href="https://clusterpilot.featurebase.app"
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: T.amber, textDecoration: 'none' }}
+              >
+                clusterpilot.featurebase.app
+              </a>
+              . The form below is for bugs, billing, and account questions.
+            </p>
+          </div>
+          <a
+            href="https://clusterpilot.featurebase.app"
+            target="_blank"
+            rel="noreferrer"
+            style={{ textDecoration: 'none', flexShrink: 0 }}
+          >
+            <button style={{
+              background: T.amber, color: '#000', fontSize: 13, fontWeight: 700,
+              padding: '10px 20px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              fontFamily: mono, whiteSpace: 'nowrap',
+            }}>
+              Open the roadmap →
+            </button>
+          </a>
+        </div>
 
         {/* Two-column layout */}
         <div style={{
@@ -242,6 +300,8 @@ export default function Support() {
       <style>{`
         @media (max-width: 680px) {
           .support-grid { grid-template-columns: 1fr !important; gap: 48px !important; }
+          .support-roadmap-card { flex-direction: column; align-items: stretch !important; }
+          .support-roadmap-card button { width: 100%; }
         }
       `}</style>
     </div>
