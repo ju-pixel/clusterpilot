@@ -748,23 +748,30 @@ function SubscribeGate({ email, getToken }) {
   const [redeemCode, setRedeemCode] = useState("");
   const [redeemLoading, setRedeemLoading] = useState(false);
   const [redeemError, setRedeemError] = useState(null);
+  const [checkoutError, setCheckoutError] = useState(null);
 
   async function handleSubscribe() {
     setLoading(true);
+    setCheckoutError(null);
     try {
       const { url } = await api.createCheckout();
       window.location.href = url;
-    } catch {
+    } catch (err) {
+      console.error("createCheckout failed:", err);
+      setCheckoutError(err.message || "Could not start checkout. Please try again.");
       setLoading(false);
     }
   }
 
   async function handlePiCheckout() {
     setPiLoading(true);
+    setCheckoutError(null);
     try {
       const { url } = await api.createPiCheckout(piQty);
       window.location.href = url;
-    } catch {
+    } catch (err) {
+      console.error("createPiCheckout failed:", err);
+      setCheckoutError(err.message || "Could not start checkout. Please try again.");
       setPiLoading(false);
     }
   }
@@ -843,6 +850,15 @@ function SubscribeGate({ email, getToken }) {
         </div>
       ) : (
         <>
+          {checkoutError && (
+            <div style={{
+              background: T.redDim, border: `1px solid ${T.red}55`,
+              borderRadius: 6, padding: "10px 14px",
+              maxWidth: 460, width: "100%", marginBottom: 16,
+              fontFamily: T.mono, fontSize: 13, color: T.red,
+              wordBreak: "break-word",
+            }}>{checkoutError}</div>
+          )}
           <div style={{
             background: T.panel, border: `1px solid ${T.border2}`,
             borderRadius: 10, padding: "36px 40px", maxWidth: 460, width: "100%",
