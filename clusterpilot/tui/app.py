@@ -11,6 +11,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Input, Label, Static, TabbedContent, TabPane
 
+from clusterpilot import __version__
 from clusterpilot.config import Config
 from clusterpilot.db import DB_PATH, get_total_usage, init_db
 from clusterpilot.jobs.ai_gen import _PRICING
@@ -40,7 +41,7 @@ class TitleBar(Static):
         clusters = "  ".join(self._cluster_indicator(c) for c in self._config.clusters)
         cost = f"  [#3d3520]│[/]  {self._cost_text}" if self._cost_text else ""
         return (
-            f"[bold #e8a020]◈ CLUSTERPILOT[/]  [#7a6a50]v0.1.2[/]  "
+            f"[bold #e8a020]◈ CLUSTERPILOT[/]  [#7a6a50]v{__version__}[/]  "
             f"[#3d3520]│[/]  {clusters}{cost}"
         )
 
