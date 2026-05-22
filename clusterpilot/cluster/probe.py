@@ -13,7 +13,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from clusterpilot.ssh.connection import run_remote
+from clusterpilot.ssh.connection import SSHError, run_remote
 
 _CACHE_ROOT = Path.home() / ".cache" / "clusterpilot"
 _CACHE_TTL = 24 * 3600   # seconds
@@ -117,17 +117,47 @@ async def probe_cluster(
 # ── Remote fetching ───────────────────────────────────────────────────────────
 
 async def _fetch_all(host: str, user: str) -> tuple[str, str, str, str, str]:
-    """Run all probe commands concurrently."""
-    return await asyncio.gather(
-        run_remote(host, user, "sinfo -o '%P %l %G %D' --noheader"),
-        run_remote(host, user, "module avail julia 2>&1"),
-        run_remote(host, user, "module avail python 2>&1"),
-        run_remote(
-            host, user,
-            f"sacctmgr show user {user} withassoc "
-            f"format=account,maxjobs,maxwall -p --noheader",
-        ),
-        run_remote(host, user, "echo $SCRATCH"),
+    """Run all probe commands concurrently.
+
+    Only ``sinfo`` is load-bearing for the partition picker; the other commands
+    are best-effort. Empty results are returned for any of the auxiliary
+    commands that fail (common on DRAC clusters where ``sacctmgr`` from the
+    login node cannot reach ``slurmdbd``, or where the ``module`` system is
+    unavailable). A failure of ``sinfo`` itself still raises.
+    """
+    sinfo_task = run_remote(host, user, "sinfo -o '%P %l %G %D' --noheader")
+    julia_task = run_remote(host, user, "module avail julia 2>&1")
+    python_task = run_remote(host, user, "module avail python 2>&1")
+    sacctmgr_task = run_remote(
+        host, user,
+        f"sacctmgr show user {user} withassoc "
+        f"format=account,maxjobs,maxwall -p --noheader",
+    )
+    scratch_task = run_remote(host, user, "echo $SCRATCH")
+
+    results = await asyncio.gather(
+        sinfo_task,
+        julia_task,
+        python_task,
+        sacctmgr_task,
+        scratch_task,
+        return_exceptions=True,
+    )
+
+    sinfo_out = results[0]
+    if isinstance(sinfo_out, BaseException):
+        # No partitions means no submission, so surface this one.
+        raise sinfo_out
+
+    def _ok(value: object) -> str:
+        return "" if isinstance(value, BaseException) else value  # type: ignore[return-value]
+
+    return (
+        sinfo_out,
+        _ok(results[1]),
+        _ok(results[2]),
+        _ok(results[3]),
+        _ok(results[4]),
     )
 
 
@@ -219,71 +249,87 @@ def _parse_max_wall(output: str) -> dict[str, str]:
 
 @dataclass
 class PartitionAvailability:
-    idle: int
-    total: int
+    idle: int    # fully unallocated nodes — jobs start immediately
+    mix: int     # partially allocated nodes — also accept jobs if resources free
+    total: int   # total nodes in the partition (across all states)
     state: str   # "up", "down", "drain", "inactive"
+
+    @property
+    def free(self) -> int:
+        """Nodes able to accept a new job right now (idle + mix)."""
+        return self.idle + self.mix
 
 
 async def fetch_availability(host: str, user: str) -> dict[str, PartitionAvailability]:
     """Return partition → live availability. Not cached — always fresh.
 
-    Uses ``sinfo -o '%P %F %a' --noheader`` which reports
-    Allocated/Idle/Other/Total node counts and partition state per row.
-    Aggregates across multiple rows for the same partition name
-    (heterogeneous partitions can appear on more than one line).
+    Uses ``sinfo -o '%P %D %t %a' --noheader`` which lists one row per
+    (partition, node-state) combination so idle vs mix vs other can be
+    counted separately. Aggregates across multiple rows for the same
+    partition name (heterogeneous partitions can appear on many lines).
     """
     try:
-        output = await run_remote(host, user, "sinfo -o '%P %F %a' --noheader")
+        output = await run_remote(host, user, "sinfo -o '%P %D %t %a' --noheader")
         return _parse_availability(output)
     except Exception:
         return {}
 
 
+# Trailing modifier characters that SLURM appends to node states:
+# `*` not responding, `~` powered down, `#` powering up, `!` pending power down,
+# `%` power saving, `@` pending reboot, `^` reboot complete, `-` maintenance.
+_STATE_MODIFIERS = "*~#!%@^-"
+
+
 def _parse_availability(output: str) -> dict[str, PartitionAvailability]:
-    """Parse ``sinfo -o '%P %F %a' --noheader`` output.
+    """Parse ``sinfo -o '%P %D %t %a' --noheader`` output.
+
+    Each row has the form ``<partition> <node_count> <node_state> <partition_state>``.
+    Idle and mix nodes both count as 'free' (they can accept a new job now);
+    everything else (alloc, drain, drng, down, ...) contributes only to total.
 
     Example lines::
 
-        stamps   2/1/0/8   up
-        stamps-b 0/0/3/3   drain
-        skylake  10/20/0/40 up
-        lgpu     0/0/2/2   down
+        stamps           4   idle   up
+        gpubase_bynode_b1  1  mix    up
+        gpubase_bynode_b1  3  drain* up
+        gpubase_bynode_b1  132 drng  up
+        gpubase_bynode_b1  5  drain  up
+        lgpu             2   alloc  drain
     """
-    result: dict[str, PartitionAvailability] = {}
+    aggregates: dict[str, dict] = {}
     for line in output.splitlines():
         parts = line.split()
-        if len(parts) < 2:
+        if len(parts) < 4:
             continue
         name = parts[0].rstrip("*")
-        state = parts[2].strip() if len(parts) >= 3 else "up"
         try:
-            counts = parts[1].split("/")
-            if len(counts) >= 4:
-                idle_val = int(counts[1])
-                total_val = int(counts[3])
-            elif len(counts) >= 2:
-                # Fallback: A/I only (older SLURM)
-                idle_val = int(counts[1])
-                total_val = int(counts[0]) + idle_val
-            else:
-                continue
-        except (ValueError, IndexError):
+            count = int(parts[1])
+        except ValueError:
             continue
+        # Strip trailing modifier chars before classifying the state.
+        node_state = parts[2].lower().rstrip(_STATE_MODIFIERS)
+        partition_state = parts[3].strip().lower()
 
-        if name in result:
-            existing = result[name]
-            # For state: propagate non-up states; drain/down take priority over up.
-            merged_state = state if existing.state == "up" else existing.state
-            result[name] = PartitionAvailability(
-                idle=existing.idle + idle_val,
-                total=existing.total + total_val,
-                state=merged_state,
-            )
-        else:
-            result[name] = PartitionAvailability(
-                idle=idle_val, total=total_val, state=state
-            )
-    return result
+        agg = aggregates.setdefault(
+            name,
+            {"idle": 0, "mix": 0, "total": 0, "state": partition_state},
+        )
+        if node_state == "idle":
+            agg["idle"] += count
+        elif node_state in ("mix", "mixed"):
+            agg["mix"] += count
+        agg["total"] += count
+        # Non-up partition states propagate; up never overwrites down/drain.
+        if partition_state != "up" and agg["state"] == "up":
+            agg["state"] = partition_state
+
+    return {
+        name: PartitionAvailability(
+            idle=a["idle"], mix=a["mix"], total=a["total"], state=a["state"]
+        )
+        for name, a in aggregates.items()
+    }
 
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────

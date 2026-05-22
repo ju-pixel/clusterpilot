@@ -12,12 +12,15 @@ from clusterpilot.cluster.probe import (
     ClusterProbe,
     PartitionInfo,
     _parse_accounts,
+    _parse_availability,
     _parse_julia_modules,
     _parse_max_wall,
     _parse_sinfo,
     load_cache,
+    probe_cluster,
     save_cache,
 )
+from clusterpilot.ssh.connection import SSHError
 
 
 # ── _parse_sinfo ───────────────────────────────────────────────────────────────
@@ -246,3 +249,176 @@ class TestCache:
         with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
             result = load_cache("grex")
         assert result is None
+
+
+# ── _parse_availability (per-state aggregation) ───────────────────────────────
+
+class TestParseAvailability:
+    """Backed by ``sinfo -o '%P %D %t %a' --noheader`` which yields one row per
+    (partition, node-state) combination. The parser must aggregate across rows
+    and classify idle and mix nodes separately from everything else.
+    """
+
+    def test_single_partition_all_idle(self):
+        result = _parse_availability("stamps 4 idle up")
+        pa = result["stamps"]
+        assert pa.idle == 4 and pa.mix == 0 and pa.total == 4
+        assert pa.state == "up"
+        assert pa.free == 4
+
+    def test_narval_busy_with_mix_and_drained(self):
+        """Narval gpubase_bynode_b1: 1 mix, 3 drain*, 132 drng, 5 drain."""
+        output = (
+            "gpubase_bynode_b1 1 mix up\n"
+            "gpubase_bynode_b1 3 drain* up\n"
+            "gpubase_bynode_b1 132 drng up\n"
+            "gpubase_bynode_b1 5 drain up\n"
+        )
+        pa = _parse_availability(output)["gpubase_bynode_b1"]
+        assert pa.idle == 0
+        assert pa.mix == 1
+        assert pa.total == 141
+        assert pa.state == "up"
+        assert pa.free == 1
+
+    def test_state_modifier_suffix_stripped(self):
+        """`mix-`, `drain*`, `idle~` should be classified by their base state."""
+        output = (
+            "p1 2 mix- up\n"
+            "p1 1 idle~ up\n"
+            "p1 3 alloc up\n"
+        )
+        pa = _parse_availability(output)["p1"]
+        assert pa.mix == 2
+        assert pa.idle == 1
+        assert pa.total == 6
+
+    def test_partition_state_drain_propagates(self):
+        """If any row reports the partition as drain/down, that wins over up."""
+        output = (
+            "lgpu 1 alloc up\n"
+            "lgpu 1 idle drain\n"
+        )
+        assert _parse_availability(output)["lgpu"].state == "drain"
+
+    def test_up_state_does_not_overwrite_drain(self):
+        output = (
+            "lgpu 1 alloc drain\n"
+            "lgpu 1 idle up\n"
+        )
+        assert _parse_availability(output)["lgpu"].state == "drain"
+
+    def test_mixed_partition_with_idle_and_mix(self):
+        output = (
+            "skylake 2 idle up\n"
+            "skylake 3 mix up\n"
+            "skylake 5 alloc up\n"
+        )
+        pa = _parse_availability(output)["skylake"]
+        assert pa.idle == 2
+        assert pa.mix == 3
+        assert pa.total == 10
+        assert pa.free == 5
+
+    def test_default_partition_star_stripped(self):
+        result = _parse_availability("skylake* 4 idle up")
+        assert "skylake" in result
+        assert "skylake*" not in result
+
+    def test_short_or_malformed_lines_ignored(self):
+        output = (
+            "stamps 4 idle up\n"
+            "\n"
+            "incomplete row\n"
+            "stamps nodecount idle up\n"   # non-integer count
+            "stamps-b 2 mix up\n"
+        )
+        result = _parse_availability(output)
+        assert result["stamps"].total == 4
+        assert result["stamps-b"].total == 2
+
+    def test_empty_output(self):
+        assert _parse_availability("") == {}
+
+
+# ── Probe resilience to auxiliary command failures ────────────────────────────
+
+class TestProbeResilience:
+    """Auxiliary probe commands (sacctmgr, module avail, $SCRATCH) often fail on
+    DRAC login nodes — sacctmgr cannot reach slurmdbd from Narval/Cedar login
+    nodes. The probe must still succeed if sinfo works, so the partition picker
+    can be populated. Only a sinfo failure is fatal.
+    """
+
+    SINFO_OUT = "stamps 21-00:00:00 gpu:v100:4 3\nskylake* 7-00:00:00 (null) 10"
+
+    @pytest.mark.asyncio
+    async def test_probe_succeeds_when_sacctmgr_fails(self, tmp_path):
+        """Mirrors the Narval failure: sacctmgr raises, the rest succeed."""
+
+        async def fake_run_remote(host, user, cmd, **kwargs):
+            if cmd.startswith("sinfo"):
+                return self.SINFO_OUT
+            if cmd.startswith("sacctmgr"):
+                raise SSHError(
+                    "Remote command failed (exit 1): sacctmgr ... "
+                    "_open_persist_conn: failed to open persistent connection "
+                    "to host:nvl-slurmdb:6819: Connection refused"
+                )
+            if cmd.startswith("module avail julia"):
+                return "julia/1.11.3"
+            if cmd.startswith("module avail python"):
+                return "python/3.11.5"
+            if cmd.startswith("echo $SCRATCH"):
+                return "/scratch/juliaf"
+            raise AssertionError(f"Unexpected command: {cmd!r}")
+
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path), \
+             patch("clusterpilot.cluster.probe.run_remote", new=fake_run_remote):
+            probe = await probe_cluster("narval", "narval.alliancecan.ca", "juliaf")
+
+        # Partition picker can populate.
+        assert [p.name for p in probe.partitions] == ["stamps", "skylake"]
+        # Auxiliary results degrade gracefully.
+        assert probe.accounts == []
+        assert probe.account_max_wall == {}
+        # The other auxiliaries that did succeed should still come through.
+        assert probe.julia_versions == ["julia/1.11.3"]
+        assert probe.python_versions == ["python/3.11.5"]
+        assert probe.scratch_env == "/scratch/juliaf"
+
+    @pytest.mark.asyncio
+    async def test_probe_raises_when_sinfo_fails(self, tmp_path):
+        """sinfo is load-bearing: if it fails we cannot populate partitions."""
+
+        async def fake_run_remote(host, user, cmd, **kwargs):
+            if cmd.startswith("sinfo"):
+                raise SSHError("Remote command failed (exit 255): sinfo ...")
+            return ""
+
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path), \
+             patch("clusterpilot.cluster.probe.run_remote", new=fake_run_remote):
+            with pytest.raises(SSHError):
+                await probe_cluster("narval", "narval.alliancecan.ca", "juliaf")
+
+    @pytest.mark.asyncio
+    async def test_probe_survives_module_and_scratch_failures(self, tmp_path):
+        """Generic clusters may not have `module` or $SCRATCH at all."""
+
+        async def fake_run_remote(host, user, cmd, **kwargs):
+            if cmd.startswith("sinfo"):
+                return self.SINFO_OUT
+            if cmd.startswith("sacctmgr"):
+                return "def-stamps|10|7-00:00:00|"
+            # Module system absent, $SCRATCH unset.
+            raise SSHError(f"Remote command failed (exit 127): {cmd}")
+
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path), \
+             patch("clusterpilot.cluster.probe.run_remote", new=fake_run_remote):
+            probe = await probe_cluster("generic", "host.example", "user")
+
+        assert len(probe.partitions) == 2
+        assert probe.accounts == ["def-stamps"]
+        assert probe.julia_versions == []
+        assert probe.python_versions == []
+        assert probe.scratch_env == ""

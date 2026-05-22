@@ -153,8 +153,13 @@ class JobsView(Static):
         self.query_one("#meta-content", Static).update(_format_meta(job))
         terminal = job.status in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT")
         self.query_one("#btn-kill", Button).disabled = terminal
-        self.query_one("#btn-rsync", Button).disabled = job.status not in (
-            "COMPLETED", "RUNNING"
+        # RSYNC: enabled whenever there's something on the cluster worth pulling.
+        # FAILED / CANCELLED / TIMEOUT / OUT_OF_MEMORY / NODE_FAIL jobs all have
+        # logs the user usually wants for debugging, so they must be syncable.
+        self.query_one("#btn-rsync", Button).disabled = (
+            job.status == "PENDING"
+            or job.remote_cleaned
+            or not job.working_dir
         )
         # CLEAN: only for terminal jobs that still have a remote directory.
         self.query_one("#btn-clean", Button).disabled = (
