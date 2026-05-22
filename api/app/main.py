@@ -1,12 +1,16 @@
+import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import Base, get_engine
 from app.routes import auth, email, health, invites, jobs, keys, notify, proxy, stripe_hooks, users
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -33,6 +37,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Starlette installs Exception/500 handlers on ServerErrorMiddleware which sits OUTSIDE CORSMiddleware, so we set CORS headers manually here or the browser shows a misleading "no Access-Control-Allow-Origin" error. Class name only, because exception messages can leak secrets (e.g. Stripe AuthenticationError includes the key prefix).
+    logger.exception(
+        "Unhandled %s in %s %s",
+        exc.__class__.__name__, request.method, request.url.path,
+    )
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "type": exc.__class__.__name__},
+    )
+    origin = request.headers.get("origin")
+    if origin in settings.cors_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Vary"] = "Origin"
+    return response
+
 
 app.include_router(health.router)
 app.include_router(auth.router)
