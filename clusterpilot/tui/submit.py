@@ -21,7 +21,8 @@ from clusterpilot.cluster.probe import PartitionAvailability, fetch_availability
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
-from clusterpilot.jobs.env_detect import analyze_script
+from clusterpilot.jobs.env_detect import ScriptEnvironment, analyze_script
+from clusterpilot.jobs.preflight import PreflightError, warm_depot
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import run_remote
 from clusterpilot.ssh.rsync import read_ignore_file, upload, upload_file
@@ -255,6 +256,7 @@ class SubmitView(Static):
 
     def on_mount(self) -> None:
         self._generated_script = ""
+        self._last_script_env: ScriptEnvironment | None = None
         self._partition_availability: dict[str, PartitionAvailability] = {}
         self._init_done = False
         self._populate_cluster_select()
@@ -303,6 +305,13 @@ class SubmitView(Static):
         # (e.g. Select's SelectCurrent, or TextArea's inner editor).
         for node in event.widget.ancestors_with_self:
             node_id = getattr(node, "id", None)
+            if node_id == "partition-select":
+                profile = self._selected_profile()
+                if profile is not None and profile.cluster_type == "drac":
+                    help_widget.update(_HELP_PARTITION_DRAC)
+                else:
+                    help_widget.update(_HELP_PARTITION)
+                return
             if node_id in _HELP_MAP:
                 help_widget.update(_HELP_MAP[node_id])
                 return
@@ -344,20 +353,25 @@ class SubmitView(Static):
                 severity="error",
                 timeout=10,
             )
-        elif pa.state == "drain":
+        elif pa.state in ("drain", "inact", "inactive"):
             self.app.notify(
                 f"Partition '{name}' is draining ({pa.total} nodes) — "
                 "no new jobs will start until it returns to service.",
                 severity="warning",
                 timeout=10,
             )
-        elif pa.idle == 0:
-            self.app.notify(
-                f"Partition '{name}' has no idle nodes (0/{pa.total}) — "
-                "your job will queue. Select another partition to start immediately.",
-                severity="warning",
-                timeout=10,
-            )
+        elif pa.idle == 0 and pa.mix == 0:
+            # On DRAC the picked partition is only a routing hint — the scheduler
+            # places the job onto whatever partition matches at submit time, so
+            # this partition's load is not predictive of queueing behaviour.
+            profile = self._selected_profile()
+            if profile is None or profile.cluster_type != "drac":
+                self.app.notify(
+                    f"Partition '{name}' has no free nodes (0/{pa.total}) — "
+                    "your job will queue until resources free up.",
+                    severity="warning",
+                    timeout=10,
+                )
 
     # ── Partition probe ────────────────────────────────────────────────────────
 
@@ -385,12 +399,14 @@ class SubmitView(Static):
             pa = avail.get(p.name)
             if pa is None:
                 avail_str = ""
-            elif pa.state in ("down", "drain"):
+            elif pa.state in ("down", "drain", "inact", "inactive"):
                 avail_str = f"  [{pa.state.upper()}  {pa.idle}/{pa.total} nodes]"
-            elif pa.idle == 0:
-                avail_str = f"  [BUSY  0/{pa.total} nodes]"
+            elif pa.idle > 0:
+                avail_str = f"  [{pa.idle}/{pa.total} free]"
+            elif pa.mix > 0:
+                avail_str = f"  [{pa.mix}/{pa.total} free (mix only)]"
             else:
-                avail_str = f"  [{pa.idle}/{pa.total} idle]"
+                avail_str = f"  [0/{pa.total} free - queues]"
 
             if p.gres:
                 label = f"{p.name}  (GPU: {p.gres}  max {p.max_time}){avail_str}"
@@ -473,11 +489,23 @@ class SubmitView(Static):
                 manifest_path = project_root / candidate
                 if manifest_path.exists():
                     manifest_content = f"# {candidate}\n{manifest_path.read_text()}"
+                    manifest_name = candidate
                     break
+            else:
+                manifest_name = ""
+        else:
+            manifest_name = ""
 
         # Static analysis: detect language and third-party imports so the AI
-        # can generate the correct environment setup steps.
-        script_env = analyze_script(script_content, driver_script or script_path_str or None, manifest_content)
+        # can generate the correct environment setup steps. Also retained on
+        # self so the SUBMIT handler can decide whether DRAC pre-flight is needed.
+        script_env = analyze_script(
+            script_content,
+            driver_script or script_path_str or None,
+            manifest_content,
+            manifest_name=manifest_name,
+        )
+        self._last_script_env = script_env
         if not script_env.has_manifest and script_env.third_party_imports:
             self.app.notify(
                 f"No manifest found — inferred {len(script_env.third_party_imports)} "
@@ -669,6 +697,44 @@ class SubmitView(Static):
             self.query_one("#btn-submit", Button).disabled = False
             return
 
+        # ── DRAC pre-flight ───────────────────────────────────────────────────
+        # DRAC compute nodes have no internet. Warm the package depot on the
+        # login node now, against the rsynced project, so the compute-node
+        # script can run offline. Skipped on Grex/generic where compute nodes
+        # can reach pkg.julialang.org / PyPI directly.
+        if profile.cluster_type == "drac" and self._last_script_env is not None:
+            self.app.notify(
+                "Warming dependency cache on login node… first cold warm of a "
+                "CUDA-heavy Manifest can take 15-25 min; subsequent runs against "
+                "the same depot are sub-minute.",
+                severity="information",
+                timeout=1800,
+            )
+            try:
+                ran = await warm_depot(
+                    profile.host, profile.user, remote_dir,
+                    self._last_script_env,
+                    script=script,
+                    cluster_type=profile.cluster_type,
+                )
+                if ran:
+                    self.app.notify(
+                        "✓ Dependency cache warmed on login node.",
+                        severity="information",
+                    )
+            except PreflightError as exc:
+                preflight_log = local_job_dir / "preflight.log"
+                preflight_log.write_text(exc.stderr or str(exc))
+                self.app.notify(
+                    f"Pre-flight failed — full error written to {preflight_log}. "
+                    "Submission aborted; open the file or run RSYNC after retry to debug.",
+                    severity="error",
+                    markup=False,
+                    timeout=15,
+                )
+                self.query_one("#btn-submit", Button).disabled = False
+                return
+
         self.app.notify("Submitting job…", severity="information")
         try:
             job_id = await submit(
@@ -782,6 +848,17 @@ _HELP_PARTITION = (
     "sbatch will return a clear error if you pick a partition you cannot use.[/]"
 )
 
+_HELP_PARTITION_DRAC = (
+    "[#e8a020]PARTITION[/]  [#7a6a50]On DRAC clusters (Narval, Cedar, Beluga, Graham) "
+    "you do [#f0e8d0]not[/][#7a6a50] strictly need to choose a partition — the cluster's "
+    "own scheduler routes your job onto the right partition automatically. "
+    "Your pick here is used only as a hint to the AI for the [#f0e8d0]GPU type[/][#7a6a50] "
+    "(a100 vs a100_4g.20gb vs a100_3g.20gb, etc.) and the "
+    "[#f0e8d0]walltime ceiling[/][#7a6a50]. Pick the partition whose GPU and max time "
+    "match your job — load percentages don't matter, the scheduler picks the real "
+    "partition at submit time.[/]"
+)
+
 _HELP_PROJECT_DIR = (
     "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional. Local root of your project package. "
     "If set, the entire directory tree is rsynced to the cluster job directory, "
@@ -813,13 +890,12 @@ _HELP_ARRAY = (
 )
 
 _HELP_DESCRIPTION = (
-    "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]Tell the AI what this job does. "
-    "Runtime and modules are inferred from your driver script and project manifest. "
-    "Mention what you know — the AI will make sensible defaults otherwise. "
-    "[#f0e8d0]Compute:[/][#7a6a50] GPUs or CPU count · "
-    "[#f0e8d0]Memory:[/][#7a6a50] RAM if unusually large (e.g. 128G) · "
-    "[#f0e8d0]Walltime:[/][#7a6a50] estimated run time · "
-    "[#f0e8d0]I/O:[/][#7a6a50] where to read inputs or write outputs[/]"
+    "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]What the job does, in plain English. "
+    "The AI reads your driver script and project manifest, then picks sensible "
+    "defaults for modules, GPU type, memory, and walltime.\n\n"
+    "[#f0e8d0]Example:[/][#7a6a50]  \"train ResNet-18 on CIFAR-10 for 4 hours\"\n\n"
+    "[#f0e8d0]Already know SLURM?[/][#7a6a50] Pin resources inline if you want — "
+    "e.g. \"2× V100, 64G RAM, 12h\". Otherwise leave it to the AI.[/]"
 )
 
 _HELP_MAP = {
