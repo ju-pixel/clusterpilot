@@ -168,6 +168,29 @@ class TestAnalyzeScript:
         env = analyze_script("import numpy\nimport torch", "train.py", None)
         assert env.third_party_imports == ["numpy", "torch"]
 
+    def test_manifest_name_passed_through_when_manifest_present(self):
+        env = analyze_script(
+            "import numpy", "train.py",
+            "# requirements.txt\nnumpy>=1.20\n",
+            manifest_name="requirements.txt",
+        )
+        assert env.manifest_name == "requirements.txt"
+
+    def test_manifest_name_cleared_when_no_manifest(self):
+        """An accidentally-passed name with no manifest content should not leak through —
+        preflight relies on manifest_name only being populated when there's actually a manifest."""
+        env = analyze_script(
+            "import numpy", "train.py",
+            None,
+            manifest_name="requirements.txt",
+        )
+        assert env.manifest_name == ""
+
+    def test_manifest_name_defaults_to_empty(self):
+        env = analyze_script("import numpy", "train.py", "# requirements.txt\nnumpy\n")
+        # No manifest_name passed → empty string (preflight will not run for python).
+        assert env.manifest_name == ""
+
     def test_no_imports_when_no_content(self):
         env = analyze_script(None, "run.jl", None)
         assert env.third_party_imports == []

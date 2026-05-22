@@ -268,14 +268,64 @@ def _build_system_prompt(
     scratch = profile.expand_scratch()        # ~/... form, for context only
     storage_note = _cluster_storage_note(profile, probe)
 
-    env_setup = _build_env_setup_section(script_env)
+    is_drac = profile.cluster_type == "drac"
+    is_grex = profile.cluster_type == "grex"
 
-    partition_rule = (
-        f"The user has selected partition [bold]{partition}[/bold] from the picker. "
-        f"You MUST use exactly `--partition={partition}`. Do not change it."
-        if partition
-        else "Choose the most appropriate partition from the list above based on the job description."
-    )
+    env_setup = _build_env_setup_section(script_env, is_drac=is_drac)
+
+    # On DRAC (Alliance Canada: Narval, Cedar, Beluga, Graham) the partition is
+    # not a user-facing concept — the scheduler routes jobs by --account, --gres,
+    # --time and --mem. Emitting --partition= against a probed partition name
+    # makes sbatch reject the job. The picked partition is reused as a GRES /
+    # walltime hint instead. See CLAUDE.md "Partition selection".
+    selected_partition_gres = ""
+    selected_partition_max_time = ""
+    if partition:
+        match = next((p for p in probe.partitions if p.name == partition), None)
+        if match is not None:
+            selected_partition_gres = match.gres
+            selected_partition_max_time = match.max_time
+
+    if is_drac:
+        partition_directive_line = ""
+        hint_block = ""
+        if partition:
+            gres_hint = (
+                f"  - GRES to use: `{selected_partition_gres}` "
+                "(match this exactly in your --gres line)\n"
+                if selected_partition_gres
+                else "  - This partition is CPU-only — do not emit --gres.\n"
+            )
+            walltime_hint = (
+                f"  - Walltime ceiling: {selected_partition_max_time} "
+                "(your --time must not exceed this)\n"
+                if selected_partition_max_time
+                else ""
+            )
+            hint_block = (
+                f"\nThe user picked partition `{partition}` from the TUI as a "
+                f"routing hint:\n{gres_hint}{walltime_hint}"
+            )
+        drac_scheduling_note = (
+            "═══ DRAC SCHEDULING ═══\n\n"
+            "This is an Alliance Canada (DRAC) cluster. DO NOT emit "
+            "`#SBATCH --partition=` in the script. DRAC has no user-facing "
+            "partition selection; the scheduler routes the job automatically "
+            "based on --account, --gres, --time, --mem, and node count. "
+            "Emitting --partition= against any probed partition name will be "
+            "rejected by sbatch."
+            f"{hint_block}\n"
+        )
+        partition_rule = ""   # unused on DRAC, kept for f-string symmetry
+    else:
+        drac_scheduling_note = ""
+        partition_rule = (
+            f"The user has selected partition [bold]{partition}[/bold] from the picker. "
+            f"You MUST use exactly `--partition={partition}`. Do not change it."
+            if partition
+            else "Choose the most appropriate partition from the list above based on the job description."
+        )
+        partition_directive_line = f"   --partition      {partition_rule}\n"
 
     # The job directory base shown to the AI is for context only — the script
     # must NOT reference it.  All paths must be relative because the submission
@@ -360,6 +410,88 @@ Match module versions to what is available on this cluster.
     else:
         invoke_line = "The actual job command(s)"
 
+    # Detect GPU libraries in the driver script's imports so we can force the
+    # AI to emit --gres. Without this, a job whose driver `import`s CUDA but
+    # whose description doesn't mention "GPU" silently gets a CPU-only script,
+    # the DRAC scheduler routes it to a CPU node, and the runtime dies on
+    # `CUDA.device()` with "CUDA driver not functional" (Narval 2026-05-21).
+    gpu_libs = _detect_gpu_libraries(script_env)
+    if gpu_libs:
+        if is_drac:
+            gpu_default_gres = selected_partition_gres or "gpu:a100:1"
+        elif is_grex:
+            # Grex's submit_filter.lua rejects --gres=gpu:<type>:<count> on
+            # some partitions (notably lgpu) — it expands the partition list to
+            # include the user's default CPU partition and then errors out on
+            # "lgpu is meant for GPU jobs only". Bare gpu:N dodges this path.
+            gpu_default_gres = "gpu:1"
+        else:
+            gpu_default_gres = "gpu:<type>:<count>"
+        grex_type_note = (
+            " On Grex, use the type-less form `--gres=gpu:N` by default. Only "
+            "include the type subspec (e.g. `gpu:v100:1`, `gpu:l40s:1`) if the "
+            "user's description explicitly requests a specific GPU type — Grex's "
+            "submit filter rejects type subspec on some partitions otherwise."
+            if is_grex
+            else ""
+        )
+        # DRAC + CUDA: the cuda module provides libcudart and friends on
+        # LD_LIBRARY_PATH for CUDA.jl in local_toolkit mode at runtime.
+        # ClusterPilot's preflight separately writes LocalPreferences.toml
+        # with `local_toolkit = true, version = "12.2"`. The module load below
+        # pins the matching toolkit version.
+        drac_cuda_note = (
+            "\n\nThis is a DRAC cluster and the driver uses CUDA. After "
+            "`module load julia/<version>`, you MUST also emit "
+            "`module load cuda/12.2` (default on Narval; pin to match "
+            "LocalPreferences.toml). Without it the CUDA toolkit libraries "
+            "(libcudart, libnvrtc, ...) may not be on LD_LIBRARY_PATH and "
+            "CUDA.jl can fail at runtime even with --gres=gpu set."
+            if is_drac and "CUDA" in gpu_libs
+            else ""
+        )
+        gpu_directive_block = (
+            f"\n═══ GPU REQUIRED ═══\n\n"
+            f"The driver script imports {', '.join(gpu_libs)}, which requires "
+            f"a GPU at runtime. You MUST emit `#SBATCH --gres={gpu_default_gres}` "
+            f"in the directive block. Omitting --gres routes the job to a CPU "
+            f"node and the runtime will crash with 'CUDA driver not functional' "
+            f"or equivalent. If the user's description specifies a GPU count or "
+            f"type, use that; otherwise use the GRES shown above.{grex_type_note}{drac_cuda_note}\n"
+        )
+    else:
+        gpu_directive_block = ""
+
+    # Rule 3's `module purge` line is only useful on generic clusters where
+    # the base environment is unknown. On DRAC, StdEnv/2023 is sticky and a
+    # regular `module purge` cannot unload it — it just emits a noisy
+    # "The following modules were not unloaded" warning in every job log.
+    # Same on Grex with SBEnv. Drop the line on both.
+    module_purge_line = (
+        "   - module purge\n"
+        if not (is_drac or is_grex)
+        else ""
+    )
+
+    # Rule 2 (GPU GRES guidance for the general case — no detected GPU import).
+    # Grex's submit filter behaviour means even the general rule should prefer
+    # the type-less form there.
+    if is_grex:
+        gpu_rule_2 = (
+            "2. For GPU jobs, add:\n"
+            "   --gres=gpu:<count>          e.g. gpu:1 — bare form is the safe default on Grex\n"
+            "   Only include a type subspec (gpu:v100:N, gpu:l40s:N, gpu:a30:N, ...) when\n"
+            "   the user EXPLICITLY names a GPU type. Grex's submit filter rejects the\n"
+            "   type subspec on some partitions (lgpu in particular).\n"
+            "   Choose a partition that has the GPU type the user asked for (if any)."
+        )
+    else:
+        gpu_rule_2 = (
+            "2. For GPU jobs, add:\n"
+            "   --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s\n"
+            "   Choose the partition that has the requested GPU type from the partition list above."
+        )
+
     account_directive = (
         f"   --account        {account}"
         if account
@@ -387,14 +519,13 @@ User account: {account or "(none configured)"}
 {job_dir_note}
 {storage_note}
 SSH login: {profile.user}@{profile.host}
-{manifest_section}{script_section}
+{manifest_section}{script_section}{drac_scheduling_note}{gpu_directive_block}
 ═══ SCRIPT RULES ═══
 
 1. Always include these #SBATCH directives:
    --job-name       short, lowercase, no spaces (derived from the description)
    {account_directive}
-   --partition      {partition_rule}
-   --nodes          usually 1 unless the job explicitly needs multiple
+{partition_directive_line}   --nodes          usually 1 unless the job explicitly needs multiple
    --ntasks-per-node  match to CPUs needed
    --cpus-per-task  set appropriately for the workload
    --mem             total memory per node, e.g. 32G
@@ -413,13 +544,10 @@ SSH login: {profile.user}@{profile.host}
    Do NOT write `--output=/home/.../%x-...`.
    The % tokens are relative to the CWD. Any path prefix breaks log discovery.
 
-{array_rule}2. For GPU jobs, add:
-   --gres=gpu:<type>:<count>   e.g. gpu:v100:2 for two V100s
-   Choose the partition that has the requested GPU type from the partition list above.
+{array_rule}{gpu_rule_2}
 
 3. After #SBATCH directives:
-   - module purge
-   - module load <required modules>
+{module_purge_line}   - module load <required modules>
    - (no cd needed — the CWD is already the job directory)
 {env_setup}   - {invoke_line}
 
@@ -473,28 +601,60 @@ Output only the script. Begin now.
 """
 
 
-def _build_env_setup_section(env: ScriptEnvironment | None) -> str:
+def _build_env_setup_section(
+    env: ScriptEnvironment | None,
+    *,
+    is_drac: bool = False,
+) -> str:
     """Return environment setup lines to insert in SCRIPT RULES rule 3.
 
     Returns a string ready for f-string interpolation. Non-empty strings
     always end with a newline so they slot cleanly before the invoke line.
+
+    On DRAC clusters the depot is pre-warmed on the login node by
+    :func:`clusterpilot.jobs.preflight.warm_depot` before sbatch runs, so the
+    compute-node script must set ``JULIA_PKG_OFFLINE=true`` to skip the
+    registry-update network call. The ``Pkg.instantiate()`` line is kept for
+    idempotency (no-op against a warm offline depot).
     """
     if env is None:
         return ""
 
+    julia_offline_prefix = (
+        "   - export JULIA_PKG_OFFLINE=true   "
+        "# depot pre-warmed on login node — skip the registry network update\n"
+        if is_drac
+        else ""
+    )
+
     if env.language == "julia":
         if env.has_manifest:
             # Pinned environment — instantiate exactly what the manifest specifies.
-            return "   - julia --project=. -e 'import Pkg; Pkg.instantiate()'\n"
+            return (
+                f"{julia_offline_prefix}"
+                "   - julia --project=. -e 'import Pkg; Pkg.instantiate()'\n"
+            )
         if env.third_party_imports:
             # No manifest — install inferred packages inline.
             pkgs = "[" + ", ".join(f'"{p}"' for p in env.third_party_imports) + "]"
             return (
+                f"{julia_offline_prefix}"
                 f"   - julia -e 'import Pkg; Pkg.add({pkgs}); Pkg.instantiate()'\n"
                 f"     (No Project.toml found — packages inferred from script imports.)\n"
             )
 
     elif env.language == "python":
+        if is_drac:
+            # DRAC compute nodes have no internet. ClusterPilot's preflight
+            # has already run `pip install --user` on the login node; the
+            # packages are in ~/.local/lib/python3.X/site-packages/ and the
+            # NFS-shared $HOME makes them visible on the compute node. The
+            # AI must NOT add a pip install line to the script.
+            return (
+                "   - # Python dependencies were pre-installed on the login node by\n"
+                "     # ClusterPilot's preflight (DRAC compute nodes have no internet).\n"
+                "     # DO NOT emit any `pip install` line in this script.\n"
+            )
         if env.has_manifest:
             # The manifest type is visible in the PROJECT MANIFEST section above.
             return (
@@ -552,6 +712,25 @@ def _cluster_storage_note(profile: ClusterProfile, probe: ClusterProbe) -> str:
         "or to $HOME for persistent storage. "
         "Use $SLURM_TMPDIR for temporary files if available on this cluster."
     )
+
+
+# Top-level package names whose presence in a driver script means a GPU is
+# required at runtime. Triggers a hard `#SBATCH --gres=...` directive in the
+# generated script even if the user's description doesn't mention "GPU".
+_GPU_LIBRARIES: frozenset[str] = frozenset({
+    # Julia
+    "CUDA", "AMDGPU", "oneAPI", "Metal", "KernelAbstractions",
+    # Python
+    "torch", "jax", "cupy", "tensorflow", "cudf", "cuml", "cugraph",
+    "pycuda", "numba",
+})
+
+
+def _detect_gpu_libraries(env: ScriptEnvironment | None) -> list[str]:
+    """Return the GPU-library imports detected in the driver script, sorted."""
+    if env is None or not env.third_party_imports:
+        return []
+    return sorted(set(env.third_party_imports) & _GPU_LIBRARIES)
 
 
 def _format_partitions(probe: ClusterProbe) -> str:

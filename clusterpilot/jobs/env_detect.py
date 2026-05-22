@@ -18,6 +18,8 @@ class ScriptEnvironment:
     has_manifest: bool               # Project.toml / requirements.txt found
     third_party_imports: list[str]   # Non-stdlib packages, sorted alphabetically
     driver_extension: str            # ".jl", ".py", ".sh", or ""
+    manifest_name: str = ""          # "Project.toml", "pyproject.toml",
+                                     # "requirements.txt", or "" when no manifest
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -26,6 +28,7 @@ def analyze_script(
     script_content: str | None,
     driver_script: str | None,
     manifest_content: str | None,
+    manifest_name: str = "",
 ) -> ScriptEnvironment:
     """Detect language, manifest presence, and third-party imports.
 
@@ -35,6 +38,9 @@ def analyze_script(
                           (used for extension-based language detection).
         manifest_content: Contents of Project.toml / requirements.txt / pyproject.toml,
                           or None if not found.
+        manifest_name:    Filename of the discovered manifest (e.g.,
+                          ``"pyproject.toml"``), used by the pre-flight to
+                          pick the right install command.
     """
     ext = Path(driver_script).suffix.lower() if driver_script else ""
     language = _detect_language(ext, script_content or "")
@@ -53,6 +59,7 @@ def analyze_script(
         has_manifest=has_manifest,
         third_party_imports=third_party,
         driver_extension=ext,
+        manifest_name=manifest_name if has_manifest else "",
     )
 
 
