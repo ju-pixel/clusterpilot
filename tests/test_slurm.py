@@ -8,6 +8,7 @@ import pytest
 from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
     SlurmError,
+    find_array_logs,
     find_log,
     job_status,
     submit,
@@ -173,3 +174,70 @@ class TestFindLog:
         with patch("clusterpilot.cluster.slurm.run_remote", mock):
             path = await find_log("host", "user", "myjob", "99", "/home/user/myjob")
         assert path is None
+
+
+# ── find_array_logs ─────────────────────────────────────────────────────────────
+
+class TestFindArrayLogs:
+    async def test_maps_task_index_to_path_in_numeric_order(self):
+        # ls returns lexical order (10 before 2); we expect numeric ordering.
+        listing = (
+            "/home/user/myjob/myjob-99-0.out\n"
+            "/home/user/myjob/myjob-99-1.out\n"
+            "/home/user/myjob/myjob-99-10.out\n"
+            "/home/user/myjob/myjob-99-2.out\n"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote(listing)):
+            tasks = await find_array_logs(
+                "host", "user", "myjob", "99", "/home/user/myjob",
+            )
+        assert list(tasks.keys()) == ["0", "1", "2", "10"]
+        assert tasks["2"] == "/home/user/myjob/myjob-99-2.out"
+
+    async def test_lowest_task_is_first(self):
+        listing = (
+            "/home/user/myjob/myjob-99-3.out\n"
+            "/home/user/myjob/myjob-99-0.out\n"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote(listing)):
+            tasks = await find_array_logs(
+                "host", "user", "myjob", "99", "/home/user/myjob",
+            )
+        assert next(iter(tasks)) == "0"
+
+    async def test_empty_when_no_task_logs(self):
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote("")):
+            tasks = await find_array_logs(
+                "host", "user", "myjob", "99", "/home/user/myjob",
+            )
+        assert tasks == {}
+
+    async def test_empty_on_ssh_error(self):
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote_raises(SSHError("gone")),
+        ):
+            tasks = await find_array_logs(
+                "host", "user", "myjob", "99", "/home/user/myjob",
+            )
+        assert tasks == {}
+
+    async def test_ignores_non_matching_lines(self):
+        # The non-array single-file log and an unrelated file must not match.
+        listing = (
+            "/home/user/myjob/myjob-99.out\n"        # no task suffix
+            "/home/user/myjob/myjob-99-0.out\n"      # task 0
+            "/home/user/myjob/results.txt\n"         # unrelated
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote(listing)):
+            tasks = await find_array_logs(
+                "host", "user", "myjob", "99", "/home/user/myjob",
+            )
+        assert tasks == {"0": "/home/user/myjob/myjob-99-0.out"}
+
+    async def test_globs_against_job_name_and_id(self):
+        mock = _mock_run_remote("/home/user/myjob/myjob-99-0.out")
+        with patch("clusterpilot.cluster.slurm.run_remote", mock):
+            await find_array_logs("host", "user", "myjob", "99", "/home/user/myjob")
+        cmd = mock.call_args[0][2]
+        assert "/home/user/myjob/myjob-99-*.out" in cmd

@@ -172,3 +172,45 @@ async def find_log(
         except SSHError:
             continue
     return None
+
+
+async def find_array_logs(
+    host: str,
+    user: str,
+    job_name: str,
+    job_id: str,
+    working_dir: str,
+) -> dict[str, str]:
+    """Map array task index → stdout log path for a job array.
+
+    Each array task writes its own log via the ``%x-%A-%a`` pattern, i.e.
+    ``<working_dir>/<job_name>-<job_id>-<task>.out`` (the hyphen separator is
+    enforced when the script is sanitised, and ``%A`` is the array master job
+    ID, which is what ClusterPilot stores as ``job_id``). This lists the
+    working directory and parses the task index out of every match.
+
+    Returns ``{task_index: log_path}`` ordered by numeric task index, or an
+    empty dict if no per-task logs exist yet (tasks not started, or directory
+    gone).
+    """
+    pattern = f"{working_dir}/{job_name}-{job_id}-*.out"
+    try:
+        out = await run_remote(host, user, f"ls -1 {pattern} 2>/dev/null")
+    except SSHError:
+        return {}
+
+    suffix_re = re.compile(rf"-{re.escape(job_id)}-([^/]+)\.out$")
+    tasks: dict[str, str] = {}
+    for line in out.strip().splitlines():
+        path = line.strip()
+        if not path:
+            continue
+        match = suffix_re.search(path)
+        if match:
+            tasks[match.group(1)] = path
+
+    def _order(task: str) -> tuple[int, str]:
+        # Numeric task indices sort naturally; anything odd sorts last.
+        return (int(task), "") if task.isdigit() else (2**31, task)
+
+    return {task: tasks[task] for task in sorted(tasks, key=_order)}
