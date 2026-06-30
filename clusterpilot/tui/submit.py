@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiosqlite
+from rich.markup import escape
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -174,18 +175,25 @@ def _package_src_warning(project_dir: Path) -> str | None:
 
 
 def _format_script(script: str) -> str:
-    """Apply Rich colour markup to a SLURM script for display."""
+    """Apply Rich colour markup to a SLURM script for display.
+
+    Each line's text is escaped before the colour tags are applied, so literal
+    square brackets in the script (bash array indices like ``${ARR[$i]}``,
+    globs ``[abc]``, regex classes ``[0-9]``) are shown verbatim instead of
+    being parsed as Rich markup and silently dropped.
+    """
     out: list[str] = []
-    for line in script.splitlines():
-        if line.startswith("#SBATCH"):
+    for raw in script.splitlines():
+        line = escape(raw)
+        if raw.startswith("#SBATCH"):
             out.append(f"[bold #e8a020]{line}[/]")
-        elif line.startswith("#!") or (line.startswith("#") and not line.startswith("#SBATCH")):
+        elif raw.startswith("#!") or (raw.startswith("#") and not raw.startswith("#SBATCH")):
             out.append(f"[#7a6a50]{line}[/]")
-        elif line.startswith("module"):
+        elif raw.startswith("module"):
             out.append(f"[#50c8c8]{line}[/]")
-        elif re.match(r"^(julia|python|bash|mpirun|srun)\b", line):
+        elif re.match(r"^(julia|python|bash|mpirun|srun)\b", raw):
             out.append(f"[#6ed86e]{line}[/]")
-        elif line == "":
+        elif raw == "":
             out.append("")
         else:
             out.append(f"[#f0e8d0]{line}[/]")
