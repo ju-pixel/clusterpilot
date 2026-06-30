@@ -45,6 +45,18 @@ Issues = "https://github.com/ju-pixel/clusterpilot/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["clusterpilot"]
 
+# Whitelist what ships in the source distribution. Without this, hatchling
+# bundles the entire monorepo (api/, dashboard/, proxy/, .jsx mockups) into the
+# sdist, including the git-ignored proxy/tokens.txt secrets file. Only the
+# package, its tests, and the standard metadata belong in a PyPI release.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/clusterpilot",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py39"
