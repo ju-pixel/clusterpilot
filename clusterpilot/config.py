@@ -27,9 +27,10 @@ api_key = ""                  # API key (not required for ollama)
                               #   openai:    set here or export OPENAI_API_KEY
 api_base_url = ""             # leave blank for defaults; for ollama set to http://localhost:11434/v1
 poll_interval = 300           # seconds between job status checks
-# upload_excludes = [".git/", "__pycache__/", "*.pyc", "*.egg-info/", ".DS_Store"]
-# Override to change what is excluded from all project uploads.
-# Per-project exclusions go in .clusterpilot_ignore at the project root.
+# upload_excludes = [".git/", ".julia/", "__pycache__/", "node_modules/", "*.png", "*.h5", ...]
+# Override to change what is excluded from all project uploads (rsync glob syntax).
+# Defaults already cover VCS/caches/build artefacts and large media globs.
+# Per-project exclusions go in .clusterpilotignore at the project root.
 
 [[clusters]]
 name = "grex"
@@ -89,13 +90,29 @@ class HostedConfig:
 
 
 _DEFAULT_UPLOAD_EXCLUDES: list[str] = [
+    # Version control, caches, build artefacts — never needed on the cluster.
     ".git/",
+    ".julia/",
     "__pycache__/",
     "*.pyc",
+    ".ipynb_checkpoints/",
+    "node_modules/",
     "*.egg-info/",
     ".DS_Store",
     "CLAUDE.md",
     "clusterpilot_jobs/",   # staging dir created by ClusterPilot itself
+    # Large / media artefacts. A job rarely needs these as inputs; when it does,
+    # add the specific file via EXTRA FILES (which bypasses these excludes).
+    "*.jld2",
+    "*.h5",
+    "*.hdf5",
+    "*.png",
+    "*.pdf",
+    "*.svg",
+    "*.gif",
+    "*.mp4",
+    "*.zip",
+    "*.tar*",
 ]
 
 # When downloading results, skip files that were part of the uploaded project.

@@ -221,12 +221,18 @@ Both lists are configurable in the `[defaults]` section:
 # Files/dirs excluded from upload to the cluster.
 upload_excludes = [
     ".git/",
+    ".julia/",
     "__pycache__/",
     "*.pyc",
+    ".ipynb_checkpoints/",
+    "node_modules/",
     "*.egg-info/",
     ".DS_Store",
     "CLAUDE.md",
     "clusterpilot_jobs/",
+    # Large / media artefacts (add a specific file via EXTRA FILES if a job needs it).
+    "*.jld2", "*.h5", "*.hdf5", "*.png", "*.pdf",
+    "*.svg", "*.gif", "*.mp4", "*.zip", "*.tar*",
 ]
 
 # Files/dirs excluded when syncing results back from the cluster.
@@ -248,8 +254,29 @@ download_excludes = [
 These are rsync glob patterns. If your job writes output to an unusual
 location, adjust `download_excludes` to avoid filtering it out.
 
-Per-project upload exclusions can also be set in a `.clusterpilot_ignore` file
-at the project root (one pattern per line, same syntax as rsync `--exclude`).
+#### Per-project ignore file
+
+Add a `.clusterpilotignore` at the project root to exclude paths for that
+project on top of the built-in defaults (one pattern per line, gitignore-style
+syntax: `data/` for a directory, `*.h5` for a file type). Comments start with
+`#`. The older `.clusterpilot_ignore` name is still read and merged for
+backwards compatibility. Directory excludes are pruned entirely, so an ignored
+directory is never recreated on the cluster, not even as an empty folder.
+
+#### Julia-project uploads
+
+When the project root contains a `Project.toml`, ClusterPilot ships only what
+the job needs, preserving layout: `Project.toml`, `Manifest.toml`, the `src/`
+tree, and the driver script. Everything else is left behind (your
+`.clusterpilotignore` still applies on top). This keeps uploads small even when
+the repo carries large `data/` or `output/` directories. Helper scripts the
+driver `include()`s, or any other file outside this set, should be listed under
+**EXTRA FILES** on the F2 screen, which uploads them at their correct relative
+path and bypasses the ignore rules.
+
+Set **PROJECT DIR** to the project root (the folder holding `Project.toml`), not
+to a `src/` subdirectory: ClusterPilot uploads the contents of PROJECT DIR as
+the job root, so pointing it inside `src/` would flatten the package layout.
 
 ## Usage
 
@@ -283,12 +310,14 @@ suggestion. It will use the correct `--gres` syntax for that partition's hardwar
 
 ### Project directory mode
 
-If you set **PROJECT DIR** on the F2 screen, the entire project tree is
-rsynced to a job-specific directory on the cluster
-(`$HOME/clusterpilot_jobs/<job-name>/`). Each job gets its own isolated copy,
-so you can submit multiple jobs from the same local project without them
-interfering with each other. Modify a parameter, change the driver script,
-and submit again - each submission creates a fresh directory on the cluster.
+If you set **PROJECT DIR** on the F2 screen, your project is rsynced to a
+job-specific directory on the cluster (`$HOME/clusterpilot_jobs/<job-name>/`),
+minus the built-in excludes and your `.clusterpilotignore` (and, for Julia
+projects, reduced to the manifest + `src/` + driver). Each job gets its own
+isolated copy, so you can submit multiple jobs from the same local project
+without them interfering with each other. Modify a parameter, change the driver
+script, and submit again - each submission creates a fresh directory on the
+cluster.
 
 When results are synced back, only output files are downloaded (SLURM logs,
 data files). Source code that was uploaded is skipped by default. See

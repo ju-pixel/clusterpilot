@@ -98,6 +98,81 @@ class PathSuggester(Suggester):
             return None
 
 
+def _julia_upload_includes(project_dir: Path, driver_rel: str) -> list[str] | None:
+    """Allowlist of paths to upload for a Julia project, or None.
+
+    When *project_dir* contains a ``Project.toml`` the upload is reduced to the
+    environment (Project/Manifest), the package source tree, and the driver
+    script, preserving relative layout. Returns None for non-Julia projects, in
+    which case the caller falls back to whole-tree blocklist upload.
+    """
+    if not (project_dir / "Project.toml").exists():
+        return None
+    includes = ["Project.toml", "Manifest.toml", "src/***"]
+    if driver_rel and not driver_rel.startswith("src/"):
+        includes.append(driver_rel)
+    return includes
+
+
+def _resolve_extra_file(entry: str, project_dir: Path) -> tuple[Path, Path, str | None]:
+    """Resolve an EXTRA FILE entry to (local_path, remote_relative_path, warning).
+
+    Relative entries land at their path under the job root. Absolute entries are
+    relativised: inside PROJECT DIR they keep their project-relative path; outside
+    PROJECT DIR they land at their basename in the job root (with a warning),
+    instead of the old behaviour that reconstructed an absolute ``home/...`` tree
+    on the remote.
+    """
+    p = Path(entry).expanduser()
+    if p.is_absolute():
+        resolved = p.resolve()
+        try:
+            rel = resolved.relative_to(project_dir.expanduser().resolve())
+            return resolved, rel, None
+        except ValueError:
+            warning = (
+                f"Extra file '{entry}' is outside PROJECT DIR; "
+                f"placing it at the job root as '{resolved.name}'."
+            )
+            return resolved, Path(resolved.name), warning
+    return project_dir / entry, Path(entry), None
+
+
+def _read_julia_package_name(manifest: Path) -> str | None:
+    """Return the ``name = "X"`` value from a Julia Project.toml, or None."""
+    try:
+        text = manifest.read_text()
+    except OSError:
+        return None
+    match = re.search(r'^\s*name\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _package_src_warning(project_dir: Path) -> str | None:
+    """Warn when PROJECT DIR points inside a Julia package's ``src/``.
+
+    CP uploads the *contents* of PROJECT DIR as the job root, so pointing it at a
+    package's ``src/`` flattens the layout (the real root's Project.toml expects
+    ``src/<Name>.jl``) and drops sibling dirs like ``scripts/``. PROJECT DIR
+    should be the project root, i.e. the directory that holds Project.toml.
+    """
+    parent_manifest = project_dir.parent / "Project.toml"
+    if not parent_manifest.exists():
+        return None
+    pkg_name = _read_julia_package_name(parent_manifest)
+    is_package_src = (
+        (pkg_name is not None and (project_dir / f"{pkg_name}.jl").exists())
+        or project_dir.name == "src"
+    )
+    if not is_package_src:
+        return None
+    return (
+        "PROJECT DIR looks like a Julia package's src/ directory. Set PROJECT DIR "
+        "to the project root (the folder containing Project.toml) instead, or the "
+        "package layout will break on the cluster."
+    )
+
+
 def _format_script(script: str) -> str:
     """Apply Rich colour markup to a SLURM script for display."""
     out: list[str] = []
@@ -201,7 +276,7 @@ class SubmitView(Static):
                 with Horizontal(id="project-dir-row"):
                     yield Label("PROJECT DIR", classes="field-label")
                     yield Input(
-                        placeholder="/path/to/project/  (optional — add .clusterpilot_ignore to exclude dirs)",
+                        placeholder="/path/to/project/  (optional; add .clusterpilotignore to exclude dirs)",
                         suggester=PathSuggester(dirs_only=True),
                         id="project-dir-input",
                     )
@@ -467,6 +542,15 @@ class SubmitView(Static):
         if script_path_str:
             if project_dir_str:
                 # Package mode: driver path is relative to the project root.
+                # A leading slash would make Path() discard the project dir and
+                # break the upload, so normalise it to a relative path here.
+                if script_path_str.startswith("/"):
+                    self.app.notify(
+                        "Driver script must be relative to PROJECT DIR; "
+                        "removing the leading slash.",
+                        severity="warning",
+                    )
+                    script_path_str = script_path_str.lstrip("/")
                 driver_script = script_path_str
                 full_path = Path(project_dir_str).expanduser() / script_path_str
             else:
@@ -485,6 +569,9 @@ class SubmitView(Static):
         manifest_content: str | None = None
         if project_dir_str:
             project_root = Path(project_dir_str).expanduser()
+            src_warning = _package_src_warning(project_root)
+            if src_warning:
+                self.app.notify(src_warning, severity="warning", timeout=12)
             for candidate in ("Project.toml", "pyproject.toml", "requirements.txt"):
                 manifest_path = project_root / candidate
                 if manifest_path.exists():
@@ -656,14 +743,22 @@ class SubmitView(Static):
             if project_dir_str:
                 # Package mode: rsync the project tree, then merge in the
                 # generated .sh script from the staging dir.
-                # Excludes = global defaults + .clusterpilot_ignore in the project root.
+                # Excludes = global defaults + .clusterpilotignore in the project root.
                 project_dir = Path(project_dir_str).expanduser()
                 excludes = list(app._config.defaults.upload_excludes)
                 excludes += read_ignore_file(project_dir)
+
+                # Julia-project allowlist: when a Project.toml is present, ship
+                # only the environment (Project/Manifest), the package source,
+                # and the driver — preserving layout — instead of the whole tree.
+                driver_rel = self.query_one("#script-path-input", Input).value.strip().lstrip("/")
+                includes = _julia_upload_includes(project_dir, driver_rel)
+
                 await upload(
                     profile.host, profile.user,
                     project_dir, remote_dir,
                     excludes=excludes,
+                    includes=includes,
                 )
                 await upload(profile.host, profile.user, local_job_dir, remote_dir)
 
@@ -671,15 +766,20 @@ class SubmitView(Static):
                 extra_raw = self.query_one("#extra-files-input", Input).value.strip()
                 if extra_raw:
                     for entry in (e.strip() for e in extra_raw.split(",") if e.strip()):
-                        local_file = project_dir / entry
+                        local_file, rel, warning = _resolve_extra_file(entry, project_dir)
+                        if warning:
+                            self.app.notify(warning, severity="warning")
                         if not local_file.exists():
                             self.app.notify(
                                 f"Extra file not found, skipping: {entry}",
                                 severity="warning",
                             )
                             continue
-                        # Preserve subdirectory structure relative to project root.
-                        remote_file_dir = f"{remote_dir}/{Path(entry).parent}"
+                        # Preserve subdirectory structure relative to the job root.
+                        remote_file_dir = (
+                            remote_dir if str(rel.parent) in (".", "")
+                            else f"{remote_dir}/{rel.parent}"
+                        )
                         await run_remote(
                             profile.host, profile.user,
                             f"mkdir -p {remote_file_dir}",
@@ -861,8 +961,10 @@ _HELP_PARTITION_DRAC = (
 
 _HELP_PROJECT_DIR = (
     "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional. Local root of your project package. "
-    "If set, the entire directory tree is rsynced to the cluster job directory, "
-    "minus anything listed in [#f0e8d0].clusterpilot_ignore[/][#7a6a50] at the project root. "
+    "If set, the project tree is rsynced to the cluster job directory, minus the "
+    "built-in excludes and anything in [#f0e8d0].clusterpilotignore[/][#7a6a50] at the root. "
+    "For a Julia project (Project.toml present) only Project/Manifest.toml, src/, "
+    "and the driver are shipped, preserving layout. "
     "Leave blank for self-contained single-script jobs.[/]"
 )
 
@@ -875,10 +977,10 @@ _HELP_SCRIPT_PATH = (
 
 _HELP_EXTRA_FILES = (
     "[#e8a020]EXTRA FILES[/]  [#7a6a50]Comma-separated files to upload alongside the project, "
-    "bypassing .clusterpilot_ignore. Use for per-job input data that normally "
-    "lives in an excluded directory — e.g. a precomputed temperature ladder, "
-    "a parameter file, or a checkpoint from a previous run. "
-    "Paths are relative to PROJECT DIR. Leave blank if not needed.[/]"
+    "bypassing the ignore rules. Use for per-job input data that normally "
+    "lives in an excluded directory, e.g. a precomputed temperature ladder, "
+    "a parameter file, a helper script the driver includes, or a checkpoint from "
+    "a previous run. Paths are relative to PROJECT DIR. Leave blank if not needed.[/]"
 )
 
 _HELP_ARRAY = (
