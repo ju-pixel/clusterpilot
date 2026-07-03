@@ -741,6 +741,7 @@ const NAV = [
 
 function SubscribeGate({ email, getToken }) {
   const api = makeApiClient(getToken);
+  const { signOut } = useClerk();
   const [loading, setLoading] = useState(false);
   const [piLoading, setPiLoading] = useState(false);
   const [piQty, setPiQty] = useState(3);
@@ -955,6 +956,16 @@ function SubscribeGate({ email, getToken }) {
           </div>
         </>
       )}
+
+      <p style={{ margin: "28px 0 0", fontFamily: T.sans, fontSize: 14, color: T.dim, textAlign: "center" }}>
+        Signed in as {email}.{" "}
+        <span
+          onClick={() => signOut({ redirectUrl: "https://clusterpilot.sh" })}
+          style={{ color: T.amber, cursor: "pointer", textDecoration: "underline" }}
+        >
+          Sign out or use a different account
+        </span>
+      </p>
     </div>
   );
 }
