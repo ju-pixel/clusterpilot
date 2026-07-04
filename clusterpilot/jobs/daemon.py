@@ -28,7 +28,14 @@ from clusterpilot.cluster.slurm import (
     tail_log,
 )
 from clusterpilot.config import ClusterProfile, Config
-from clusterpilot.db import DB_PATH, JobRecord, get_active_jobs, init_db, update_status
+from clusterpilot.db import (
+    DB_PATH,
+    JobRecord,
+    get_active_jobs,
+    get_all_jobs,
+    init_db,
+    update_status,
+)
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.notify.ntfy import (
     notify_completed,
@@ -58,6 +65,11 @@ class PollDaemon:
         # In-memory notification state — resets on daemon restart (acceptable).
         self._last_eta: dict[str, float] = {}      # key → last ETA notify time
         self._low_warned: set[str] = set()          # keys that got low-time warn
+        # key → last status successfully pushed to the hosted API this run.
+        # Lets us reconcile jobs whose transition was missed (e.g. the hosted
+        # token was configured after the job had already changed state), rather
+        # than only syncing on a live edge.
+        self._synced: dict[str, str] = {}
 
     # ── Run modes ─────────────────────────────────────────────────────────────
 
@@ -65,6 +77,10 @@ class PollDaemon:
         """Poll loop. Runs until the task is cancelled (Ctrl-C or systemd stop)."""
         log.info("ClusterPilot daemon started (poll_interval=%ds)",
                  self.config.poll_interval)
+        try:
+            await self.reconcile_once()
+        except Exception:
+            log.exception("Error during initial hosted reconcile — continuing")
         while True:
             try:
                 await self.poll_once()
@@ -140,8 +156,20 @@ class PollDaemon:
 
         if new_status != job.status:
             await self._handle_transition(db, profile, job, new_status)
-        elif new_status == "RUNNING":
+            return
+
+        if new_status == "RUNNING":
             await self._maybe_notify_running(profile, job)
+
+        # No live transition, but the hosted API may not yet reflect this status
+        # (transition missed before the token was set, or a prior sync failed).
+        # Re-push once per status until it lands; cheap thereafter.
+        if (
+            self.config.hosted.api_token
+            and self._synced.get(_key(job)) != new_status
+        ):
+            log_tail = await self._tail_for_sync(profile, job, new_status)
+            await self._sync(job, new_status, log_tail=log_tail)
 
     async def _handle_transition(
         self,
@@ -172,7 +200,7 @@ class PollDaemon:
                 await notify_started(self.config.notifications, job)
             except Exception:
                 log.warning("Failed to send start notification for %s", job.job_id, exc_info=True)
-            await sync_job(job, new_status, self.config.hosted)
+            await self._sync(job, new_status)
 
         elif new_status in TERMINAL_STATES:
             await update_status(
@@ -231,7 +259,7 @@ class PollDaemon:
                 log_tail = await tail_log(profile.host, profile.user, job.log_path)
             except SSHError:
                 pass
-        await sync_job(job, status, self.config.hosted, log_tail=log_tail or None)
+        await self._sync(job, status, log_tail=log_tail or None)
 
     async def _notify_failed(
         self,
@@ -260,7 +288,7 @@ class PollDaemon:
             await notify_failed(self.config.notifications, job, log_tail)
         except Exception:
             log.warning("Failed to send failure notification for %s", job.job_id, exc_info=True)
-        await sync_job(job, status, self.config.hosted, log_tail=log_tail or None)
+        await self._sync(job, status, log_tail=log_tail or None)
 
     # ── ETA / low-time notifications ──────────────────────────────────────────
 
@@ -300,6 +328,69 @@ class PollDaemon:
                 )
             except Exception:
                 log.warning("Failed ETA notification for %s", job.job_id, exc_info=True)
+
+    # ── Hosted sync ───────────────────────────────────────────────────────────
+
+    async def _sync(
+        self,
+        job: JobRecord,
+        status: str,
+        *,
+        log_tail: str | None = None,
+    ) -> None:
+        """Push a state to the hosted API and remember it only if it landed."""
+        ok = await sync_job(job, status, self.config.hosted, log_tail=log_tail)
+        if ok:
+            self._synced[_key(job)] = status
+
+    async def _tail_for_sync(
+        self,
+        profile: ClusterProfile,
+        job: JobRecord,
+        status: str,
+    ) -> str | None:
+        """Best-effort log tail for a running/terminal job, for the dashboard."""
+        if not job.log_path:
+            return None
+        if status != "RUNNING" and status not in TERMINAL_STATES:
+            return None
+        try:
+            return (await tail_log(profile.host, profile.user, job.log_path)) or None
+        except SSHError:
+            return None
+
+    async def reconcile_once(self) -> None:
+        """Re-push the current stored status of recent jobs to the hosted API.
+
+        Runs once at daemon start. Covers jobs whose state transition was never
+        synced — most importantly terminal jobs, which ``poll_once`` skips
+        (``get_active_jobs`` excludes them). Only jobs whose last-synced status
+        differs from their stored status are pushed, so repeated restarts within
+        a session stay cheap.
+        """
+        if not self.config.hosted.api_token:
+            return
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await init_db(db)
+            jobs = await get_all_jobs(db, limit=200)
+
+        by_cluster: dict[str, list[JobRecord]] = {}
+        for job in jobs:
+            if self._synced.get(_key(job)) == job.status:
+                continue
+            by_cluster.setdefault(job.cluster_name, []).append(job)
+
+        for cluster_name, cluster_jobs in by_cluster.items():
+            profile = self.config.get_cluster(cluster_name)
+            connected = (
+                profile is not None and is_connected(profile.host, profile.user)
+            )
+            for job in cluster_jobs:
+                log_tail = None
+                if connected:
+                    log_tail = await self._tail_for_sync(profile, job, job.status)
+                await self._sync(job, job.status, log_tail=log_tail)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

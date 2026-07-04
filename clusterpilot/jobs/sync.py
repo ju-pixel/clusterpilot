@@ -44,14 +44,19 @@ async def sync_job(
     hosted: HostedConfig,
     *,
     log_tail: Optional[str] = None,
-) -> None:
+) -> bool:
     """POST a job state update to the hosted API.
 
     No-op if ``hosted.api_token`` is empty (self-hosted users).
     Errors are caught and logged; they never propagate to the caller.
+
+    Returns True if the update was accepted by the API (HTTP < 400), False
+    otherwise (no token configured, network error, or an error response). The
+    daemon uses this to know whether a state has actually landed in the cloud,
+    so it can retry on the next poll rather than assume success.
     """
     if not hosted.api_token:
-        return
+        return False
 
     walltime_consumed: Optional[str] = None
     if job.elapsed_seconds is not None:
@@ -95,8 +100,11 @@ async def sync_job(
                 "Hosted sync for job %s returned HTTP %d: %s",
                 job.job_id, resp.status_code, resp.text[:200],
             )
+            return False
+        return True
     except Exception:
         log.warning(
             "Hosted sync failed for job %s (status=%s) — continuing",
             job.job_id, status, exc_info=True,
         )
+        return False

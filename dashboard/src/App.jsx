@@ -62,7 +62,16 @@ function walltimePct(consumed, requested) {
 
 function formatDatetime(iso) {
   if (!iso) return "─";
-  return iso.replace("T", " ").slice(0, 16);
+  const d = new Date(iso);
+  if (isNaN(d)) return "─";
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────
