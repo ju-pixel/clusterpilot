@@ -185,6 +185,37 @@ class TestLoadConfig:
         cfg = load_config(config_file)
         assert cfg.clusters[0].name == "grex"
 
+    def test_appends_fieldnotes_section_when_missing(self, tmp_path):
+        # A config written before the Fieldnotes integration gains a working,
+        # disabled-by-default [fieldnotes] section on load.
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[defaults]\n"
+            'model = "claude-sonnet-4-6"\n\n'
+            "[hosted]\n"
+            'api_token = ""\n'
+        )
+        cfg = load_config(config_file)
+        assert "[fieldnotes]" in config_file.read_text()
+        assert cfg.fieldnotes.enabled is False
+        assert cfg.fieldnotes.project == ""
+
+
+# ── [fieldnotes] parsing ──────────────────────────────────────────────────────
+
+class TestFieldnotesConfig:
+    def test_defaults_off(self):
+        cfg = _from_dict({"clusters": []})
+        assert cfg.fieldnotes.enabled is False
+        assert cfg.fieldnotes.project == ""
+
+    def test_parses_enabled_and_project(self):
+        cfg = _from_dict(
+            {"fieldnotes": {"enabled": True, "project": "spin-glass"}}
+        )
+        assert cfg.fieldnotes.enabled is True
+        assert cfg.fieldnotes.project == "spin-glass"
+
 
 # ── write_default_config ──────────────────────────────────────────────────────
 

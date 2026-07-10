@@ -24,6 +24,7 @@ from clusterpilot.cluster.slurm import (
 )
 from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db, mark_remote_cleaned, update_status
 from clusterpilot.jobs.ai_gen import _PRICING
+from clusterpilot.jobs.fieldnotes import log_completed_job
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import SSHError, is_connected, remove_remote_dir
 from clusterpilot.ssh.rsync import download
@@ -314,6 +315,15 @@ class JobsView(Static):
             )
             log_widget.write(f"[#6ed86e]✓ Synced to {local}[/]")
             self.app.notify(f"Results synced → {local}", severity="information")
+            # Best-effort: log the run into local Fieldnotes off the event loop.
+            # The helper no-ops silently when disabled / absent / no manifest, so
+            # a hiccup never turns a successful rsync into a visible error.
+            try:
+                logged = await asyncio.to_thread(log_completed_job, job, app._config)
+                if logged:
+                    self.app.notify("Logged to Fieldnotes", severity="information")
+            except Exception:
+                pass
         except Exception as exc:
             log_widget.write(f"[#e05050]rsync failed: {exc}[/]")
             self.app.notify(f"rsync failed: {exc}", severity="error", markup=False)

@@ -79,6 +79,7 @@ async def generate_script(
     manifest_content: str | None = None,
     extra_files: list[str] | None = None,
     script_env: ScriptEnvironment | None = None,
+    fieldnotes_enabled: bool = False,
     usage: ApiUsage | None = None,
 ) -> AsyncIterator[str]:
     """Stream a SLURM job script token-by-token.
@@ -106,6 +107,10 @@ async def generate_script(
         script_env:     Static analysis result from env_detect.analyze_script.
                         Used to generate appropriate environment setup steps
                         (Pkg.instantiate, pip install, etc.) in the script.
+        fieldnotes_enabled: When True, add a prompt rule asking the generated
+                        script to emit a small Fieldnotes run manifest
+                        (params.json) beside its outputs. Off by default so
+                        users who have not opted in are not nudged.
         usage:          Optional mutable container; populated with token counts
                         and cost after streaming completes.
 
@@ -124,6 +129,7 @@ async def generate_script(
         manifest_content=manifest_content,
         extra_files=extra_files or [],
         script_env=script_env,
+        fieldnotes_enabled=fieldnotes_enabled,
     )
 
     if provider == "anthropic":
@@ -259,6 +265,7 @@ def _build_system_prompt(
     manifest_content: str | None = None,
     extra_files: list[str] | None = None,
     script_env: ScriptEnvironment | None = None,
+    fieldnotes_enabled: bool = False,
 ) -> str:
     """Construct a cluster-aware system prompt from live probe data."""
     partition_lines = _format_partitions(probe)
@@ -503,6 +510,29 @@ Match module versions to what is available on this cluster.
         else "(no --account directive — not required on this cluster)"
     )
 
+    # Fieldnotes run manifest nudge (only when the user opted in). This asks the
+    # generated script to write a params.json beside its outputs so a completed
+    # run can be logged into Fieldnotes. It is the "Fieldnotes run manifest",
+    # unrelated to the dependency manifest (Project.toml / requirements.txt).
+    fieldnotes_section = ""
+    if fieldnotes_enabled:
+        fieldnotes_section = """
+9. Fieldnotes run manifest (best-effort, never fail the job):
+   Immediately before the script's main computation writes its outputs, emit a
+   file named params.json in the same directory as those outputs, containing a
+   flat JSON object of the run's key parameters (the physical/numerical inputs
+   that define this run, e.g. {"L": 128, "beta": 2.5, "seed": 7}). Use only
+   values already known in the script; do not invent parameters. For an array
+   job, write one params.json per task, inside that task's own output
+   subdirectory, so each task is logged as its own run. Optionally also write a
+   run.json beside it with any of: slurm_array_task_id, notes, tags (array),
+   outputs (list of output filenames relative to that directory). Writing these
+   files must never abort the job: guard the write so a failure is ignored.
+   This params.json is a relative path in the CWD or an output subdirectory,
+   consistent with the relative-path rules above. It is the "Fieldnotes run
+   manifest" and is unrelated to the dependency manifest referenced elsewhere.
+"""
+
     return f"""\
 You generate SLURM job submission scripts for the {profile.name} cluster \
 ({profile.host}). Output ONLY the bash script — no explanation, no markdown \
@@ -596,7 +626,7 @@ SSH login: {profile.user}@{profile.host}
      # ⚠ MODULE NOT FOUND: <name> — not available on this cluster.
      #   Contact the cluster support team to request installation.
    If all versions match, add no comments.
-
+{fieldnotes_section}
 Output only the script. Begin now.
 """
 

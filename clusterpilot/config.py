@@ -48,6 +48,10 @@ ntfy_server = "https://ntfy.sh"
 [hosted]
 api_url = "https://api.clusterpilot.sh"
 api_token = ""               # cp-<token> from the dashboard (leave blank for self-hosted)
+
+[fieldnotes]
+enabled = false              # log completed runs into local Fieldnotes (needs the fieldnotes CLI)
+# project = "my-project"     # optional: file all runs under this named Fieldnotes project
 """
 
 
@@ -87,6 +91,19 @@ class NotificationConfig:
 class HostedConfig:
     api_url: str = "https://api.clusterpilot.sh"
     api_token: str = ""  # cp-<token>; empty means hosted sync is disabled
+
+
+@dataclass
+class FieldnotesConfig:
+    """Opt-in local logging of completed runs into the Fieldnotes CLI.
+
+    Off by default so ClusterPilot never touches Fieldnotes unless the user
+    asks. When enabled, requires the `fieldnotes` binary on PATH; if it is
+    absent the integration silently no-ops.
+    """
+    enabled: bool = False   # opt-in; requires the fieldnotes CLI on PATH
+    project: str = ""       # optional Fieldnotes project name; "" lets
+                            # Fieldnotes attribute runs by directory
 
 
 _DEFAULT_UPLOAD_EXCLUDES: list[str] = [
@@ -148,6 +165,7 @@ class Config:
     clusters: list[ClusterProfile] = field(default_factory=list)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     hosted: HostedConfig = field(default_factory=HostedConfig)
+    fieldnotes: FieldnotesConfig = field(default_factory=FieldnotesConfig)
 
     def get_cluster(self, name: str) -> ClusterProfile | None:
         """Return the cluster profile with the given name, or None."""
@@ -196,6 +214,13 @@ api_url = "https://api.clusterpilot.sh"
 api_token = ""               # cp-<token> from the dashboard (leave blank for self-hosted)
 """
 
+_FIELDNOTES_SECTION = """\
+
+[fieldnotes]
+enabled = false              # log completed runs into local Fieldnotes (needs the fieldnotes CLI)
+# project = "my-project"     # optional: file all runs under this named Fieldnotes project
+"""
+
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
     """Load and parse config.toml. Raises ConfigError on missing file or bad TOML."""
@@ -214,6 +239,12 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if "hosted" not in data:
         with open(path, "a") as f:
             f.write(_HOSTED_SECTION)
+
+    # Migration: append [fieldnotes] section if missing (configs created before
+    # the Fieldnotes integration). Off by default, so existing behaviour is kept.
+    if "fieldnotes" not in data:
+        with open(path, "a") as f:
+            f.write(_FIELDNOTES_SECTION)
 
     return _from_dict(data)
 
@@ -265,4 +296,16 @@ def _from_dict(data: dict) -> Config:
         api_token=raw_hosted.get("api_token", ""),
     )
 
-    return Config(defaults=defaults, clusters=clusters, notifications=notifications, hosted=hosted)
+    raw_fn = data.get("fieldnotes", {})
+    fieldnotes = FieldnotesConfig(
+        enabled=bool(raw_fn.get("enabled", False)),
+        project=str(raw_fn.get("project", "")),
+    )
+
+    return Config(
+        defaults=defaults,
+        clusters=clusters,
+        notifications=notifications,
+        hosted=hosted,
+        fieldnotes=fieldnotes,
+    )

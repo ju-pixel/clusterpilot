@@ -146,6 +146,26 @@ class TestBuildSystemPrompt:
         assert "USER'S SCRIPT" not in prompt
 
 
+# ── Fieldnotes run manifest nudge (opt-in) ────────────────────────────────────
+
+class TestFieldnotesManifestNudge:
+    def test_absent_by_default(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile)
+        assert "params.json" not in prompt
+        assert "Fieldnotes run manifest" not in prompt
+
+    def test_absent_when_disabled(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, fieldnotes_enabled=False)
+        assert "params.json" not in prompt
+
+    def test_present_when_enabled(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, fieldnotes_enabled=True)
+        assert "params.json" in prompt
+        assert "Fieldnotes run manifest" in prompt
+        # Explicitly distinguished from the dependency manifest concept.
+        assert "unrelated to the dependency manifest" in prompt
+
+
 # ── DRAC behaviour: partition is a routing hint, not a hard --partition= ──────
 
 @pytest.fixture

@@ -662,6 +662,7 @@ class SubmitView(Static):
                 manifest_content=manifest_content,
                 extra_files=extra_files or None,
                 script_env=script_env,
+                fieldnotes_enabled=app._config.fieldnotes.enabled,
                 usage=self._last_usage,
             ):
                 self._generated_script += token

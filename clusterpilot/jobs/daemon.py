@@ -36,6 +36,7 @@ from clusterpilot.db import (
     init_db,
     update_status,
 )
+from clusterpilot.jobs.fieldnotes import log_completed_job
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.notify.ntfy import (
     notify_completed,
@@ -251,6 +252,16 @@ class PollDaemon:
             await notify_completed(self.config.notifications, job)
         except Exception:
             log.warning("Failed to send completion notification for %s", job.job_id, exc_info=True)
+
+        # Best-effort: log the completed run into local Fieldnotes. Only after a
+        # successful download, so incomplete results are never logged. The helper
+        # swallows everything; this outer guard is belt-and-braces.
+        if synced:
+            try:
+                await asyncio.to_thread(log_completed_job, job, self.config)
+            except Exception:
+                log.warning("Fieldnotes logging failed for %s, continuing",
+                            job.job_id, exc_info=True)
 
         # Fetch the log tail for the dashboard.
         log_tail = ""
