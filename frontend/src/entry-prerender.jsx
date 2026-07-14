@@ -18,7 +18,9 @@ function headForIndex() {
   const title = 'ClusterPilot blog'
   const description =
     'Practical guides, SLURM gotchas, and notes on building tools for computational researchers, from the team behind ClusterPilot.'
-  const canonical = `${SITE}/blog`
+  // Trailing slash: Netlify 301s the slash-less URL to the directory form,
+  // so the canonical must be the URL that actually serves.
+  const canonical = `${SITE}/blog/`
   return {
     title,
     description,
@@ -34,7 +36,7 @@ function headForIndex() {
 }
 
 function headForPost(post, slug) {
-  const canonical = `${SITE}/blog/${slug}`
+  const canonical = `${SITE}/blog/${slug}/`
   // Keep titles readable in search results. Only append the brand suffix when it
   // still fits comfortably under ~60 characters.
   const suffix = ' | ClusterPilot'

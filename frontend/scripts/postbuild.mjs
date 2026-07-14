@@ -20,7 +20,9 @@ const distSsr = path.join(root, 'dist-ssr')
 // Static routes that exist as SPA pages, mirrored into the sitemap.
 const STATIC_ROUTES = [
   { loc: '/', priority: '1.0', changefreq: 'weekly' },
-  { loc: '/blog', priority: '0.7', changefreq: 'weekly' },
+  // File-backed routes carry a trailing slash (Netlify 301s the slash-less
+  // form to the directory); SPA catch-all routes stay slash-less.
+  { loc: '/blog/', priority: '0.7', changefreq: 'weekly' },
   { loc: '/support', priority: '0.5', changefreq: 'monthly' },
   { loc: '/privacy', priority: '0.3', changefreq: 'yearly' },
   { loc: '/terms', priority: '0.3', changefreq: 'yearly' },
@@ -116,7 +118,7 @@ function buildSitemap(postUrls) {
   )
   const postEntries = postUrls.map(
     ({ slug, date }) => `  <url>
-    <loc>${SITE}/blog/${escapeXml(slug)}</loc>
+    <loc>${SITE}/blog/${escapeXml(slug)}/</loc>
     <lastmod>${escapeXml(date)}</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
@@ -139,8 +141,8 @@ function buildRss(items) {
     .map(
       p => `    <item>
       <title>${escapeXml(p.title)}</title>
-      <link>${SITE}/blog/${escapeXml(p.slug)}</link>
-      <guid>${SITE}/blog/${escapeXml(p.slug)}</guid>
+      <link>${SITE}/blog/${escapeXml(p.slug)}/</link>
+      <guid>${SITE}/blog/${escapeXml(p.slug)}/</guid>
       <description>${escapeXml(p.description)}</description>
       <pubDate>${toRfc822(p.date)}</pubDate>
     </item>`,
@@ -151,7 +153,7 @@ function buildRss(items) {
 <rss version="2.0">
   <channel>
     <title>ClusterPilot blog</title>
-    <link>${SITE}/blog</link>
+    <link>${SITE}/blog/</link>
     <description>Practical guides, SLURM gotchas, and notes on building tools for computational researchers.</description>
     <language>en-GB</language>
 ${rssItems}
