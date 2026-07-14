@@ -89,14 +89,13 @@ function BlogList() {
         {posts.map(post => (
           <a key={post.slug} href={`/blog/${post.slug}`} style={{ textDecoration: 'none', color: 'inherit' }}>
             <div
+              className="blog-list-row"
               style={{
                 padding: '28px 0',
                 borderBottom: `1px solid ${T.border2}`,
                 display: 'flex', gap: 40, alignItems: 'flex-start',
                 transition: 'opacity 0.15s',
               }}
-              onMouseEnter={e => e.currentTarget.style.opacity = '0.7'}
-              onMouseLeave={e => e.currentTarget.style.opacity = '1'}
             >
               <span style={{ fontFamily: mono, fontSize: 13, color: T.dim, flexShrink: 0, marginTop: 4, minWidth: 90 }}>
                 {formatDate(post.date)}

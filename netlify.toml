@@ -3,6 +3,11 @@
   command = "npm run build"
   publish = "dist"
 
+# SPA catch-all. The prerendered blog files (dist/blog/index.html and
+# dist/blog/<slug>/index.html) plus dist/sitemap.xml and dist/rss.xml are real
+# files on disk, so Netlify serves them directly and this rewrite never sees
+# those paths. Never add `force = true` here: it would make this rule shadow the
+# static blog files and break their SEO meta tags.
 [[redirects]]
   from   = "/*"
   to     = "/index.html"

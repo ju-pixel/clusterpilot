@@ -129,6 +129,10 @@ body {
 }
 .feature-cell:hover .feature-cell-bar { width: 100%; }
 
+/* ─── blog list row hover ──────────────────────────────────────────────────── */
+/* CSS hover rather than JS handlers, so the effect survives static prerendering. */
+.blog-list-row:hover { opacity: 0.7; }
+
 /* ─── blog prose ──────────────────────────────────────────────────────────── */
 .cp-prose { font-size: 17px; line-height: 1.75; color: #c8c8c8; }
 .cp-prose p  { margin-bottom: 20px; }
