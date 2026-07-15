@@ -1,14 +1,7 @@
-// ─── tokens (duplicated from LandingPage to keep legal pages self-contained) ──
-const T = {
-  bg:     '#000000',
-  bg2:    '#0a0a0a',
-  border: '#2a2a2a',
-  amber:  '#FFB866',
-  text:   '#fafafa',
-  muted:  '#6b6b6b',
-}
-const mono = "'DM Mono', 'Courier New', monospace"
-const sans = "'DM Sans', system-ui, sans-serif"
+// ─── tokens ─────────────────────────────────────────────────────────────────
+// Shared design tokens (see ../theme.js). This used to be a local copy of its
+// own; it now draws from the same single source of truth as every other page.
+import { T, F, mono, sans } from '../theme'
 
 // ─── nav ──────────────────────────────────────────────────────────────────────
 function Nav() {
@@ -23,10 +16,12 @@ function Nav() {
         padding: '18px 48px', maxWidth: 1200, margin: '0 auto',
       }}>
         <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
-          <img src="/logo.png" alt="ClusterPilot" width={28} height={28} style={{ display: 'block' }} />
-          <span style={{ fontFamily: mono, fontSize: 16, color: T.amber }}>clusterpilot</span>
+          {/* 40px mark + 22px wordmark, weight 500. Matches every CP header;
+              see the note in LandingPage's Nav for why 40 and not FN's 34. */}
+          <img src="/logo.png" alt="ClusterPilot" width={40} height={40} style={{ display: 'block' }} />
+          <span style={{ fontFamily: mono, fontSize: 22, fontWeight: 500, color: T.amberText, letterSpacing: '-0.3px' }}>clusterpilot</span>
         </a>
-        <a href="/" style={{ fontFamily: mono, fontSize: 13, color: T.muted, textDecoration: 'none' }}>
+        <a href="/" style={{ fontFamily: mono, fontSize: F.label, color: T.muted, textDecoration: 'none' }}>
           ← back
         </a>
       </nav>
@@ -42,7 +37,7 @@ function Footer() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
           <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
             <img src="/logo.png" alt="ClusterPilot" width={22} height={22} />
-            <span style={{ fontFamily: mono, fontSize: 14, color: T.amber }}>clusterpilot</span>
+            <span style={{ fontFamily: mono, fontSize: F.note, color: T.amberText }}>clusterpilot</span>
           </a>
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
             {[
@@ -52,7 +47,7 @@ function Footer() {
               ['Acceptable Use Policy', '/acceptable-use'],
             ].map(([label, href]) => (
               <a key={label} href={href}
-                style={{ fontFamily: mono, fontSize: 12, color: T.muted, textDecoration: 'none' }}
+                style={{ fontFamily: mono, fontSize: F.note, color: T.muted, textDecoration: 'none' }}
                 onMouseEnter={e => e.currentTarget.style.color = T.text}
                 onMouseLeave={e => e.currentTarget.style.color = T.muted}
               >
@@ -72,18 +67,20 @@ export default function LegalPage({ title, lastUpdated, children }) {
     <div style={{ background: T.bg, color: T.text, minHeight: '100vh', fontFamily: sans }}>
       <Nav />
       <main style={{ maxWidth: 780, margin: '0 auto', padding: '64px 48px 40px' }}>
-        <p style={{ fontFamily: mono, fontSize: 12, color: T.muted, marginBottom: 12 }}>
+        <p style={{ fontFamily: mono, fontSize: F.legal, color: T.muted, marginBottom: 12 }}>
           Legal · Frankly Labs
         </p>
-        <h1 style={{ fontFamily: mono, fontSize: 28, color: T.amber, marginBottom: 8, fontWeight: 500 }}>
+        {/* 32, not the hero's clamp up to 58: a legal page title sits at the top
+            of a compressed mono hierarchy (H1 32 / H2 20 / H3 18 / body 17). */}
+        <h1 style={{ fontFamily: mono, fontSize: 32, color: T.amberText, marginBottom: 8, fontWeight: 500 }}>
           {title}
         </h1>
         {lastUpdated && (
-          <p style={{ fontFamily: mono, fontSize: 12, color: T.muted, marginBottom: 48 }}>
+          <p style={{ fontFamily: mono, fontSize: F.legal, color: T.muted, marginBottom: 48 }}>
             Last updated: {lastUpdated}
           </p>
         )}
-        <div style={{ lineHeight: 1.75, fontSize: 15 }}>
+        <div style={{ lineHeight: 1.75, fontSize: F.item }}>
           {children}
         </div>
       </main>
@@ -98,7 +95,10 @@ export { T, mono, sans }
 export function H2({ children }) {
   return (
     <h2 style={{
-      fontFamily: mono, fontSize: 16, color: T.amber, fontWeight: 500,
+      // 20, not the landing page's 40: this is a numbered clause heading in a
+      // dense legal document, not a marketing section header. The B.2 scale's
+      // H1/H2 sizes were written for the hero and do not transfer here.
+      fontFamily: mono, fontSize: F.body, color: T.amberText, fontWeight: 500,
       marginTop: 48, marginBottom: 12, letterSpacing: '0.02em',
     }}>
       {children}
@@ -109,7 +109,7 @@ export function H2({ children }) {
 export function H3({ children }) {
   return (
     <h3 style={{
-      fontFamily: mono, fontSize: 14, color: T.text, fontWeight: 500,
+      fontFamily: mono, fontSize: F.card, color: T.text, fontWeight: 500,
       marginTop: 28, marginBottom: 8,
     }}>
       {children}
@@ -118,12 +118,12 @@ export function H3({ children }) {
 }
 
 export function P({ children }) {
-  return <p style={{ color: '#c8c8c8', marginBottom: 16 }}>{children}</p>
+  return <p style={{ color: T.muted, marginBottom: 16 }}>{children}</p>
 }
 
 export function UL({ items }) {
   return (
-    <ul style={{ color: '#c8c8c8', paddingLeft: 24, marginBottom: 16 }}>
+    <ul style={{ color: T.muted, paddingLeft: 24, marginBottom: 16 }}>
       {items.map((item, i) => (
         <li key={i} style={{ marginBottom: 6 }}>{item}</li>
       ))}
@@ -134,14 +134,14 @@ export function UL({ items }) {
 export function Table({ headers, rows }) {
   return (
     <div style={{ overflowX: 'auto', marginBottom: 24 }}>
-      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 14 }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: F.legal }}>
         <thead>
           <tr>
             {headers.map(h => (
               <th key={h} style={{
-                textAlign: 'left', fontFamily: mono, fontSize: 12,
+                textAlign: 'left', fontFamily: mono, fontSize: F.legal,
                 color: T.muted, padding: '8px 16px 8px 0',
-                borderBottom: `1px solid #2a2a2a`,
+                borderBottom: `1px solid ${T.border}`,
               }}>
                 {h}
               </th>
@@ -153,8 +153,8 @@ export function Table({ headers, rows }) {
             <tr key={i}>
               {row.map((cell, j) => (
                 <td key={j} style={{
-                  color: '#c8c8c8', padding: '10px 16px 10px 0',
-                  borderBottom: `1px solid #1a1a1a`, verticalAlign: 'top',
+                  color: T.muted, padding: '10px 16px 10px 0',
+                  borderBottom: `1px solid ${T.vdim}`, verticalAlign: 'top',
                 }}>
                   {cell}
                 </td>
@@ -170,7 +170,7 @@ export function Table({ headers, rows }) {
 export function A({ href, children }) {
   return (
     <a href={href} target="_blank" rel="noreferrer"
-      style={{ color: T.amber, textDecoration: 'none' }}
+      style={{ color: T.amberText, textDecoration: 'none' }}
       onMouseEnter={e => e.currentTarget.style.textDecoration = 'underline'}
       onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}
     >

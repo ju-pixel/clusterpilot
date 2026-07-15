@@ -1,4 +1,5 @@
 import LegalPage, { H2, H3, P, UL, A } from './LegalPage'
+import { T } from '../theme'
 
 export default function TermsOfService() {
   return (
@@ -74,7 +75,7 @@ export default function TermsOfService() {
       <H2>4. Acceptable use</H2>
       <P>
         Your use of ClusterPilot must comply with our{' '}
-        <a href="/acceptable-use" style={{ color: '#FFB866' }}>Acceptable Use Policy</a>.
+        <a href="/acceptable-use" style={{ color: T.amberText }}>Acceptable Use Policy</a>.
         Key restrictions: no illegal activity, no credential sharing, no deliberate overloading
         of the API, and no use that violates the policies of your HPC cluster operator.
       </P>
@@ -93,7 +94,7 @@ export default function TermsOfService() {
       <H2>6. Privacy</H2>
       <P>
         Your use of ClusterPilot is also governed by our{' '}
-        <a href="/privacy" style={{ color: '#FFB866' }}>Privacy Policy</a>, which is
+        <a href="/privacy" style={{ color: T.amberText }}>Privacy Policy</a>, which is
         incorporated into these Terms by reference.
       </P>
 

@@ -1,20 +1,5 @@
 import { useState } from 'react'
-
-// ─── tokens ───────────────────────────────────────────────────────────────────
-const T = {
-  bg:      '#000000',
-  bg2:     '#0a0a0a',
-  bg3:     '#111111',
-  border:  '#2a2a2a',
-  border2: '#1a1a1a',
-  amber:   '#FFB866',
-  text:    '#fafafa',
-  muted:   '#6b6b6b',
-  dim:     '#444444',
-}
-const mono  = "'DM Mono', 'Courier New', monospace"
-const sans  = "'DM Sans', system-ui, sans-serif"
-const serif = "'Playfair Display', Georgia, serif"
+import { T, F, mono, sans, serif } from './src/theme'
 
 // ─── page data ────────────────────────────────────────────────────────────────
 const STEPS = [
@@ -94,20 +79,20 @@ const AUDIENCE = [
 function Nav() {
   const [menuOpen, setMenuOpen] = useState(false)
 
-  const linkStyle = { color: '#aaaaaa', textDecoration: 'none', fontFamily: mono, fontSize: 15 }
+  const linkStyle = { color: T.muted, textDecoration: 'none', fontFamily: mono, fontSize: F.label }
   const mobileLink = {
     ...linkStyle,
     display: 'block',
     padding: '10px 0',
-    borderBottom: `1px solid ${T.border2}`,
-    fontSize: 16,
+    borderBottom: `1px solid ${T.vdim}`,
+    fontSize: F.label,
   }
 
   return (
     <div style={{
       position: 'sticky', top: 0, zIndex: 100,
       background: `${T.bg}f2`, backdropFilter: 'blur(14px)',
-      borderBottom: `1px solid ${T.border2}`,
+      borderBottom: `1px solid ${T.vdim}`,
     }}>
       <nav style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -115,8 +100,14 @@ function Nav() {
       }}>
         {/* Logo */}
         <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
-          <img src="/logo.png" alt="ClusterPilot" width={32} height={32} style={{ display: 'block' }} />
-          <span style={{ fontFamily: mono, fontSize: 19, color: T.amber, letterSpacing: '-0.3px' }}>
+          {/* 40px mark + 22px wordmark at weight 500, used in EVERY CP header
+              (landing, blog, support, legal). Keep them in step.
+              The mark is deliberately larger than Fieldnotes' 34: the CP logo is a
+              diamond, so its rotated shape carries less visual mass than its
+              bounding box suggests and it reads small next to the wordmark at 34.
+              Weight 500 (not 600) so the text does not out-weigh the mark. */}
+          <img src="/logo.png" alt="ClusterPilot" width={40} height={40} style={{ display: 'block' }} />
+          <span style={{ fontFamily: mono, fontSize: 22, fontWeight: 500, color: T.amberText, letterSpacing: '-0.3px' }}>
             clusterpilot
           </span>
         </a>
@@ -135,7 +126,7 @@ function Nav() {
         <div className="nav-cta">
           <a href="https://app.clusterpilot.sh" target="_blank" rel="noreferrer">
             <button style={{
-              background: T.amber, color: '#000', fontSize: 13, fontWeight: 700,
+              background: T.amber, color: T.ink, fontSize: F.btn, fontWeight: 700,
               padding: '9px 18px', borderRadius: 6, border: 'none', cursor: 'pointer',
               fontFamily: mono, letterSpacing: '0.3px', whiteSpace: 'nowrap',
             }}>Open app →</button>
@@ -168,7 +159,7 @@ function Nav() {
         <div style={{ paddingTop: 12 }}>
           <a href="https://app.clusterpilot.sh" target="_blank" rel="noreferrer">
             <button style={{
-              background: T.amber, color: '#000', fontSize: 14, fontWeight: 700,
+              background: T.amber, color: T.ink, fontSize: F.btn, fontWeight: 700,
               padding: '10px 20px', borderRadius: 6, border: 'none', cursor: 'pointer',
               fontFamily: mono, width: '100%',
             }}>Open app →</button>
@@ -197,16 +188,19 @@ function PipBlock() {
       onMouseLeave={() => setHovered(false)}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 10,
-        background: '#111', border: `1px solid ${hovered ? T.amber : T.border}`,
+        background: T.panel2, border: `1px solid ${hovered ? T.amber : T.border}`,
         borderRadius: 6, padding: '10px 16px', cursor: 'pointer',
-        fontFamily: mono, fontSize: 14,
+        // F.code, not the 14px floor: this is the primary install command and
+        // the most actionable line on the page. It should not be set at the
+        // same size as its own "copy" badge.
+        fontFamily: mono, fontSize: F.code,
         transition: 'border-color 0.2s',
         marginBottom: 28,
       }}
     >
       <span style={{ color: T.muted }}>$</span>
       <span style={{ color: T.text }}>pip install clusterpilot</span>
-      <span style={{ color: hovered ? T.amber : T.muted, fontSize: 12, transition: 'color 0.2s' }}>
+      <span style={{ color: hovered ? T.amberText : T.muted, fontSize: F.micro, transition: 'color 0.2s' }}>
         {copied ? 'copied!' : 'copy'}
       </span>
     </div>
@@ -253,7 +247,18 @@ function TuiMock() {
     <div style={{
       background: bg, border: `1px solid ${border}`, borderRadius: 8,
       overflow: 'hidden', fontFamily: mono2, fontSize: 13,
-      boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+      // Four layers, in order: a warm white 1px rim that separates the mock's
+      // #0c0a06 from the section's #1D1913; a softened black drop shadow for
+      // depth; then a TIGHT inner bloom and a WIDE outer bloom. The two blooms
+      // are what make the halo fan out instead of stopping at a hard edge, so
+      // adjust them as a pair. Rim opacity (0.32) is the "how visible" dial;
+      // the 190px outer radius is the "how far it fans" dial.
+      // NOTE: this used to be a lone `0 24px 64px rgba(0,0,0,0.6)`, which read as
+      // depth back when the page behind it was pure black. Against the warm
+      // charcoal it darkened the surroundings and pushed the mock INTO the page,
+      // which is why the mock looked sunken after the B.1 restyle. The black
+      // shadow is deliberately dialled back here so it does not eat the bloom.
+      boxShadow: '0 0 0 1px rgba(242,235,221,0.32), 0 20px 56px rgba(0,0,0,0.45), 0 0 50px rgba(242,235,221,0.11), 0 0 190px rgba(242,235,221,0.14)',
     }}>
       {/* Title bar */}
       <div style={{
@@ -405,25 +410,25 @@ function TuiMock() {
 // ─── hero ─────────────────────────────────────────────────────────────────────
 function Hero() {
   return (
-    <section style={{ background: T.bg, borderBottom: `1px solid ${T.border2}` }}>
+    <section style={{ background: T.bg, borderBottom: `1px solid ${T.vdim}` }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '88px 48px 80px' }}>
         <h1 style={{
           fontFamily: sans, fontWeight: 700, lineHeight: 1.05,
-          fontSize: 'clamp(36px, 4vw, 62px)',
+          fontSize: 'clamp(32px, 6vw, 58px)',
           margin: '0 0 4px',
         }}>
           Stop writing SLURM scripts
         </h1>
         <h1 style={{
           fontFamily: serif, fontStyle: 'italic', fontWeight: 700,
-          fontSize: 'clamp(36px, 4vw, 62px)',
-          color: T.amber, margin: '0 0 28px', lineHeight: 1.05,
+          fontSize: 'clamp(32px, 6vw, 58px)',
+          color: T.amberText, margin: '0 0 28px', lineHeight: 1.05,
         }}>
           by hand.
         </h1>
 
         <p style={{
-          fontSize: 20, color: T.muted, lineHeight: 1.7, maxWidth: 580,
+          fontSize: F.hero, color: T.muted, lineHeight: 1.7, maxWidth: 580,
           marginBottom: 32, fontFamily: sans,
         }}>
           ClusterPilot is a keyboard-driven TUI that turns a plain-English job description into a correct,
@@ -439,21 +444,21 @@ function Hero() {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <a href="https://github.com/ju-pixel/clusterpilot" target="_blank" rel="noreferrer">
             <button style={{
-              background: T.amber, color: '#000', fontFamily: mono, fontWeight: 700,
-              fontSize: 14, padding: '11px 22px', borderRadius: 6, border: 'none', cursor: 'pointer',
+              background: T.amber, color: T.ink, fontFamily: mono, fontWeight: 700,
+              fontSize: F.btn, padding: '11px 22px', borderRadius: 6, border: 'none', cursor: 'pointer',
             }}>View on GitHub →</button>
           </a>
           <a href="https://pypi.org/project/clusterpilot/" target="_blank" rel="noreferrer">
             <button style={{
               background: 'transparent', color: T.muted, fontFamily: mono,
-              fontSize: 14, padding: '10px 20px', borderRadius: 6,
+              fontSize: F.btn, padding: '10px 20px', borderRadius: 6,
               border: `1px solid ${T.border}`, cursor: 'pointer',
             }}>PyPI page</button>
           </a>
           <a href="https://youtu.be/Bw8MUUtNOss" target="_blank" rel="noreferrer">
             <button style={{
               background: 'transparent', color: T.muted, fontFamily: mono,
-              fontSize: 14, padding: '10px 20px', borderRadius: 6,
+              fontSize: F.btn, padding: '10px 20px', borderRadius: 6,
               border: `1px solid ${T.border}`, cursor: 'pointer',
             }}>Watch demo ▶</button>
           </a>
@@ -466,7 +471,7 @@ function Hero() {
 // ─── TUI showcase (full-width, below hero) ────────────────────────────────────
 function TuiShowcase() {
   return (
-    <section style={{ background: T.bg2, borderBottom: `1px solid ${T.border2}` }}>
+    <section style={{ background: T.panel, borderBottom: `1px solid ${T.vdim}` }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '56px 48px' }}>
         <TuiMock />
       </div>
@@ -478,18 +483,18 @@ function TuiShowcase() {
 function HowItWorks() {
   return (
     <section id="how-it-works" style={{
-      background: T.bg, borderBottom: `1px solid ${T.border2}`,
+      background: T.bg, borderBottom: `1px solid ${T.vdim}`,
     }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '80px 48px' }}>
         {/* Section heading */}
         <div style={{ marginBottom: 52 }}>
-          <p style={{ fontFamily: mono, fontSize: 12, color: T.amber, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
+          <p style={{ fontFamily: mono, fontSize: F.micro, color: T.amberText, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
             How it works
           </p>
-          <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 36, margin: '0 0 4px', color: T.text }}>
+          <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 40, margin: '0 0 4px', color: T.text }}>
             Six steps.
           </h2>
-          <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 36, color: T.amber, margin: 0 }}>
+          <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 40, color: T.amberText, margin: 0 }}>
             Zero SSH copy-paste.
           </h2>
         </div>
@@ -508,15 +513,15 @@ function HowItWorks() {
                   width: 40, height: 40, borderRadius: '50%',
                   border: `1px solid ${T.amber}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontFamily: mono, fontSize: 12, color: T.amber,
+                  fontFamily: mono, fontSize: F.micro, color: T.amberText,
                   marginBottom: 20, background: T.bg, position: 'relative', zIndex: 1,
                 }}>
                   {step.n}
                 </div>
-                <h3 style={{ fontFamily: sans, fontWeight: 700, fontSize: 17, color: T.text, marginBottom: 10 }}>
+                <h3 style={{ fontFamily: sans, fontWeight: 700, fontSize: F.card, color: T.text, marginBottom: 10 }}>
                   {step.title}
                 </h3>
-                <p style={{ fontFamily: sans, fontSize: 15, color: T.muted, lineHeight: 1.6 }}>
+                <p style={{ fontFamily: sans, fontSize: F.item, color: T.muted, lineHeight: 1.6 }}>
                   {step.body}
                 </p>
               </div>
@@ -533,13 +538,13 @@ function FeatureCell({ n, title, body }) {
   return (
     <div className="feature-cell">
       <div className="feature-cell-bar" />
-      <p style={{ fontFamily: mono, fontSize: 13, color: T.amber, marginBottom: 14, letterSpacing: '0.05em' }}>
+      <p style={{ fontFamily: mono, fontSize: F.micro, color: T.amberText, marginBottom: 14, letterSpacing: '0.05em' }}>
         {n} –
       </p>
-      <h3 style={{ fontFamily: sans, fontWeight: 700, fontSize: 17, color: T.text, marginBottom: 12 }}>
+      <h3 style={{ fontFamily: sans, fontWeight: 700, fontSize: F.card, color: T.text, marginBottom: 12 }}>
         {title}
       </h3>
-      <p style={{ fontFamily: sans, fontSize: 16, color: T.muted, lineHeight: 1.65 }}>
+      <p style={{ fontFamily: sans, fontSize: F.item, color: T.muted, lineHeight: 1.65 }}>
         {body}
       </p>
     </div>
@@ -551,17 +556,17 @@ function Features() {
   const row2 = FEATURES.slice(3, 6)
   return (
     <section id="features" style={{
-      background: T.bg, borderBottom: `1px solid ${T.border2}`,
+      background: T.bg, borderBottom: `1px solid ${T.vdim}`,
     }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '80px 48px' }}>
         <div style={{ marginBottom: 52 }}>
-          <p style={{ fontFamily: mono, fontSize: 12, color: T.amber, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
+          <p style={{ fontFamily: mono, fontSize: F.micro, color: T.amberText, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
             Features
           </p>
-          <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 36, margin: '0 0 4px', color: T.text }}>
+          <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 40, margin: '0 0 4px', color: T.text }}>
             Everything in the loop.
           </h2>
-          <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 36, color: T.amber, margin: 0 }}>
+          <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 40, color: T.amberText, margin: 0 }}>
             Nothing you didn't ask for.
           </h2>
         </div>
@@ -583,24 +588,24 @@ function Features() {
 function Audience() {
   return (
     <section style={{
-      background: T.bg, borderBottom: `1px solid ${T.border2}`,
+      background: T.bg, borderBottom: `1px solid ${T.vdim}`,
     }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '80px 48px' }}>
         <div className="audience-section">
           {/* Left: heading */}
           <div style={{ flex: '0 0 420px' }}>
-            <p style={{ fontFamily: mono, fontSize: 12, color: T.amber, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
+            <p style={{ fontFamily: mono, fontSize: F.micro, color: T.amberText, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
               Who it's for
             </p>
-            <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 36, margin: '0 0 4px', color: T.text }}>
+            <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 40, margin: '0 0 4px', color: T.text }}>
               Built for researchers,
             </h2>
-            <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 36, color: T.amber, margin: '0 0 24px' }}>
+            <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 40, color: T.amberText, margin: '0 0 24px' }}>
               not sysadmins.
             </h2>
-            <p style={{ fontFamily: sans, fontSize: 18, color: T.muted, lineHeight: 1.7, maxWidth: 380 }}>
+            <p style={{ fontFamily: sans, fontSize: F.body, color: T.muted, lineHeight: 1.7, maxWidth: 380 }}>
               If you spend more time formatting{' '}
-              <span style={{ color: T.amber, fontFamily: mono }}>#SBATCH</span>{' '}
+              <span style={{ color: T.amberText, fontFamily: mono }}>#SBATCH</span>{' '}
               directives than thinking about your science, ClusterPilot is for you.{' '}
               <strong style={{ color: T.text }}>
                 Works with any standard SLURM cluster – Compute Canada, NSF ACCESS, ARCHER2, EuroHPC, and most university systems.
@@ -613,17 +618,17 @@ function Audience() {
             {AUDIENCE.map((item, i) => (
               <div key={item.n} style={{
                 display: 'flex', gap: 20, padding: '20px 0',
-                borderBottom: i < AUDIENCE.length - 1 ? `1px solid ${T.border2}` : 'none',
+                borderBottom: i < AUDIENCE.length - 1 ? `1px solid ${T.vdim}` : 'none',
                 alignItems: 'flex-start',
               }}>
-                <span style={{ fontFamily: mono, fontSize: 12, color: T.amber, flexShrink: 0, marginTop: 2 }}>
+                <span style={{ fontFamily: mono, fontSize: F.micro, color: T.amberText, flexShrink: 0, marginTop: 2 }}>
                   {item.n}
                 </span>
                 <div>
-                  <p style={{ fontFamily: sans, fontWeight: 600, fontSize: 17, color: T.text, marginBottom: 4 }}>
+                  <p style={{ fontFamily: sans, fontWeight: 600, fontSize: F.card, color: T.text, marginBottom: 4 }}>
                     {item.title}
                   </p>
-                  <p style={{ fontFamily: sans, fontSize: 16, color: T.muted, lineHeight: 1.6 }}>
+                  <p style={{ fontFamily: sans, fontSize: F.item, color: T.muted, lineHeight: 1.6 }}>
                     {item.sub}
                   </p>
                 </div>
@@ -642,10 +647,10 @@ function PricingCard({ badge, title, price, priceSub, desc, features, cta, ctaHr
 
   return (
     <div style={{
-      background: T.bg3, border: `1px solid ${featured ? T.amber : T.border}`,
+      background: T.panel2, border: `1px solid ${featured ? T.amber : T.border}`,
       borderRadius: 8, padding: 36, display: 'flex', flexDirection: 'column',
     }}>
-      <p style={{ fontFamily: mono, fontSize: 13, color: featured ? T.amber : T.muted, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
+      <p style={{ fontFamily: mono, fontSize: F.micro, color: featured ? T.amberText : T.muted, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
         {badge}
       </p>
       <h3 style={{ fontFamily: sans, fontWeight: 700, fontSize: 24, color: T.text, marginBottom: 8 }}>
@@ -653,20 +658,20 @@ function PricingCard({ badge, title, price, priceSub, desc, features, cta, ctaHr
       </h3>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 16 }}>
         <span style={{ fontFamily: mono, fontSize: 40, fontWeight: 500, color: T.text }}>{price}</span>
-        <span style={{ fontFamily: mono, fontSize: 15, color: T.muted }}>{priceSub}</span>
+        <span style={{ fontFamily: mono, fontSize: F.item, color: T.muted }}>{priceSub}</span>
       </div>
-      <p style={{ fontFamily: sans, fontSize: 17, color: T.muted, lineHeight: 1.65, marginBottom: 24 }}>{desc}</p>
+      <p style={{ fontFamily: sans, fontSize: F.item, color: T.muted, lineHeight: 1.65, marginBottom: 24 }}>{desc}</p>
       <hr style={{ border: 'none', borderTop: `1px solid ${T.border}`, marginBottom: 24 }} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
         {features.map(f => (
-          <div key={f} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontFamily: sans, fontSize: 16, color: T.text }}>
-            <span style={{ color: T.amber, flexShrink: 0, marginTop: 1 }}>✓</span>
+          <div key={f} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontFamily: sans, fontSize: F.item, color: T.text }}>
+            <span style={{ color: T.amberText, flexShrink: 0, marginTop: 1 }}>✓</span>
             {f}
           </div>
         ))}
       </div>
       {groupNote && (
-        <p style={{ fontFamily: sans, fontSize: 13, color: T.muted, marginBottom: 16, lineHeight: 1.5 }}>
+        <p style={{ fontFamily: sans, fontSize: F.micro, color: T.muted, marginBottom: 16, lineHeight: 1.5 }}>
           {groupNote}
         </p>
       )}
@@ -679,9 +684,9 @@ function PricingCard({ badge, title, price, priceSub, desc, features, cta, ctaHr
               ? T.amber
               : btnHovered ? T.amber : 'transparent',
             color: featured
-              ? '#000'
-              : btnHovered ? '#000' : T.text,
-            fontFamily: mono, fontWeight: 700, fontSize: 14,
+              ? T.ink
+              : btnHovered ? T.ink : T.text,
+            fontFamily: mono, fontWeight: 700, fontSize: F.btn,
             padding: '12px 0', borderRadius: 6, border: `1px solid ${T.amber}`,
             cursor: 'pointer', width: '100%',
             transition: 'background 0.2s, color 0.2s',
@@ -700,13 +705,13 @@ function Pricing() {
       background: T.bg, borderBottom: `1px solid ${T.amber}33`,
     }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '80px 48px' }}>
-        <p style={{ fontFamily: mono, fontSize: 12, color: T.amber, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
+        <p style={{ fontFamily: mono, fontSize: F.micro, color: T.amberText, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: 12 }}>
           Pricing
         </p>
-        <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 36, margin: '0 0 4px', color: T.text }}>
+        <h2 style={{ fontFamily: sans, fontWeight: 700, fontSize: 40, margin: '0 0 4px', color: T.text }}>
           Free forever for self-hosters.
         </h2>
-        <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 36, color: T.amber, margin: 0 }}>
+        <h2 style={{ fontFamily: serif, fontStyle: 'italic', fontWeight: 700, fontSize: 40, color: T.amberText, margin: 0 }}>
           Hosted tier: now live.
         </h2>
 
@@ -742,7 +747,7 @@ function Pricing() {
               'Multi-machine sync – one view across all your clusters',
               'Priority support',
             ]}
-            groupNote={<>Research group? <strong style={{ color: T.amber }}>15% off</strong> for 3 or more seats. Buy from the dashboard after signing in.</>}
+            groupNote={<>Research group? <strong style={{ color: T.amberText }}>15% off</strong> for 3 or more seats. Buy from the dashboard after signing in.</>}
             cta="Get started →"
             ctaHref="https://app.clusterpilot.sh"
             featured={false}
@@ -757,9 +762,9 @@ function Pricing() {
 function FieldnotesSection() {
   const blue = '#3D74F6'
   return (
-    <section style={{ background: T.bg, borderTop: `1px solid ${T.border2}` }}>
+    <section style={{ background: T.bg, borderTop: `1px solid ${T.vdim}` }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '52px 48px', textAlign: 'center' }}>
-        <p style={{ fontFamily: mono, fontSize: 13, color: T.muted, marginBottom: 24, letterSpacing: '0.02em' }}>
+        <p style={{ fontFamily: mono, fontSize: F.micro, color: T.muted, marginBottom: 24, letterSpacing: '0.02em' }}>
           Also building
         </p>
         <a href="https://fieldnotes.sh" target="_blank" rel="noreferrer"
@@ -767,18 +772,20 @@ function FieldnotesSection() {
           <svg width={32} height={32} viewBox="0 0 22 22" fill="none">
             <rect x="4" y="2" width="14" height="18" rx="2" stroke={blue} strokeWidth="1.3" fill="none"/>
             <rect x="4" y="2" width="3" height="18" rx="1.5" fill={blue} fillOpacity="0.4"/>
-            <line x1="9" y1="7"    x2="16" y2="7"    stroke="#fafafa" strokeWidth="1" strokeLinecap="round" strokeOpacity="0.5"/>
-            <line x1="9" y1="10.5" x2="16" y2="10.5" stroke="#fafafa" strokeWidth="1" strokeLinecap="round" strokeOpacity="0.3"/>
+            <line x1="9" y1="7"    x2="16" y2="7"    stroke={T.text} strokeWidth="1" strokeLinecap="round" strokeOpacity="0.5"/>
+            <line x1="9" y1="10.5" x2="16" y2="10.5" stroke={T.text} strokeWidth="1" strokeLinecap="round" strokeOpacity="0.3"/>
             <line x1="9" y1="14"   x2="13" y2="14"   stroke={T.amber} strokeWidth="1" strokeLinecap="round" strokeOpacity="0.7"/>
             <circle cx="16.5" cy="16.5" r="3.5" fill={T.bg} stroke={T.amber} strokeWidth="1.2"/>
             <line x1="15.5" y1="16.5" x2="17.5" y2="16.5" stroke={T.amber} strokeWidth="1" strokeLinecap="round"/>
             <line x1="16.5" y1="15.5" x2="16.5" y2="17.5" stroke={T.amber} strokeWidth="1" strokeLinecap="round"/>
           </svg>
           <span style={{ fontFamily: mono, fontSize: 26, letterSpacing: '-0.3px' }}>
-            <span style={{ color: '#fafafa' }}>field</span><span style={{ color: blue }}>notes</span>
+            <span style={{ color: T.text }}>field</span><span style={{ color: blue }}>notes</span>
           </span>
         </a>
-        <p style={{ fontFamily: mono, fontSize: 14, color: T.muted, letterSpacing: '0.02em' }}>
+        {/* F.label (16), not the 14px floor: this is a sentence, so the 16px
+            body floor applies, and at 14 it sat BELOW the eyebrow above it. */}
+        <p style={{ fontFamily: mono, fontSize: F.label, color: T.muted, letterSpacing: '0.02em' }}>
           permanent run records for computational researchers.
         </p>
       </div>
@@ -794,7 +801,7 @@ function Footer() {
         <div className="footer-inner">
           <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
             <img src="/logo.png" alt="ClusterPilot" width={28} height={28} />
-            <span style={{ fontFamily: mono, fontSize: 16, color: T.amber }}>clusterpilot</span>
+            <span style={{ fontFamily: mono, fontSize: 16, color: T.amberText }}>clusterpilot</span>
           </a>
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
             {[
@@ -809,7 +816,7 @@ function Footer() {
               <a key={label} href={href}
                 target={href.startsWith('http') ? '_blank' : undefined}
                 rel={href.startsWith('http') ? 'noreferrer' : undefined}
-                style={{ fontFamily: mono, fontSize: 13, color: T.muted, textDecoration: 'none' }}
+                style={{ fontFamily: mono, fontSize: F.note, color: T.muted, textDecoration: 'none' }}
                 onMouseEnter={e => e.currentTarget.style.color = T.text}
                 onMouseLeave={e => e.currentTarget.style.color = T.muted}
               >
@@ -817,7 +824,7 @@ function Footer() {
               </a>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 16, borderTop: `1px solid ${T.border2}`, paddingTop: 16, width: '100%' }}>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 16, borderTop: `1px solid ${T.vdim}`, paddingTop: 16, width: '100%' }}>
             {[
               ['Privacy Policy', '/privacy'],
               ['Terms of Service', '/terms'],
@@ -825,7 +832,7 @@ function Footer() {
               ['Acceptable Use Policy', '/acceptable-use'],
             ].map(([label, href]) => (
               <a key={label} href={href}
-                style={{ fontFamily: mono, fontSize: 12, color: T.dim, textDecoration: 'none' }}
+                style={{ fontFamily: mono, fontSize: F.legal, color: T.dim, textDecoration: 'none' }}
                 onMouseEnter={e => e.currentTarget.style.color = T.muted}
                 onMouseLeave={e => e.currentTarget.style.color = T.dim}
               >

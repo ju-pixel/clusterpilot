@@ -1,4 +1,5 @@
 import LegalPage, { H2, H3, P, UL, Table, A } from './LegalPage'
+import { T } from '../theme'
 
 export default function DataProcessingAgreement() {
   return (
@@ -6,7 +7,7 @@ export default function DataProcessingAgreement() {
 
       <P>
         This Data Processing Agreement ("<strong>DPA</strong>") supplements the{' '}
-        <a href="/terms" style={{ color: '#FFB866' }}>Terms of Service</a> and applies to
+        <a href="/terms" style={{ color: T.amberText }}>Terms of Service</a> and applies to
         users in the European Economic Area (EEA), the United Kingdom, and Switzerland
         ("<strong>EU Users</strong>"). It is entered into between Frankly Labs
         ("<strong>Processor</strong>") and the EU User ("<strong>Controller</strong>").

@@ -1,19 +1,5 @@
 import { useState } from 'react'
-
-// ─── tokens ───────────────────────────────────────────────────────────────────
-const T = {
-  bg:     '#000000',
-  bg2:    '#0a0a0a',
-  bg3:    '#111111',
-  border: '#2a2a2a',
-  border2:'#1a1a1a',
-  amber:  '#FFB866',
-  text:   '#fafafa',
-  muted:  '#6b6b6b',
-  dim:    '#444444',
-}
-const mono = "'DM Mono', 'Courier New', monospace"
-const sans = "'DM Sans', system-ui, sans-serif"
+import { T, F, mono, sans } from './theme'
 
 const API = import.meta.env.VITE_API_URL || 'https://api.clusterpilot.sh'
 
@@ -23,17 +9,19 @@ function Nav() {
     <div style={{
       position: 'sticky', top: 0, zIndex: 100,
       background: `${T.bg}f2`, backdropFilter: 'blur(14px)',
-      borderBottom: `1px solid ${T.border2}`,
+      borderBottom: `1px solid ${T.vdim}`,
     }}>
       <nav style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '18px 48px', maxWidth: 1200, margin: '0 auto',
       }}>
         <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
-          <img src="/logo.png" alt="ClusterPilot" width={28} height={28} style={{ display: 'block' }} />
-          <span style={{ fontFamily: mono, fontSize: 16, color: T.amber }}>clusterpilot</span>
+          {/* 40px mark + 22px wordmark, weight 500. Matches every CP header;
+              see the note in LandingPage's Nav for why 40 and not FN's 34. */}
+          <img src="/logo.png" alt="ClusterPilot" width={40} height={40} style={{ display: 'block' }} />
+          <span style={{ fontFamily: mono, fontSize: 22, fontWeight: 500, color: T.amberText, letterSpacing: '-0.3px' }}>clusterpilot</span>
         </a>
-        <a href="/" style={{ fontFamily: mono, fontSize: 13, color: T.muted, textDecoration: 'none' }}>
+        <a href="/" style={{ fontFamily: mono, fontSize: F.label, color: T.muted, textDecoration: 'none' }}>
           ← back
         </a>
       </nav>
@@ -45,16 +33,16 @@ function Nav() {
 function Field({ label, id, type = 'text', value, onChange, required, rows }) {
   const base = {
     width: '100%', boxSizing: 'border-box',
-    background: T.bg3, border: `1px solid ${T.border}`,
+    background: T.panel2, border: `1px solid ${T.border}`,
     borderRadius: 6, color: T.text,
-    fontFamily: sans, fontSize: 14,
+    fontFamily: sans, fontSize: F.btn,
     outline: 'none',
     transition: 'border-color 0.15s',
   }
   const inputStyle = { ...base, padding: '10px 12px' }
   const textareaStyle = { ...base, padding: '10px 12px', resize: 'vertical', minHeight: 120 }
   const labelStyle = {
-    display: 'block', fontFamily: mono, fontSize: 12,
+    display: 'block', fontFamily: mono, fontSize: F.micro,
     color: T.muted, marginBottom: 6,
   }
 
@@ -141,7 +129,7 @@ function ContactForm() {
         disabled={status === 'sending'}
         style={{
           background: status === 'sending' ? T.dim : T.amber,
-          color: '#000', fontFamily: mono, fontSize: 13, fontWeight: 700,
+          color: T.ink, fontFamily: mono, fontSize: F.btn, fontWeight: 700,
           padding: '10px 24px', borderRadius: 6, border: 'none',
           cursor: status === 'sending' ? 'not-allowed' : 'pointer',
           transition: 'background 0.15s',
@@ -151,14 +139,14 @@ function ContactForm() {
       </button>
 
       {status === 'success' && (
-        <p style={{ fontFamily: mono, fontSize: 13, color: '#6fcf97', marginTop: 16 }}>
+        <p style={{ fontFamily: mono, fontSize: F.item, color: T.green, marginTop: 16 }}>
           Message sent. We typically reply within one business day.
         </p>
       )}
       {status === 'error' && (
-        <p style={{ fontFamily: mono, fontSize: 13, color: '#eb5757', marginTop: 16 }}>
+        <p style={{ fontFamily: mono, fontSize: F.item, color: T.red, marginTop: 16 }}>
           Something went wrong. Email us directly at{' '}
-          <a href="mailto:hello@clusterpilot.sh" style={{ color: T.amber }}>hello@clusterpilot.sh</a>.
+          <a href="mailto:hello@clusterpilot.sh" style={{ color: T.amberText }}>hello@clusterpilot.sh</a>.
         </p>
       )}
     </form>
@@ -173,11 +161,14 @@ export default function Support() {
       <main style={{ maxWidth: 1100, margin: '0 auto', padding: '64px 48px 100px' }}>
 
         {/* Header */}
-        <p style={{ fontFamily: mono, fontSize: 12, color: T.muted, marginBottom: 12 }}>Support</p>
-        <h1 style={{ fontFamily: mono, fontSize: 32, color: T.amber, fontWeight: 500, marginBottom: 8 }}>
+        <p style={{ fontFamily: mono, fontSize: F.micro, color: T.muted, marginBottom: 12 }}>Support</p>
+        {/* 32 mono, unchanged: the B.2 "H1 clamp 58/32" is the landing hero's
+            size. A 58px mono headline would shout, and 32 was never the
+            readability problem here; the 12-14px body copy was. */}
+        <h1 style={{ fontFamily: mono, fontSize: 32, color: T.amberText, fontWeight: 500, marginBottom: 8 }}>
           Get in touch.
         </h1>
-        <p style={{ color: T.muted, fontSize: 15, marginBottom: 32, maxWidth: 480 }}>
+        <p style={{ color: T.muted, fontSize: F.body, marginBottom: 32, maxWidth: 480 }}>
           We typically reply within one business day.
         </p>
 
@@ -187,7 +178,7 @@ export default function Support() {
           style={{
             border: `1px solid ${T.border}`,
             borderRadius: 8,
-            background: T.bg2,
+            background: T.panel,
             padding: '24px 28px',
             marginBottom: 56,
             display: 'flex',
@@ -199,24 +190,24 @@ export default function Support() {
         >
           <div style={{ maxWidth: 560 }}>
             <p style={{
-              fontFamily: mono, fontSize: 12, color: T.amber,
+              fontFamily: mono, fontSize: F.micro, color: T.amberText,
               marginBottom: 8, letterSpacing: '0.05em',
             }}>
               ROADMAP
             </p>
             <p style={{
-              fontFamily: mono, fontSize: 18, color: T.text,
+              fontFamily: mono, fontSize: F.card, color: T.text,
               marginBottom: 6, fontWeight: 500,
             }}>
               Want a feature, not a fix?
             </p>
-            <p style={{ fontSize: 14, color: T.muted, lineHeight: 1.55, margin: 0 }}>
+            <p style={{ fontSize: F.item, color: T.muted, lineHeight: 1.55, margin: 0 }}>
               Vote on roadmap items or post a new request at{' '}
               <a
                 href="https://clusterpilot.featurebase.app"
                 target="_blank"
                 rel="noreferrer"
-                style={{ color: T.amber, textDecoration: 'none' }}
+                style={{ color: T.amberText, textDecoration: 'none' }}
               >
                 clusterpilot.featurebase.app
               </a>
@@ -230,7 +221,7 @@ export default function Support() {
             style={{ textDecoration: 'none', flexShrink: 0 }}
           >
             <button style={{
-              background: T.amber, color: '#000', fontSize: 13, fontWeight: 700,
+              background: T.amber, color: T.ink, fontSize: F.btn, fontWeight: 700,
               padding: '10px 20px', borderRadius: 6, border: 'none', cursor: 'pointer',
               fontFamily: mono, whiteSpace: 'nowrap',
             }}>
@@ -255,22 +246,22 @@ export default function Support() {
 
           {/* Right: FAQ */}
           <div>
-            <p style={{ fontFamily: mono, fontSize: 12, color: T.muted, marginBottom: 24, letterSpacing: '0.05em' }}>
+            <p style={{ fontFamily: mono, fontSize: F.micro, color: T.muted, marginBottom: 24, letterSpacing: '0.05em' }}>
               COMMON QUESTIONS
             </p>
             {FAQ.map(({ q, a }) => (
               <div key={q} style={{
                 marginBottom: 28,
                 paddingBottom: 28,
-                borderBottom: `1px solid ${T.border2}`,
+                borderBottom: `1px solid ${T.vdim}`,
               }}>
                 <p style={{
-                  fontFamily: mono, fontSize: 14, color: T.text,
+                  fontFamily: mono, fontSize: F.card, color: T.text,
                   marginBottom: 8, fontWeight: 500,
                 }}>
                   {q}
                 </p>
-                <p style={{ fontSize: 14, color: '#aaaaaa', lineHeight: 1.65 }}>{a}</p>
+                <p style={{ fontSize: F.item, color: T.muted, lineHeight: 1.65 }}>{a}</p>
               </div>
             ))}
           </div>
@@ -278,17 +269,17 @@ export default function Support() {
       </main>
 
       {/* Footer */}
-      <footer style={{ borderTop: `1px solid ${T.border2}`, background: T.bg }}>
+      <footer style={{ borderTop: `1px solid ${T.vdim}`, background: T.bg }}>
         <div style={{
           maxWidth: 1100, margin: '0 auto', padding: '28px 48px',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12,
         }}>
-          <span style={{ fontFamily: mono, fontSize: 12, color: T.dim }}>
+          <span style={{ fontFamily: mono, fontSize: F.note, color: T.dim }}>
             Frankly Labs · Canada
           </span>
           <div style={{ display: 'flex', gap: 20 }}>
             {[['Privacy Policy', '/privacy'], ['Terms', '/terms'], ['AUP', '/acceptable-use']].map(([l, h]) => (
-              <a key={l} href={h} style={{ fontFamily: mono, fontSize: 12, color: T.dim, textDecoration: 'none' }}
+              <a key={l} href={h} style={{ fontFamily: mono, fontSize: F.note, color: T.dim, textDecoration: 'none' }}
                 onMouseEnter={e => e.currentTarget.style.color = T.muted}
                 onMouseLeave={e => e.currentTarget.style.color = T.dim}
               >{l}</a>

@@ -2,11 +2,17 @@
 
 html { scroll-behavior: smooth; }
 
+/* Colours here are the Section B.1 tokens from src/theme.js, inlined because CSS
+   cannot import them. If you change a token there, change it here too. */
 body {
-  background: #000;
-  color: #fafafa;
+  background: #14110B;
+  color: #F2EBDD;
   font-family: 'DM Sans', system-ui, sans-serif;
+  /* 500, not the default 400. The single biggest fix for "the type looks thin":
+     DM Sans at 400 on a dark ground reads noticeably lighter than on a light one. */
+  font-weight: 500;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ─── responsive nav ─────────────────────────────────────────────────────── */
@@ -26,7 +32,7 @@ body {
   flex-direction: column;
   gap: 4px;
   padding: 12px 24px 20px;
-  border-top: 1px solid #1a1a1a;
+  border-top: 1px solid #2A241C;
 }
 .mobile-menu.open { display: flex; }
 
@@ -66,7 +72,7 @@ body {
 .features-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid #3A332A;
 }
 
 @media (max-width: 768px) {
@@ -113,17 +119,17 @@ body {
   position: relative;
   overflow: hidden;
   transition: background 0.2s;
-  border-right: 1px solid #2a2a2a;
+  border-right: 1px solid #3A332A;
   padding: 36px 28px;
 }
 .feature-cell:last-child { border-right: none; }
-.feature-cell:hover { background: #1a1a1a; }
+.feature-cell:hover { background: #1D1913; }
 
 .feature-cell-bar {
   position: absolute;
   bottom: 0; left: 0;
   height: 2px;
-  background: #FFB866;
+  background: #e8a020;
   width: 0;
   transition: width 0.3s ease;
 }
@@ -134,25 +140,28 @@ body {
 .blog-list-row:hover { opacity: 0.7; }
 
 /* ─── blog prose ──────────────────────────────────────────────────────────── */
-.cp-prose { font-size: 17px; line-height: 1.75; color: #c8c8c8; }
-.cp-prose p  { margin-bottom: 20px; }
-.cp-prose h2 { font-size: 22px; font-weight: 700; color: #fafafa; margin: 36px 0 14px; }
-.cp-prose ul { padding-left: 22px; margin-bottom: 20px; }
+.cp-prose { font-size: 19px; line-height: 1.8; color: #C9BEA9; }
+.cp-prose p  { margin-bottom: 26px; }
+.cp-prose h2 { font-size: 27px; font-weight: 700; letter-spacing: -0.4px; color: #F2EBDD; margin: 52px 0 18px; }
+.cp-prose ul { padding-left: 24px; margin-bottom: 26px; }
 .cp-prose li { margin-bottom: 8px; }
 .cp-prose code {
-  background: #141414;
+  background: #26211A;
   padding: 2px 7px;
-  border-radius: 3px;
+  border-radius: 4px;
   font-family: 'DM Mono', 'Courier New', monospace;
-  font-size: 15px;
-  color: #a78bfa;
+  font-size: 17px;
+  font-weight: 500;
+  color: #FFC46B;
 }
 .cp-prose pre {
-  background: #111;
-  border: 1px solid #222;
-  border-radius: 6px;
-  padding: 20px;
+  background: #1D1913;
+  border: 1px solid #3A332A;
+  border-radius: 10px;
+  padding: 18px 20px;
   overflow-x: auto;
-  margin-bottom: 20px;
+  line-height: 1.7;
+  margin-bottom: 26px;
 }
-.cp-prose pre code { background: none; padding: 0; color: #fafafa; font-size: 14px; }
+/* 15px, not 14: the floor is 14 and code blocks should not sit on it. */
+.cp-prose pre code { background: none; padding: 0; font-weight: 400; color: #F2EBDD; font-size: 15px; }
