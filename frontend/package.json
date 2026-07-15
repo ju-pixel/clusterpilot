@@ -15,7 +15,11 @@
     "react-router-dom": "^7.13.2"
   },
   "devDependencies": {
+    "@fontsource/dm-mono": "^5.2.7",
+    "@fontsource/playfair-display": "^5.2.8",
+    "@resvg/resvg-js": "^2.6.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "satori": "^0.28.0",
     "sharp": "^0.35.3",
     "vite": "^6.0.0"
   }
