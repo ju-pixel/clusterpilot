@@ -25,8 +25,22 @@ import openai
 from clusterpilot.cluster.probe import ClusterProbe
 from clusterpilot.config import ClusterProfile
 from clusterpilot.jobs.env_detect import ScriptEnvironment
+from clusterpilot.jobs.params_table import (
+    ParamsTable,
+    describe_for_prompt,
+    render_bash_reader,
+)
 
-_MAX_TOKENS = 2048
+# Raised from 2048 on 2026-08-27. A job array whose script carries a parameter
+# read block, module loads and an env-var preamble can exceed the old ceiling,
+# and a generation cut mid-body was previously written to disk and submitted with
+# no warning, because nothing inspected the stop reason. See `truncated_generation`.
+_MAX_TOKENS = 8192
+
+# Set by the streaming helpers when the model stopped because it ran out of
+# tokens rather than because it finished. The caller must refuse to submit a
+# generation for which this is true.
+TRUNCATION_STOP_REASON = "max_tokens"
 
 # Per-million-token pricing (input, output) by model.
 # Unknown models (e.g. local Ollama) default to (0, 0).
@@ -50,6 +64,16 @@ class ApiUsage:
     model: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    stop_reason: str = ""   # "max_tokens" means the generation was cut short
+
+    @property
+    def truncated(self) -> bool:
+        """True when the model ran out of tokens rather than finishing.
+
+        A truncated script looks plausible and is missing its tail, so it must
+        never reach sbatch.
+        """
+        return self.stop_reason == TRUNCATION_STOP_REASON
 
     @property
     def cost_usd(self) -> float:
@@ -80,6 +104,7 @@ async def generate_script(
     extra_files: list[str] | None = None,
     script_env: ScriptEnvironment | None = None,
     fieldnotes_enabled: bool = False,
+    params_table: ParamsTable | None = None,
     usage: ApiUsage | None = None,
 ) -> AsyncIterator[str]:
     """Stream a SLURM job script token-by-token.
@@ -124,6 +149,7 @@ async def generate_script(
         probe, profile,
         partition=partition,
         array_spec=array_spec,
+        params_table=params_table,
         script_content=script_content,
         driver_script=driver_script,
         manifest_content=manifest_content,
@@ -176,8 +202,9 @@ async def _stream_anthropic(
                 usage.model = model
                 usage.input_tokens = final.usage.input_tokens
                 usage.output_tokens = final.usage.output_tokens
+                usage.stop_reason = final.stop_reason or ""
             except Exception:
-                usage.model = model  # tokens stay 0 — not fatal
+                usage.model = model  # tokens stay 0, not fatal
 
 
 async def _stream_proxy(
@@ -215,6 +242,7 @@ async def _stream_proxy(
     text: str = data.get("text", "")
     if usage is not None:
         usage.model = model
+        usage.stop_reason = data.get("stop_reason", "") or ""
         usage.input_tokens = data.get("input_tokens", 0)
         usage.output_tokens = data.get("output_tokens", 0)
 
@@ -260,6 +288,7 @@ def _build_system_prompt(
     *,
     partition: str = "",
     array_spec: str = "",
+    params_table: ParamsTable | None = None,
     script_content: str | None = None,
     driver_script: str | None = None,
     manifest_content: str | None = None,
@@ -360,6 +389,29 @@ def _build_system_prompt(
     else:
         output_rule = "Write EXACTLY `--output=%x-%j.out` — nothing else."
         array_rule = ""
+
+    # A parameter table replaces the prose index-to-parameter mapping. The read
+    # loop is rendered here rather than described, so the mapping from array
+    # index to parameters has exactly one implementation.
+    if params_table is not None:
+        reader = render_bash_reader(params_table, indent="   ")
+        params_rule = (
+            "PARAMETER TABLE (this job's parameters come from a file, not from "
+            "the description):\n"
+            f"   {describe_for_prompt(params_table)}\n"
+            "   Include the following block VERBATIM in the script body, after "
+            "the #SBATCH directives and any module loads, and before the main "
+            "command. Do not rewrite it, do not reformat it, and do not invent "
+            "your own parsing:\n\n"
+            f"{reader}\n"
+            "   After that block, every column is available as an environment "
+            "variable of the same name. Use those variables in the run command "
+            "rather than hardcoding any value. Do NOT emit a case statement, a "
+            "bash array, or any other per-task mapping: the table IS the "
+            "mapping.\n\n"
+        )
+    else:
+        params_rule = ""
 
     manifest_section = ""
     if manifest_content:
@@ -574,7 +626,7 @@ SSH login: {profile.user}@{profile.host}
    Do NOT write `--output=/home/.../%x-...`.
    The % tokens are relative to the CWD. Any path prefix breaks log discovery.
 
-{array_rule}{gpu_rule_2}
+{array_rule}{params_rule}{gpu_rule_2}
 
 3. After #SBATCH directives:
 {module_purge_line}   - module load <required modules>

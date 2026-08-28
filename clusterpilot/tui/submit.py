@@ -23,6 +23,13 @@ from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
 from clusterpilot.jobs.env_detect import ScriptEnvironment, analyze_script
+from clusterpilot.jobs.params_table import ParamsTableError, load_params_table
+from clusterpilot.jobs.validate import (
+    SubmitIntent,
+    blocking,
+    format_findings,
+    validate_script,
+)
 from clusterpilot.jobs.preflight import PreflightError, warm_depot
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import run_remote
@@ -303,6 +310,16 @@ class SubmitView(Static):
                         placeholder="data/ladder.jld2, data/config.toml  (comma-separated, relative to PROJECT DIR)",
                         suggester=PathSuggester(base_getter=self._get_project_dir_path),
                         id="extra-files-input",
+                    )
+
+                with Horizontal(id="params-table-row"):
+                    yield Label("PARAM TABLE", classes="field-label")
+                    yield Input(
+                        placeholder=(
+                            "params.tsv or params.csv  (optional; one row per "
+                            "array task, header names the variables)"
+                        ),
+                        id="params-table-input",
                     )
 
                 with Horizontal(id="array-row"):
@@ -648,6 +665,34 @@ class SubmitView(Static):
 
         array_spec = self.query_one("#array-input", Input).value.strip()
 
+        # A parameter table, when given, is the source of truth for the task
+        # count. An explicit ARRAY field still wins, so an explicit subset of a
+        # longer table stays runnable; the validator refuses a genuine mismatch.
+        params_table = None
+        self._params_table = None
+        table_raw = self.query_one("#params-table-input", Input).value.strip()
+        if table_raw:
+            table_path = Path(table_raw)
+            if not table_path.is_absolute():
+                table_path = project_dir / table_path
+            try:
+                params_table = load_params_table(table_path)
+            except ParamsTableError as exc:
+                self.app.notify(
+                    f"Parameter table: {exc}",
+                    severity="error", markup=False, timeout=12,
+                )
+                self.query_one("#btn-generate", Button).disabled = False
+                return
+            self._params_table = params_table
+            if not array_spec:
+                array_spec = params_table.array_spec
+                self.app.notify(
+                    f"Array set from the parameter table: {array_spec} "
+                    f"({params_table.task_count} tasks)",
+                    severity="information",
+                )
+
         try:
             async for token in generate_script(
                 description, probe, profile,
@@ -663,6 +708,7 @@ class SubmitView(Static):
                 extra_files=extra_files or None,
                 script_env=script_env,
                 fieldnotes_enabled=app._config.fieldnotes.enabled,
+                params_table=params_table,
                 usage=self._last_usage,
             ):
                 self._generated_script += token
@@ -680,8 +726,56 @@ class SubmitView(Static):
             timeout=8,
         )
 
+        # A generation cut off at the token ceiling looks plausible and is
+        # missing its tail. Refuse it outright: it must never reach sbatch.
+        if self._last_usage.truncated:
+            self.app.notify(
+                "Generation hit the token ceiling and was cut short. The script "
+                "is incomplete and cannot be submitted. Shorten the description, "
+                "or move per-task parameters into a parameter table.",
+                severity="error", markup=False, timeout=20,
+            )
+            self.query_one("#btn-generate", Button).disabled = False
+            self.query_one("#btn-submit", Button).disabled = True
+            self.query_one("#btn-edit-script", Button).disabled = False
+            self.query_one("#btn-save", Button).disabled = False
+            self.query_one("#btn-clear", Button).disabled = False
+            return
+
+        # Check the generated script against what the user actually asked for,
+        # BEFORE it can be submitted. Nothing else inspects the generation, so
+        # this is the only gate between a plausible-looking script and sbatch.
+        findings = validate_script(
+            self._generated_script,
+            intent=SubmitIntent(
+                array_spec=array_spec,
+                param_row_count=(
+                    params_table.task_count if params_table is not None else None
+                ),
+                driver_rel=driver_script or "",
+                upload_paths=tuple(extra_files),
+                partition_name=partition or "",
+            ),
+            partitions=probe.partitions,
+        )
+        self._findings = findings
+        is_blocked = blocking(findings)
+        if findings:
+            self.app.notify(
+                format_findings(findings),
+                severity="error" if is_blocked else "warning",
+                markup=False,
+                timeout=20,
+            )
+        if is_blocked:
+            self.app.notify(
+                "SUBMIT is disabled: the generated script does not match what "
+                "you asked for. Fix it with EDIT, or regenerate.",
+                severity="error", markup=False, timeout=20,
+            )
+
         self.query_one("#btn-generate", Button).disabled = False
-        self.query_one("#btn-submit", Button).disabled = False
+        self.query_one("#btn-submit", Button).disabled = is_blocked
         self.query_one("#btn-edit-script", Button).disabled = False
         self.query_one("#btn-save", Button).disabled = False
         self.query_one("#btn-clear", Button).disabled = False
@@ -770,6 +864,14 @@ class SubmitView(Static):
                     includes=includes,
                 )
                 await upload(profile.host, profile.user, local_job_dir, remote_dir)
+
+                # The parameter table is data the script reads at run time, so
+                # it must travel even though the Julia allowlist would drop it.
+                table = getattr(self, "_params_table", None)
+                if table is not None and table.path.exists():
+                    await upload_file(
+                        profile.host, profile.user, table.path, remote_dir,
+                    )
 
                 # Extra files: upload individually, bypassing ignore rules.
                 extra_raw = self.query_one("#extra-files-input", Input).value.strip()
