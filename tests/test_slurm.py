@@ -7,10 +7,13 @@ import pytest
 
 from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
+    JobStatus,
     SlurmError,
+    aggregate,
     find_array_logs,
     find_log,
     job_status,
+    query_status,
     submit,
     tail_log,
 )
@@ -118,6 +121,175 @@ class TestJobStatus:
         with patch("clusterpilot.cluster.slurm.run_remote", mock):
             state = await job_status("host", "user", "12345")
         assert state == "FAILED"
+
+
+# ── aggregate ─────────────────────────────────────────────────────────────────
+
+class TestAggregate:
+    def test_single_state_passes_through(self):
+        assert aggregate(["RUNNING"]) == "RUNNING"
+
+    def test_unusual_single_state_passes_through(self):
+        assert aggregate(["SUSPENDED", "SUSPENDED"]) == "SUSPENDED"
+
+    def test_running_beats_pending(self):
+        assert aggregate(["RUNNING", "PENDING"]) == "RUNNING"
+
+    def test_completing_counts_as_running(self):
+        assert aggregate(["COMPLETING", "PENDING"]) == "RUNNING"
+
+    def test_completed_plus_pending_is_pending(self):
+        # Issue #27: an array with tasks still queued is not finished.
+        assert aggregate(["COMPLETED", "PENDING"]) == "PENDING"
+
+    def test_completed_plus_failed_is_failed(self):
+        # Issue #1: a partly failed array must not report COMPLETED.
+        assert aggregate(["COMPLETED", "FAILED"]) == "FAILED"
+
+    def test_all_completed_is_completed(self):
+        assert aggregate(["COMPLETED", "COMPLETED", "COMPLETED"]) == "COMPLETED"
+
+    def test_cancelled_by_suffix_normalised(self):
+        assert aggregate(["CANCELLED by 12345", "COMPLETED"]) == "CANCELLED"
+
+    def test_plus_suffix_normalised(self):
+        assert aggregate(["COMPLETED+", "COMPLETED"]) == "COMPLETED"
+
+    def test_failed_outranks_timeout(self):
+        assert aggregate(["TIMEOUT", "FAILED"]) == "FAILED"
+
+    def test_timeout_outranks_cancelled(self):
+        assert aggregate(["CANCELLED", "TIMEOUT"]) == "TIMEOUT"
+
+    def test_empty_input_returns_empty_string(self):
+        assert aggregate([]) == ""
+
+
+# ── JobStatus.summary ─────────────────────────────────────────────────────────
+
+class TestJobStatusSummary:
+    def test_empty_for_single_record(self):
+        js = JobStatus(state="RUNNING", counts={"RUNNING": 1}, source="squeue")
+        assert js.summary == ""
+
+    def test_running_before_pending(self):
+        js = JobStatus(
+            state="RUNNING",
+            counts={"PENDING": 27, "RUNNING": 5},
+            source="squeue",
+        )
+        assert js.summary == "5R/27PD"
+
+    def test_terminal_states_ordered_completed_first(self):
+        js = JobStatus(
+            state="FAILED",
+            counts={"FAILED": 1, "COMPLETED": 31},
+            source="sacct",
+        )
+        assert js.summary == "31C/1F"
+
+    def test_unknown_state_uses_full_name(self):
+        js = JobStatus(
+            state="SUSPENDED",
+            counts={"SUSPENDED": 2, "RUNNING": 1},
+            source="squeue",
+        )
+        assert js.summary == "1R/2SUSPENDED"
+
+
+# ── query_status parsing ──────────────────────────────────────────────────────
+
+class TestQueryStatusParsing:
+    async def test_bracket_range_counts_every_task(self):
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote("123_[5-31]|PENDING"),
+        ):
+            js = await query_status("host", "user", "123")
+        assert js is not None
+        assert js.counts == {"PENDING": 27}
+
+    async def test_mixed_range_and_singletons(self):
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote("123_[0-3,7]|PENDING"),
+        ):
+            js = await query_status("host", "user", "123")
+        assert js.counts == {"PENDING": 5}
+
+    async def test_throttle_suffix_stripped(self):
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote("123_[5-31%5]|PENDING"),
+        ):
+            js = await query_status("host", "user", "123")
+        assert js.counts == {"PENDING": 27}
+
+    async def test_bare_state_line_still_parses(self):
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote("RUNNING"),
+        ):
+            js = await query_status("host", "user", "123")
+        assert js.state == "RUNNING"
+        assert js.counts == {"RUNNING": 1}
+
+    async def test_trailing_separator_ignored(self):
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote("123_0|COMPLETED|\n123_1|COMPLETED|"),
+        ):
+            js = await query_status("host", "user", "123")
+        assert js.counts == {"COMPLETED": 2}
+
+    async def test_plain_job_id_counts_one(self):
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote("123|RUNNING"),
+        ):
+            js = await query_status("host", "user", "123")
+        assert js.counts == {"RUNNING": 1}
+
+
+# ── query_status aggregation ──────────────────────────────────────────────────
+
+class TestQueryStatus:
+    async def test_squeue_multiline_array_is_running(self):
+        # Issue #1: mixed array must aggregate, not return "RUNNING\nPENDING".
+        out = "77_1|RUNNING\n77_[2-28]|PENDING"
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote(out)):
+            js = await query_status("host", "user", "77")
+        assert js.state == "RUNNING"
+        assert js.source == "squeue"
+        assert js.counts == {"RUNNING": 1, "PENDING": 27}
+        assert js.summary == "1R/27PD"
+
+    async def test_squeue_outage_does_not_declare_array_complete(self):
+        # Issue #27 regression: squeue times out, sacct's first line is task 0
+        # (COMPLETED), but tasks are still running and queued.
+        mock = AsyncMock(side_effect=[
+            SSHError("slurm_load_jobs error: Socket timed out"),
+            "123_0|COMPLETED\n123_1|RUNNING\n123_[2-9]|PENDING",
+        ])
+        with patch("clusterpilot.cluster.slurm.run_remote", mock):
+            js = await query_status("host", "user", "123")
+        assert js.state == "RUNNING"
+        assert js.source == "sacct"
+        assert js.summary == "1R/8PD/1C"
+
+    async def test_job_status_wrapper_agrees_on_the_27_case(self):
+        mock = AsyncMock(side_effect=[
+            SSHError("slurm_load_jobs error: Socket timed out"),
+            "123_0|COMPLETED\n123_1|RUNNING\n123_[2-9]|PENDING",
+        ])
+        with patch("clusterpilot.cluster.slurm.run_remote", mock):
+            state = await job_status("host", "user", "123")
+        assert state == "RUNNING"
+
+    async def test_returns_none_when_both_commands_fail(self):
+        mock = AsyncMock(side_effect=SSHError("no connection"))
+        with patch("clusterpilot.cluster.slurm.run_remote", mock):
+            assert await query_status("host", "user", "99999") is None
 
 
 # ── TERMINAL_STATES ───────────────────────────────────────────────────────────

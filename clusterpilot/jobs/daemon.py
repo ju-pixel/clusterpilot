@@ -23,8 +23,9 @@ import aiosqlite
 
 from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
+    JobStatus,
     find_log,
-    job_status,
+    query_status,
     tail_log,
 )
 from clusterpilot.config import ClusterProfile, Config
@@ -146,17 +147,31 @@ class PollDaemon:
         job: JobRecord,
     ) -> None:
         try:
-            new_status = await job_status(profile.host, profile.user, job.job_id)
+            status = await query_status(profile.host, profile.user, job.job_id)
         except SSHError as exc:
             log.warning("SSH error querying job %s: %s", job.job_id, exc)
             return
 
-        if new_status is None:
+        if status is None:
             log.debug("Job %s not found in squeue or sacct — skipping", job.job_id)
             return
 
+        new_status = status.state
+        summary = status.summary
+        if summary != (job.status_detail or ""):
+            # Record the per-task breakdown even when the aggregate state has
+            # not moved, so the TUI shows an array's progress between waves.
+            # Written against the current state on purpose: the transition
+            # below is what records the new one, so a failed transition is
+            # retried on the next poll instead of being silently lost.
+            await update_status(
+                db, job.job_id, job.cluster_name, job.status,
+                status_detail=summary,
+            )
+            job.status_detail = summary
+
         if new_status != job.status:
-            await self._handle_transition(db, profile, job, new_status)
+            await self._handle_transition(db, profile, job, status)
             return
 
         if new_status == "RUNNING":
@@ -177,14 +192,21 @@ class PollDaemon:
         db: aiosqlite.Connection,
         profile: ClusterProfile,
         job: JobRecord,
-        new_status: str,
+        status: JobStatus,
     ) -> None:
         now = time.time()
         key = _key(job)
+        new_status = status.state
         log.info("Job %s on %s: %s → %s", job.job_id, profile.name,
                  job.status, new_status)
 
         if new_status == "RUNNING":
+            if job.started_at is not None:
+                # An array that dropped back to PENDING between waves is running
+                # again, not starting again: no second "started" notification.
+                await update_status(db, job.job_id, job.cluster_name, new_status)
+                await self._sync(job, new_status)
+                return
             # Find the log file path while we're here.
             log_path = await find_log(
                 profile.host, profile.user,
@@ -212,6 +234,10 @@ class PollDaemon:
 
             if new_status == "COMPLETED":
                 await self._sync_and_notify_completed(db, profile, job, new_status)
+            elif status.counts.get("COMPLETED", 0) > 0:
+                # A mixed array: some tasks produced results worth keeping, so
+                # pull them back before reporting the failure.
+                await self._sync_and_notify_partial(db, profile, job, new_status)
             else:
                 await self._notify_failed(profile, job, new_status)
 
@@ -223,6 +249,28 @@ class PollDaemon:
             # Any other status change (e.g., PENDING re-queued) — just update.
             await update_status(db, job.job_id, job.cluster_name, new_status)
 
+    async def _download_results(
+        self,
+        profile: ClusterProfile,
+        job: JobRecord,
+    ) -> bool:
+        """Pull the remote working directory into local_dir/results.
+
+        Returns True when the rsync succeeded. Never raises.
+        """
+        local_results = Path(job.local_dir) / "results"
+        try:
+            await download(
+                profile.host, profile.user,
+                job.working_dir, local_results,
+                excludes=list(self.config.defaults.download_excludes),
+            )
+            log.info("Results synced for job %s → %s", job.job_id, local_results)
+            return True
+        except RsyncError:
+            log.exception("rsync failed for job %s — results not synced", job.job_id)
+            return False
+
     async def _sync_and_notify_completed(
         self,
         db: aiosqlite.Connection,
@@ -230,18 +278,7 @@ class PollDaemon:
         job: JobRecord,
         status: str,
     ) -> None:
-        local_results = Path(job.local_dir) / "results"
-        synced = False
-        try:
-            await download(
-                profile.host, profile.user,
-                job.working_dir, local_results,
-                excludes=list(self.config.defaults.download_excludes),
-            )
-            synced = True
-            log.info("Results synced for job %s → %s", job.job_id, local_results)
-        except RsyncError:
-            log.exception("rsync failed for job %s — results not synced", job.job_id)
+        synced = await self._download_results(profile, job)
 
         await update_status(
             db, job.job_id, job.cluster_name, status,
@@ -271,6 +308,27 @@ class PollDaemon:
             except SSHError:
                 pass
         await self._sync(job, status, log_tail=log_tail or None)
+
+    async def _sync_and_notify_partial(
+        self,
+        db: aiosqlite.Connection,
+        profile: ClusterProfile,
+        job: JobRecord,
+        status: str,
+    ) -> None:
+        """Terminal array where some tasks completed and some did not.
+
+        The results of the tasks that did finish are downloaded first, then the
+        job is reported as failed. Nothing is logged to Fieldnotes: a partial
+        array is not a scientific record.
+        """
+        synced = await self._download_results(profile, job)
+        await update_status(
+            db, job.job_id, job.cluster_name, status,
+            synced=synced,
+        )
+        job.synced = synced
+        await self._notify_failed(profile, job, status)
 
     async def _notify_failed(
         self,

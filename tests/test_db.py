@@ -122,6 +122,87 @@ async def test_update_status_sets_synced(db):
     assert fetched.synced is True
 
 
+async def test_update_status_sets_status_detail(db):
+    await insert_job(db, _make_job())
+    await update_status(db, "12345", "grex", "RUNNING", status_detail="5R/27PD")
+    fetched = await get_job(db, "12345", "grex")
+    assert fetched.status_detail == "5R/27PD"
+
+
+# ── status_detail ─────────────────────────────────────────────────────────────
+
+class TestStatusDetail:
+    async def test_defaults_to_empty_string(self, db):
+        await insert_job(db, _make_job())
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.status_detail == ""
+
+    async def test_round_trips_through_insert(self, db):
+        await insert_job(db, _make_job(status_detail="1R/8PD/1C"))
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.status_detail == "1R/8PD/1C"
+
+    async def test_carried_by_active_job_load(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_status(db, "12345", "grex", "RUNNING", status_detail="5R/27PD")
+        active = await get_active_jobs(db)
+        assert [j.status_detail for j in active] == ["5R/27PD"]
+
+    async def test_pre_migration_database_loads(self):
+        """A database written before the column existed still loads."""
+        async with aiosqlite.connect(":memory:") as conn:
+            conn.row_factory = aiosqlite.Row
+            # The schema as it stood before status_detail was added.
+            await conn.execute(
+                """
+                CREATE TABLE jobs (
+                    row_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id        TEXT NOT NULL,
+                    job_name      TEXT NOT NULL,
+                    cluster_name  TEXT NOT NULL,
+                    host          TEXT NOT NULL,
+                    user          TEXT NOT NULL,
+                    account       TEXT NOT NULL,
+                    partition     TEXT NOT NULL,
+                    script_path   TEXT NOT NULL,
+                    working_dir   TEXT NOT NULL,
+                    local_dir     TEXT NOT NULL,
+                    status        TEXT NOT NULL DEFAULT 'PENDING',
+                    submitted_at  REAL NOT NULL,
+                    started_at    REAL,
+                    finished_at   REAL,
+                    walltime      TEXT NOT NULL,
+                    log_path      TEXT,
+                    synced         INTEGER NOT NULL DEFAULT 0,
+                    input_tokens   INTEGER NOT NULL DEFAULT 0,
+                    output_tokens  INTEGER NOT NULL DEFAULT 0,
+                    model_used     TEXT NOT NULL DEFAULT '',
+                    remote_cleaned INTEGER NOT NULL DEFAULT 0,
+                    array_spec     TEXT NOT NULL DEFAULT '',
+                    UNIQUE(job_id, cluster_name)
+                )
+                """
+            )
+            await conn.execute(
+                "INSERT INTO jobs (job_id, job_name, cluster_name, host, user, "
+                "account, partition, script_path, working_dir, local_dir, "
+                "status, submitted_at, walltime) "
+                "VALUES ('9', 'old', 'grex', 'h', 'u', 'a', 'p', 's', 'w', 'l', "
+                "'RUNNING', 1000.0, '01:00:00')"
+            )
+            await conn.commit()
+
+            fetched = await get_job(conn, "9", "grex")
+            assert fetched is not None
+            assert fetched.status_detail == ""
+
+            # After migration the column exists and is writable.
+            await init_db(conn)
+            await update_status(conn, "9", "grex", "RUNNING", status_detail="2R/3PD")
+            migrated = await get_job(conn, "9", "grex")
+            assert migrated.status_detail == "2R/3PD"
+
+
 # ── get_active_jobs ───────────────────────────────────────────────────────────
 
 async def test_get_active_jobs_excludes_terminal(db):

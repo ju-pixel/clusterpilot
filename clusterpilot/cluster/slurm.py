@@ -5,6 +5,8 @@ All functions require an active SSH ControlMaster socket.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 
 from clusterpilot.ssh.connection import SSHError, run_remote
 
@@ -15,6 +17,34 @@ TERMINAL_STATES = frozenset({
     "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
     "OUT_OF_MEMORY", "NODE_FAIL",
 })
+
+# States that mean at least one task is on a node right now.
+_RUNNING_LIKE = ("RUNNING", "COMPLETING")
+
+# Worst-first severity used to pick the aggregate state of a finished array.
+_FAILURE_SEVERITY = (
+    "FAILED", "OUT_OF_MEMORY", "TIMEOUT", "NODE_FAIL", "CANCELLED",
+)
+
+# Short labels used in JobStatus.summary, e.g. "5R/27PD".
+_ABBREVIATIONS = {
+    "RUNNING": "R",
+    "PENDING": "PD",
+    "COMPLETING": "CG",
+    "COMPLETED": "C",
+    "FAILED": "F",
+    "TIMEOUT": "TO",
+    "OUT_OF_MEMORY": "OOM",
+    "NODE_FAIL": "NF",
+    "CANCELLED": "CA",
+}
+
+# Display order within each of the three summary groups.
+_SUMMARY_ORDER = (
+    "RUNNING", "COMPLETING",
+    "PENDING",
+    "COMPLETED", "FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "CANCELLED",
+)
 
 
 class SlurmError(SSHError):
@@ -57,25 +87,92 @@ async def submit(
 
 # ── Status polling ────────────────────────────────────────────────────────────
 
-async def job_status(host: str, user: str, job_id: str) -> str | None:
-    """Return the SLURM state for job_id, or None if the job cannot be found.
+@dataclass(frozen=True)
+class JobStatus:
+    """Aggregate status of a job, which may be a whole array of tasks.
+
+    Attributes:
+        state:  Canonical aggregate state, one of the usual SLURM names.
+        counts: Normalised state -> task count, e.g. {"RUNNING": 5, "PENDING": 27}.
+        source: Which command produced this, "squeue" or "sacct".
+    """
+
+    state: str
+    counts: dict[str, int] = field(default_factory=dict)
+    source: str = ""
+
+    @property
+    def summary(self) -> str:
+        """Compact per-state task breakdown, e.g. "5R/27PD" or "31C/1F".
+
+        Empty when the job is a single record, so plain jobs show nothing extra.
+        """
+        if len(self.counts) <= 1 and sum(self.counts.values()) <= 1:
+            return ""
+        parts = [
+            f"{self.counts[state]}{_ABBREVIATIONS.get(state, state)}"
+            for state in sorted(self.counts, key=_summary_sort_key)
+        ]
+        return "/".join(parts)
+
+
+def normalise_state(raw: str) -> str:
+    """Reduce a raw SLURM state string to its bare canonical name.
+
+    "CANCELLED by 12345" -> "CANCELLED"; "COMPLETED+" -> "COMPLETED".
+    Returns an empty string when there is nothing to normalise.
+    """
+    token = raw.strip().split("+")[0].strip()
+    if not token:
+        return ""
+    return token.split()[0]
+
+
+def aggregate(states: Iterable[str]) -> str:
+    """Collapse the states of every task in a job into one canonical state.
+
+    A single distinct state passes straight through, so ordinary single-task
+    jobs keep today's behaviour including unusual states such as SUSPENDED.
+    Otherwise: anything still on a node wins, then anything still queued, then
+    all-completed, and finally the worst failure by fixed severity.
+    """
+    distinct = {s for s in (normalise_state(raw) for raw in states) if s}
+    if not distinct:
+        return ""
+    if len(distinct) == 1:
+        return next(iter(distinct))
+    if distinct & set(_RUNNING_LIKE):
+        return "RUNNING"
+    if distinct - TERMINAL_STATES:
+        return "PENDING"
+    if distinct == {"COMPLETED"}:
+        return "COMPLETED"
+    for state in _FAILURE_SEVERITY:
+        if state in distinct:
+            return state
+    return sorted(distinct)[0]
+
+
+async def query_status(host: str, user: str, job_id: str) -> JobStatus | None:
+    """Return the aggregate JobStatus for job_id, or None if it cannot be found.
 
     Strategy:
     1. squeue (fast, in-memory) — works while the job is queued or running.
     2. sacct (historical records) — works after the job has left the queue.
 
-    Common return values: PENDING, RUNNING, COMPLETED, FAILED,
-    CANCELLED, TIMEOUT, OUT_OF_MEMORY.
+    Both commands print one line per array task, so every line is parsed and
+    aggregated. Trusting the first line alone reports a mixed array as whatever
+    its lowest task happens to be doing.
     """
     # 1. squeue — job still in queue
     try:
         out = await run_remote(
             host, user,
-            f"squeue -j {job_id} -h -o '%T' 2>/dev/null",
+            f"squeue -j {job_id} -h -o '%i|%T' 2>/dev/null",
         )
-        state = out.strip()
-        if state:
-            return state
+        counts = _parse_status_lines(out)
+        if counts:
+            return JobStatus(state=aggregate(counts), counts=counts, source="squeue")
     except SSHError:
         pass
 
@@ -83,18 +180,92 @@ async def job_status(host: str, user: str, job_id: str) -> str | None:
     try:
         out = await run_remote(
             host, user,
-            f"sacct -j {job_id} -n -X -o State --parsable2 2>/dev/null",
+            f"sacct -j {job_id} -n -X -o JobID,State --parsable2 2>/dev/null",
         )
-        for line in out.strip().splitlines():
-            # sacct can append "+" for job-step aggregates; strip it.
-            # "CANCELLED by 12345" → "CANCELLED"
-            state = line.strip().split("+")[0].split()[0]
-            if state:
-                return state
+        counts = _parse_status_lines(out)
+        if counts:
+            return JobStatus(state=aggregate(counts), counts=counts, source="sacct")
     except SSHError:
         pass
 
     return None
+
+
+async def job_status(host: str, user: str, job_id: str) -> str | None:
+    """Return the SLURM state for job_id, or None if the job cannot be found.
+
+    Thin wrapper over query_status for callers that only need the state.
+
+    Common return values: PENDING, RUNNING, COMPLETED, FAILED,
+    CANCELLED, TIMEOUT, OUT_OF_MEMORY.
+    """
+    status = await query_status(host, user, job_id)
+    return status.state if status else None
+
+
+def _summary_sort_key(state: str) -> tuple[int, int, str]:
+    """Order summary entries: running-like, then pending-like, then terminal."""
+    if state in _RUNNING_LIKE:
+        group = 0
+    elif state not in TERMINAL_STATES:
+        group = 1
+    else:
+        group = 2
+    rank = _SUMMARY_ORDER.index(state) if state in _SUMMARY_ORDER else len(_SUMMARY_ORDER)
+    return (group, rank, state)
+
+
+def _parse_status_lines(text: str) -> dict[str, int]:
+    """Parse "<job id>|<STATE>" lines into normalised state -> task count.
+
+    A line without a pipe is treated as a bare state with a count of one.
+    Empty fields (sacct can print a trailing separator) are ignored.
+    """
+    counts: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            fields = [f.strip() for f in line.split("|") if f.strip()]
+            if len(fields) < 2:
+                continue
+            count = _task_count(fields[0])
+            state = normalise_state(fields[1])
+        else:
+            count = 1
+            state = normalise_state(line)
+        if not state:
+            continue
+        counts[state] = counts.get(state, 0) + count
+    return counts
+
+
+def _task_count(job_field: str) -> int:
+    """Count the array tasks a squeue or sacct job id field stands for.
+
+    "123" and "123_7" are one task each; "123_[5-31,40]" is 28; a "%N" throttle
+    suffix such as "123_[5-31%5]" is stripped first.
+    """
+    start = job_field.find("[")
+    end = job_field.find("]", start + 1)
+    if start == -1 or end == -1:
+        return 1
+    body = job_field[start + 1:end].split("%")[0]
+    total = 0
+    for item in body.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "-" in item:
+            low, _, high = item.partition("-")
+            try:
+                total += int(high) - int(low) + 1
+            except ValueError:
+                total += 1
+        else:
+            total += 1
+    return total or 1
 
 
 # ── Job control ───────────────────────────────────────────────────────────────

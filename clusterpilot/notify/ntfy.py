@@ -66,10 +66,15 @@ async def notify_started(cfg: NotificationConfig, job: JobRecord) -> None:
 
 
 async def notify_completed(cfg: NotificationConfig, job: JobRecord) -> None:
+    body = (
+        f"{job.job_name} completed on {job.cluster_name}\n"
+        f"Results are being synced to your local directory."
+    )
+    if job.status_detail:
+        body = f"{body}\nTasks: {job.status_detail}"
     await send(
         cfg.ntfy_topic,
-        f"{job.job_name} completed on {job.cluster_name}\n"
-        f"Results are being synced to your local directory.",
+        body,
         title=f"Job done - {job.job_name}",
         priority="high",
         tags=["white_check_mark"],
@@ -83,6 +88,9 @@ async def notify_failed(
     log_tail: str = "",
 ) -> None:
     body = f"{job.job_name} failed on {job.cluster_name} (job {job.job_id})"
+    if job.status_detail:
+        # Tells a mixed array apart from a wholesale failure at a glance.
+        body = f"{body}\nTasks: {job.status_detail}"
     if log_tail:
         # Keep the notification body short; include only the last few lines.
         excerpt = "\n".join(log_tail.splitlines()[-6:])

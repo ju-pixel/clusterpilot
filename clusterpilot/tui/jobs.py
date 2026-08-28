@@ -79,7 +79,9 @@ def _format_meta(job: JobRecord) -> str:
 
     rows = [
         ("NAME",      f"[bold #e8a020]{job.job_name}[/]"),
-        ("STATUS",    _status_rich(job.status)),
+        ("STATUS",    _status_rich(job.status) + (
+                          f" [#7a6a50]{job.status_detail}[/]" if job.status_detail else ""
+                      )),
         ("CLUSTER",   f"[#50c8c8]{job.cluster_name}[/]"),
         ("PARTITION", job.partition),
         ("ACCOUNT",   f"[#7a6a50]{job.account}[/]"),

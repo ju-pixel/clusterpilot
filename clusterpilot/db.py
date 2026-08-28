@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     model_used      TEXT    NOT NULL DEFAULT '',
     remote_cleaned  INTEGER NOT NULL DEFAULT 0,  -- 1 once remote working dir deleted
     array_spec      TEXT    NOT NULL DEFAULT '',  -- e.g. "0-9" or "1-100%5"; empty for non-array jobs
+    status_detail   TEXT    NOT NULL DEFAULT '',  -- per-task breakdown, e.g. "5R/27PD"
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -87,6 +88,7 @@ class JobRecord:
     model_used: str = ""
     remote_cleaned: bool = False
     array_spec: str = ""
+    status_detail: str = ""   # per-task breakdown for arrays, e.g. "5R/27PD"
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -123,6 +125,7 @@ async def init_db(db: "aiosqlite.Connection") -> None:
         ("model_used",     "TEXT NOT NULL DEFAULT ''"),
         ("remote_cleaned", "INTEGER NOT NULL DEFAULT 0"),
         ("array_spec",     "TEXT NOT NULL DEFAULT ''"),
+        ("status_detail",  "TEXT NOT NULL DEFAULT ''"),
     ):
         try:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -141,8 +144,8 @@ async def insert_job(db: "aiosqlite.Connection", job: JobRecord) -> int:
             job_id, job_name, cluster_name, host, user, account,
             partition, script_path, working_dir, local_dir, status,
             submitted_at, walltime, input_tokens, output_tokens, model_used,
-            array_spec
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            array_spec, status_detail
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job.job_id, job.job_name, job.cluster_name, job.host,
@@ -150,7 +153,7 @@ async def insert_job(db: "aiosqlite.Connection", job: JobRecord) -> int:
             job.working_dir, job.local_dir, job.status,
             job.submitted_at, job.walltime,
             job.input_tokens, job.output_tokens, job.model_used,
-            job.array_spec,
+            job.array_spec, job.status_detail,
         ),
     )
     await db.commit()
@@ -168,6 +171,7 @@ async def update_status(
     finished_at: float | None = None,
     log_path: str | None = None,
     synced: bool | None = None,
+    status_detail: str | None = None,
 ) -> None:
     """Update mutable fields for a job. Only non-None kwargs are written."""
     sets: list[str] = ["status = ?"]
@@ -185,6 +189,9 @@ async def update_status(
     if synced is not None:
         sets.append("synced = ?")
         params.append(1 if synced else 0)
+    if status_detail is not None:
+        sets.append("status_detail = ?")
+        params.append(status_detail)
 
     params.extend([job_id, cluster_name])
     await db.execute(
@@ -276,12 +283,18 @@ async def get_total_usage(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
+    values = tuple(row)
     (
         row_id, job_id, job_name, cluster_name, host, user, account,
         partition, script_path, working_dir, local_dir, status,
         submitted_at, started_at, finished_at, walltime, log_path, synced,
         input_tokens, output_tokens, model_used, remote_cleaned, array_spec,
-    ) = row
+    ) = values[:23]
+    # Databases written before status_detail existed simply have no such column.
+    try:
+        status_detail = row["status_detail"]
+    except (IndexError, KeyError, TypeError):
+        status_detail = values[23] if len(values) > 23 else ""
     return JobRecord(
         row_id=row_id,
         job_id=job_id,
@@ -306,4 +319,5 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         model_used=model_used,
         remote_cleaned=bool(remote_cleaned),
         array_spec=array_spec or "",
+        status_detail=status_detail or "",
     )
