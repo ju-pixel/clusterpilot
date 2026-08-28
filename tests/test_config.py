@@ -139,9 +139,12 @@ class TestClusterProfile:
         )
 
     def test_expand_scratch_replaces_home(self, profile):
+        # $HOME becomes ~ so the REMOTE shell expands it. The local home must
+        # never appear: local and cluster usernames differ (issue #17).
         expanded = profile.expand_scratch()
+        assert expanded == "~/clusterpilot_jobs"
         assert "$HOME" not in expanded
-        assert str(Path.home()) in expanded
+        assert str(Path.home()) not in expanded
 
     def test_expand_scratch_no_home_variable(self):
         profile = ClusterProfile(

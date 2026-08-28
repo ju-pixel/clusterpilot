@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -89,8 +90,12 @@ class TestBuildSystemPrompt:
         assert "def-stamps" in prompt
 
     def test_contains_expanded_scratch_path(self, grex_probe, grex_profile):
+        # The job directory is shown in ~ form for the remote shell; the
+        # workstation's own home path must never leak into the prompt (#17).
+        # "$HOME" itself may appear in the storage advice, so it is not banned.
         prompt = _build_system_prompt(grex_probe, grex_profile)
-        assert "$HOME" not in prompt
+        assert "Job working directory: ~/clusterpilot_jobs/<job-name>/" in prompt
+        assert str(Path.home()) not in prompt
 
     def test_starts_with_bash_instruction(self, grex_probe, grex_profile):
         prompt = _build_system_prompt(grex_probe, grex_profile)
