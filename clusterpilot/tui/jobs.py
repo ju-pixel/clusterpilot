@@ -41,6 +41,8 @@ _STATUS_STYLE = {
     "FAILED":    ("[#e05050]", "✗"),
     "CANCELLED": ("[#e05050]", "✗"),
     "TIMEOUT":   ("[#e05050]", "⏰"),
+    "OUT_OF_MEMORY": ("[#e05050]", "✗"),
+    "NODE_FAIL":     ("[#e05050]", "✗"),
 }
 
 
@@ -168,7 +170,7 @@ class JobsView(Static):
         """Refresh the metadata panel and button states without touching the log."""
         self.query_one("#meta-title", Label).update(f"═ JOB {job.job_id} ")
         self.query_one("#meta-content", Static).update(_format_meta(job))
-        terminal = job.status in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT")
+        terminal = job.status in TERMINAL_STATES
         self.query_one("#btn-kill", Button).disabled = terminal
         # RSYNC: enabled whenever there's something on the cluster worth pulling.
         # FAILED / CANCELLED / TIMEOUT / OUT_OF_MEMORY / NODE_FAIL jobs all have
@@ -263,7 +265,7 @@ class JobsView(Static):
             if j.job_id == self._tail_job_id:
                 job = j
                 break
-        if job is None or job.status in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"):
+        if job is None or job.status in TERMINAL_STATES:
             self._stop_tail_polling()
             return
         app = cast("ClusterPilotApp", self.app)
