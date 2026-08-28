@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clusterpilot"
-version = "0.3.1"
+version = "0.4.0"
 description = "AI-assisted HPC workflow manager for SLURM clusters"
 readme = "README.md"
 license = { text = "MIT" }
@@ -48,11 +48,11 @@ packages = ["clusterpilot"]
 # Whitelist what ships in the source distribution. Without this, hatchling
 # bundles the entire monorepo (api/, dashboard/, proxy/, .jsx mockups) into the
 # sdist, including the git-ignored proxy/tokens.txt secrets file. Only the
-# package, its tests, and the standard metadata belong in a PyPI release.
+# package and the standard metadata belong in a PyPI release; the release
+# skill's artefact scan aborts on anything else, tests included.
 [tool.hatch.build.targets.sdist]
 include = [
     "/clusterpilot",
-    "/tests",
     "/README.md",
     "/LICENSE",
 ]
