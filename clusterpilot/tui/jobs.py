@@ -70,7 +70,7 @@ def _format_list_item(job: JobRecord) -> str:
     name = job.job_name[:26]
     return (
         f" [bold]{name}[/]\n"
-        f" [#7a6a50]#{job.job_id[-6:]}  {job.cluster_name}[/]  "
+        f" [#7a6a50]#{job.job_id}  {job.cluster_name}[/]  "
         f"{color}{icon}[/]"
     )
 
@@ -164,6 +164,33 @@ class JobsView(Static):
         except NoMatches:
             pass
 
+    async def select_job(self, job_id: str, cluster_name: str) -> None:
+        """Reload the list from the database and select one job.
+
+        Used by the submit hand-off: F1 should open on the job that was just
+        submitted, with its detail pane already filled in, rather than on
+        whatever happened to be selected before. A job the database does not
+        know about leaves the selection alone.
+        """
+        async with aiosqlite.connect(self.app._db_path) as db:  # type: ignore[attr-defined]
+            await init_db(db)
+            self._jobs = await get_all_jobs(db, limit=100)
+        for index, job in enumerate(self._jobs):
+            if job.job_id == job_id and job.cluster_name == cluster_name:
+                self._selected = index
+                break
+        self._selected = min(self._selected, max(len(self._jobs) - 1, 0))
+        job_list = self.query_one("#job-list", ListView)
+        await job_list.clear()
+        # Awaited, unlike the timer refresh: the highlight can only be moved
+        # once the rows are actually mounted.
+        await job_list.extend(self._list_items())
+        if not self._jobs:
+            return
+        job_list.index = self._selected
+        self._show_detail(self._jobs[self._selected])
+        self.focus_job_list()
+
     def running_jobs(self) -> list[JobRecord]:
         """Jobs in the list that are still running on a cluster."""
         return [j for j in getattr(self, "_jobs", []) if j.status == "RUNNING"]
@@ -184,11 +211,14 @@ class JobsView(Static):
         self._jobs = jobs
         self._rebuild_list()
 
+    def _list_items(self) -> list[ListItem]:
+        """One list row per job, in the order the queue shows them."""
+        return [ListItem(Static(_format_list_item(job))) for job in self._jobs]
+
     def _rebuild_list(self) -> None:
         job_list = self.query_one("#job-list", ListView)
         job_list.clear()
-        for job in self._jobs:
-            item = ListItem(Static(_format_list_item(job)))
+        for item in self._list_items():
             job_list.append(item)
         if self._jobs:
             # Update metadata (status, elapsed, etc.) but preserve the log

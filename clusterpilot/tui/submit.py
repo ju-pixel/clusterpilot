@@ -26,6 +26,7 @@ from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
 from clusterpilot.jobs.env_detect import ScriptEnvironment, analyze_script
 from clusterpilot.jobs.params_table import ParamsTableError, load_params_table
 from clusterpilot.jobs.validate import (
+    Finding,
     SubmitIntent,
     blocking,
     format_findings,
@@ -35,6 +36,7 @@ from clusterpilot.jobs.preflight import PreflightError, warm_depot
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import run_remote
 from clusterpilot.ssh.rsync import read_ignore_file, upload, upload_file
+from clusterpilot.tui.jobs import JobsView
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
@@ -398,6 +400,8 @@ class SubmitView(Static):
 
     def on_mount(self) -> None:
         self._generated_script = ""
+        self._findings: list[Finding] = []
+        self._last_usage = ApiUsage()
         self._last_script_env: ScriptEnvironment | None = None
         self._partition_availability: dict[str, PartitionAvailability] = {}
         # GPU types the probe reports, per partition name and across the whole
@@ -1085,7 +1089,24 @@ class SubmitView(Static):
             severity="information",
             timeout=8,
         )
+        # Hand over to F1 on the job that was just submitted, and leave F2
+        # ready for the next run of the same job: the script and its findings
+        # go, everything the user typed stays.
+        self._clear_generated_script()
         app.action_show_jobs()
+        await app.query_one(JobsView).select_job(job_id, profile.name)
+
+    def _clear_generated_script(self) -> None:
+        """Drop the generated script and its validation findings.
+
+        The form fields are deliberately untouched: after a submit, the next
+        run of the same job should be one edit away.
+        """
+        self._generated_script = ""
+        self._findings = []
+        self.query_one("#script-display", Static).update(_EMPTY_HINT)
+        for btn_id in ("#btn-submit", "#btn-edit-script", "#btn-save", "#btn-clear"):
+            self.query_one(btn_id, Button).disabled = True
 
     # ── Edit script ───────────────────────────────────────────────────────────
 
@@ -1125,11 +1146,9 @@ class SubmitView(Static):
 
     @on(Button.Pressed, "#btn-clear")
     def on_clear(self) -> None:
-        self._generated_script = ""
+        """Clear the description and the script. Every other field stays."""
         self.query_one("#description-input", TextArea).load_text("")
-        self.query_one("#script-display", Static).update(_EMPTY_HINT)
-        for btn_id in ("#btn-submit", "#btn-edit-script", "#btn-save", "#btn-clear"):
-            self.query_one(btn_id, Button).disabled = True
+        self._clear_generated_script()
 
 
 _EMPTY_HINT = (

@@ -21,7 +21,7 @@ Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, na
 
 ### F2 — Describe your job and generate a SLURM script
 
-![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit-re1al.png)
+![ClusterPilot F2 Submit screen](docs/screenshots/tui-submit.png)
 
 ### F1 — Monitor jobs, tail logs in real time, sync results
 

@@ -57,18 +57,71 @@ class TitleBar(Static):
         self.update(self._build_content())
 
 
-class StatusBar(Static):
-    DEFAULT_TEXT = (
-        "[bold #e8a020]F1[/][#7a6a50] JOBS  [/]"
-        "[bold #e8a020]F2[/][#7a6a50] SUBMIT  [/]"
-        "[bold #e8a020]F3[/][#7a6a50] FILES  [/]"
-        "[bold #e8a020]F9[/][#7a6a50] CONFIG  [/]"
-        "[bold #e8a020]Q[/][#7a6a50] QUIT  [/]"
-        "[bold #e8a020]↑↓[/][#7a6a50] SELECT[/]"
+# Key legend per tab: the keys that act on the screen you are looking at,
+# then the keys that take you somewhere else. Written as (key, meaning) pairs
+# so the plain text and the coloured markup cannot drift apart.
+_KeyPairs = tuple[tuple[str, str], ...]
+
+STATUS_LEGENDS: dict[str, tuple[_KeyPairs, _KeyPairs]] = {
+    "jobs": (
+        (
+            ("r", "rsync"),
+            ("k", "kill"),
+            ("t", "tail"),
+            ("l", "log"),
+            ("c", "clean remote"),
+            ("d", "forget"),
+        ),
+        (("F2", "submit"), ("F3", "files"), ("F9", "config"), ("q", "quit")),
+    ),
+    "submit": (
+        (("Tab", "next field"), ("Enter", "in a picker opens it")),
+        (("F1", "jobs"), ("F3", "files"), ("F9", "config"), ("q", "quit")),
+    ),
+    "config": (
+        (("PgUp PgDn", "scroll"), ("Enter", "on EDIT CONFIG opens $EDITOR")),
+        (("F1", "jobs"), ("F2", "submit"), ("F3", "files"), ("q", "quit")),
+    ),
+}
+
+
+def status_legend_text(tab_id: str) -> str:
+    """The plain-text key legend for a tab, as the user reads it."""
+    groups = STATUS_LEGENDS.get(tab_id, STATUS_LEGENDS["jobs"])
+    return "   |   ".join(
+        "  ".join(f"{key} {meaning}" for key, meaning in group) for group in groups
     )
 
+
+def _status_legend_markup(tab_id: str) -> str:
+    """The same legend with the keys picked out in amber."""
+    groups = STATUS_LEGENDS.get(tab_id, STATUS_LEGENDS["jobs"])
+    return "[#3a3020]   |   [/]".join(
+        "  ".join(
+            f"[bold #e8a020]{key}[/][#7a6a50] {meaning}[/]" for key, meaning in group
+        )
+        for group in groups
+    )
+
+
+class StatusBar(Static):
+    """Bottom row: a key legend that follows the active tab."""
+
+    DEFAULT_TAB = "jobs"
+
     def __init__(self) -> None:
-        super().__init__(self.DEFAULT_TEXT)
+        self._tab_id = self.DEFAULT_TAB
+        super().__init__(_status_legend_markup(self.DEFAULT_TAB))
+
+    @property
+    def legend(self) -> str:
+        """The plain text of the legend currently on screen."""
+        return status_legend_text(self._tab_id)
+
+    def show_tab(self, tab_id: str) -> None:
+        """Swap in the legend for *tab_id*; unknown ids fall back to jobs."""
+        self._tab_id = tab_id if tab_id in STATUS_LEGENDS else self.DEFAULT_TAB
+        self.update(_status_legend_markup(self._tab_id))
 
 
 HINT_DEFAULT = "Tab moves between fields.  F1 jobs  F2 submit  F3 files  F9 config  Q quit"
@@ -100,7 +153,7 @@ HINTS: dict[str, str] = {
     "btn-submit":         "Upload the project and submit the script with sbatch.",
     "btn-edit-script":    "Open the generated script in your editor before submitting.",
     "btn-save":           "Save the generated script to a file.",
-    "btn-clear":          "Clear the description and the generated script.",
+    "btn-clear":          "Clear the description and the generated script only. Every other field stays.",
     "script-scroll":      "The generated script. PageUp and PageDown scroll it.",
     # F9 CONFIG
     "config-scroll":      "Your loaded configuration. PageUp and PageDown scroll it.",
@@ -875,6 +928,20 @@ Button:hover { background: $amberLo; }
                 hint_bar.show_hint(HINTS[node_id])
                 return
         hint_bar.show_hint(HINT_DEFAULT)
+
+    # ── Status bar ────────────────────────────────────────────────────────────
+
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        """Show the key legend for whichever screen is now in front."""
+        pane_id = getattr(event.pane, "id", None)
+        if pane_id is None:
+            return
+        try:
+            self.query_one(StatusBar).show_tab(pane_id)
+        except NoMatches:
+            pass
 
     # ── Quit ──────────────────────────────────────────────────────────────────
 

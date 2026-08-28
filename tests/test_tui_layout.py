@@ -244,6 +244,34 @@ class TestJobsScreen:
                     assert on_screen(app, button), f"{button} is clipped"
 
     @pytest.mark.asyncio
+    async def test_status_bar_legend_follows_the_active_tab(self, tmp_path: Path):
+        """WP4: the bottom row lists the keys that work on the screen in front."""
+        app = build_app(tmp_path)
+        with offline():
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                from clusterpilot.tui.app import StatusBar
+
+                bar = app.query_one(StatusBar)
+                await pilot.press("f1")
+                await pilot.pause()
+                assert bar.legend == (
+                    "r rsync  k kill  t tail  l log  c clean remote  d forget"
+                    "   |   F2 submit  F3 files  F9 config  q quit"
+                )
+                await pilot.press("f2")
+                await pilot.pause()
+                assert bar.legend == (
+                    "Tab next field  Enter in a picker opens it"
+                    "   |   F1 jobs  F3 files  F9 config  q quit"
+                )
+                await pilot.press("f9")
+                await pilot.pause()
+                assert bar.legend == (
+                    "PgUp PgDn scroll  Enter on EDIT CONFIG opens $EDITOR"
+                    "   |   F1 jobs  F2 submit  F3 files  q quit"
+                )
+
+    @pytest.mark.asyncio
     async def test_hint_bar_sits_above_the_status_bar(self, tmp_path: Path):
         app = build_app(tmp_path)
         with offline():

@@ -25,3 +25,19 @@ class TestTerminalStatesInTui:
 
     def test_unknown_state_still_gets_the_fallback_glyph(self):
         assert "?" in _status_rich("SUSPENDED")
+
+
+class TestQueueRowShowsTheFullJobId:
+    def test_full_id_not_a_suffix(self):
+        from clusterpilot.db import JobRecord
+        from clusterpilot.tui.jobs import _format_list_item
+        job = JobRecord(
+            job_id="4137812", job_name="ising-sweep", cluster_name="narval",
+            host="h", user="u", account="a", partition="p", script_path="s",
+            working_dir="w", local_dir="l", walltime="01:00:00", status="RUNNING",
+        )
+        row = _format_list_item(job)
+        # The detail header prints the full id; the queue must match it, not
+        # show a six-digit suffix that reads as a different job.
+        assert "#4137812" in row
+        assert "#137812 " not in row
