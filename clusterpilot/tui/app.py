@@ -89,6 +89,7 @@ HINTS: dict[str, str] = {
     # F2 SUBMIT
     "cluster-select":     "Choose which configured cluster the job goes to.",
     "partition-select":   "Choose the partition. Left blank, the AI picks one from the probed list.",
+    "gpu-size-select":    "Whole GPU or a MIG slice. Blank asks for a whole GPU of the partition's type.",
     "project-dir-input":  "Local project root to upload. Blank for a self-contained single script.",
     "script-path-input":  "The script the job runs, relative to the project directory.",
     "extra-files-input":  "Extra files to upload, comma-separated, bypassing the exclude rules.",
@@ -369,6 +370,25 @@ SubmitView {
 }
 
 #partition-select:focus {
+    border: solid $amberDim;
+}
+
+/* Shown only once a probe reports GPU partitions (tui/submit.py). */
+#gpu-row {
+    display: none;
+    height: auto;
+    margin-bottom: 0;
+    layout: horizontal;
+}
+
+#gpu-size-select {
+    width: 1fr;
+    background: $bg3;
+    border: solid $border2;
+    color: $white;
+}
+
+#gpu-size-select:focus {
     border: solid $amberDim;
 }
 

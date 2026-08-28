@@ -429,6 +429,65 @@ class TestGpuCount:
         assert [f.line for f in validate._check_gpu_count(script)] == [2, 3]
 
 
+# ── GPU size ──────────────────────────────────────────────────────────────────
+
+class TestGpuSize:
+    """The GPU SIZE picked on F2 must survive into the emitted request.
+
+    A MIG slice and a whole card are different resources to SLURM: asking for
+    the wrong one gets the job hardware the user did not choose, so this check
+    blocks rather than warns.
+    """
+
+    def test_matching_slice_gives_no_finding(self):
+        script = _sbatch("--gres=gpu:a100_3g.20gb:1")
+        intent = SubmitIntent(gpu_size="a100_3g.20gb")
+        assert validate._check_gpu_size(script, intent) == []
+
+    def test_matching_whole_card_gives_no_finding(self):
+        script = _sbatch("--gres=gpu:a100:1")
+        assert validate._check_gpu_size(script, SubmitIntent(gpu_size="a100")) == []
+
+    def test_whole_card_where_a_slice_was_picked_blocks(self):
+        script = _sbatch("--gres=gpu:a100:1")
+        findings = validate._check_gpu_size(script, SubmitIntent(gpu_size="a100_3g.20gb"))
+        assert len(findings) == 1
+        assert findings[0].check == "gpu-size"
+        assert findings[0].severity is Severity.BLOCKING
+        assert "a100_3g.20gb" in findings[0].message
+        assert findings[0].line == 2
+
+    def test_typeless_request_blocks(self):
+        script = _sbatch("--gres=gpu:1")
+        findings = validate._check_gpu_size(script, SubmitIntent(gpu_size="a100"))
+        assert findings[0].check == "gpu-size"
+        assert "no GPU type" in findings[0].message
+
+    def test_gpus_form_is_checked_too(self):
+        script = _sbatch("--gpus=a100:1")
+        assert validate._check_gpu_size(script, SubmitIntent(gpu_size="a100")) == []
+        findings = validate._check_gpu_size(script, SubmitIntent(gpu_size="v100"))
+        assert findings[0].check == "gpu-size"
+
+    def test_no_picked_size_skips_the_check(self):
+        script = _sbatch("--gres=gpu:1")
+        assert validate._check_gpu_size(script, SubmitIntent()) == []
+
+    def test_a_cpu_script_has_nothing_to_check(self):
+        script = _sbatch("--time=01:00:00")
+        assert validate._check_gpu_size(script, SubmitIntent(gpu_size="a100")) == []
+
+    def test_the_check_runs_end_to_end(self, partitions):
+        script = _sbatch("--partition=stamps", "--time=01:00:00", "--gres=gpu:a100:1")
+        findings = validate_script(
+            script,
+            intent=SubmitIntent(partition_name="stamps", gpu_size="a100_3g.20gb"),
+            partitions=partitions,
+        )
+        assert [f.check for f in findings] == ["gpu-size"]
+        assert blocking(findings) is True
+
+
 # ── walltime against the probed partition limit ───────────────────────────────
 
 class TestWalltimeParsing:

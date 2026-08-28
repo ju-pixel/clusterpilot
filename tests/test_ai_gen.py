@@ -8,7 +8,24 @@ import pytest
 
 from clusterpilot.cluster.probe import ClusterProbe, PartitionInfo
 from clusterpilot.config import ClusterProfile
-from clusterpilot.jobs.ai_gen import _build_system_prompt, _format_partitions
+from clusterpilot.jobs.ai_gen import (
+    _build_system_prompt,
+    _format_partitions,
+    _one_gpu_of,
+)
+
+
+def gpu_block(prompt: str) -> str:
+    """The GPU REQUIRED section only, "" when the prompt has none.
+
+    The partition table lists every GRES the probe found, so a bare
+    ``"gpu:a100:4" in prompt`` says nothing about the directive the AI is told
+    to emit. These tests read the block itself.
+    """
+    marker = "═══ GPU REQUIRED ═══"
+    if marker not in prompt:
+        return ""
+    return prompt.split(marker, 1)[1].split("═══", 1)[0]
 
 
 @pytest.fixture
@@ -235,13 +252,14 @@ class TestDracPartitionHandling:
         assert "DO NOT emit" in prompt
         assert "--gres" in prompt
 
-    def test_picked_partition_becomes_gres_hint(self, narval_probe, narval_profile):
+    def test_picked_partition_becomes_gpu_type_hint(self, narval_probe, narval_profile):
         prompt = _build_system_prompt(
             narval_probe, narval_profile, partition="gpubase_bynode_b3"
         )
-        # The GRES of gpubase_bynode_b3 (gpu:a100:4) must be surfaced as the
-        # hint so the AI matches it in the --gres directive.
-        assert "gpu:a100:4" in prompt
+        # The GPU TYPE of gpubase_bynode_b3 is the hint. Its count (4) is the
+        # node's whole inventory and must not be handed over as a target (#8).
+        assert "GPU type on this partition: a100" in prompt
+        assert "match this exactly" not in prompt
         assert "gpubase_bynode_b3" in prompt
 
     def test_walltime_ceiling_surfaced(self, narval_probe, narval_profile):
@@ -344,20 +362,28 @@ class TestGpuDirectiveBlock:
         assert "MUST emit" in prompt
         assert "--gres=" in prompt
 
-    def test_drac_uses_picked_partition_gres_as_default(self, narval_probe, narval_profile):
+    def test_drac_asks_for_one_gpu_of_the_partition_type(self, narval_probe, narval_profile):
         prompt = _build_system_prompt(
             narval_probe, narval_profile, partition="gpubase_bynode_b3",
             script_env=self._env(["CUDA"]),
         )
-        # Picked partition's gres ("gpu:a100:4") seeds the default.
-        assert "gpu:a100:4" in prompt
+        # The picked partition's gres is "gpu:a100:4": the type seeds the
+        # default, the node's inventory count does not (#8).
+        block = gpu_block(prompt)
+        assert "--gres=gpu:a100:1" in block
+        assert "gpu:a100:4" not in block
 
-    def test_drac_no_picked_partition_falls_back_to_a100(self, narval_probe, narval_profile):
+    def test_drac_no_picked_partition_falls_back_to_one_untyped_gpu(
+        self, narval_probe, narval_profile
+    ):
         prompt = _build_system_prompt(
             narval_probe, narval_profile, partition="",
             script_env=self._env(["CUDA"]),
         )
-        assert "gpu:a100:1" in prompt
+        # No partition means no known type, so no model may be invented (#28).
+        block = gpu_block(prompt)
+        assert "--gres=gpu:1" in block
+        assert "a100" not in block
 
     def test_python_torch_also_triggers(self, narval_probe, narval_profile):
         from clusterpilot.jobs.env_detect import ScriptEnvironment
@@ -449,13 +475,13 @@ class TestGrexGresTypeless:
         # It must still mention that type subspec exists for explicit user request.
         assert "gpu:v100:N" in prompt or "type subspec" in prompt
 
-    def test_drac_still_uses_partition_gres(self, narval_probe, narval_profile):
-        """DRAC's behaviour is unchanged: the picked partition's GRES (typed) is the default."""
+    def test_drac_still_uses_the_partition_gpu_type(self, narval_probe, narval_profile):
+        """DRAC keeps the typed form: one GPU of the picked partition's type."""
         prompt = _build_system_prompt(
             narval_probe, narval_profile, partition="gpubase_bynode_b3",
             script_env=self._cuda_env(),
         )
-        assert "gpu:a100:4" in prompt
+        assert "--gres=gpu:a100:1" in gpu_block(prompt)
         # DRAC should NOT get the Grex-specific note.
         assert "type-less form" not in prompt
 
@@ -467,6 +493,111 @@ class TestGrexGresTypeless:
         )
         # Generic falls back to the placeholder syntax (rule 2 example).
         assert "gpu:<type>:<count>" in prompt
+
+
+class TestOneGpuOf:
+    """One GPU of a partition's type, never the node's whole inventory (#8)."""
+
+    def test_whole_card_keeps_its_type(self):
+        assert _one_gpu_of("gpu:a100:4") == "gpu:a100:1"
+
+    def test_mig_slice_keeps_its_type(self):
+        assert _one_gpu_of("gpu:a100_3g.20gb:3") == "gpu:a100_3g.20gb:1"
+
+    def test_empty_gres_stays_empty(self):
+        assert _one_gpu_of("") == ""
+
+    def test_non_gpu_gres_stays_empty(self):
+        assert _one_gpu_of("mps:100") == ""
+
+    def test_typeless_gres_drops_the_count(self):
+        assert _one_gpu_of("gpu:4") == "gpu:1"
+
+
+class TestGpuSizeChoice:
+    """The GPU SIZE picker on F2 is a hard constraint on every cluster type.
+
+    A MIG slice ("a100_3g.20gb") and a whole card ("a100") are different
+    resources to SLURM, so the choice has to reach the directive verbatim.
+    """
+
+    def _cuda_env(self):
+        from clusterpilot.jobs.env_detect import ScriptEnvironment
+        return ScriptEnvironment(
+            language="julia",
+            has_manifest=True,
+            third_party_imports=["CUDA"],
+            driver_extension=".jl",
+        )
+
+    @pytest.fixture
+    def grex_typed_profile(self):
+        return ClusterProfile(
+            name="grex",
+            host="yak.hpc.umanitoba.ca",
+            user="juliaf",
+            account="def-stamps",
+            scratch="$HOME/clusterpilot_jobs",
+            cluster_type="grex",
+        )
+
+    def test_drac_slice_choice_wins_over_the_partition_type(
+        self, narval_probe, narval_profile
+    ):
+        prompt = _build_system_prompt(
+            narval_probe, narval_profile, partition="gpubase_bynode_b3",
+            gpu_size="a100_3g.20gb",
+            script_env=self._cuda_env(),
+        )
+        block = gpu_block(prompt)
+        assert "--gres=gpu:a100_3g.20gb:1" in block
+        assert "gpu:a100:4" not in block
+        assert "--gres=gpu:a100:1" not in block
+
+    def test_the_choice_is_quoted_back_as_the_user_s_own(
+        self, narval_probe, narval_profile
+    ):
+        prompt = _build_system_prompt(
+            narval_probe, narval_profile, partition="gpubase_bynode_b3",
+            gpu_size="a100_3g.20gb",
+            script_env=self._cuda_env(),
+        )
+        assert "chose `a100_3g.20gb` on the submit screen" in gpu_block(prompt)
+
+    def test_grex_honours_the_choice(self, grex_probe, grex_typed_profile):
+        prompt = _build_system_prompt(
+            grex_probe, grex_typed_profile, partition="lgpu",
+            gpu_size="l40s",
+            script_env=self._cuda_env(),
+        )
+        assert "--gres=gpu:l40s:1" in gpu_block(prompt)
+
+    def test_grex_without_a_choice_stays_type_less(self, grex_probe, grex_typed_profile):
+        prompt = _build_system_prompt(
+            grex_probe, grex_typed_profile, partition="lgpu",
+            script_env=self._cuda_env(),
+        )
+        block = gpu_block(prompt)
+        assert "--gres=gpu:1" in block
+        assert "--gres=gpu:l40s:1" not in block
+
+    def test_generic_honours_the_choice(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(
+            grex_probe, grex_profile, partition="stamps",
+            gpu_size="v100",
+            script_env=self._cuda_env(),
+        )
+        block = gpu_block(prompt)
+        assert "--gres=gpu:v100:1" in block
+        assert "gpu:<type>:<count>" not in block
+
+    def test_no_gpu_import_no_block_at_all(self, narval_probe, narval_profile):
+        """A GPU size on a CPU job changes nothing: there is no GPU block."""
+        prompt = _build_system_prompt(
+            narval_probe, narval_profile, partition="gpubase_bynode_b3",
+            gpu_size="a100",
+        )
+        assert gpu_block(prompt) == ""
 
 
 class TestDracCudacoreDirective:

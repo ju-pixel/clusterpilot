@@ -11,12 +11,15 @@ the PyPI update check and the cluster probe are all stubbed.
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from textual.widgets import Select
 
+from clusterpilot.cluster.probe import ClusterProbe, PartitionInfo
 from clusterpilot.config import ClusterProfile, Config, Defaults
 from clusterpilot.tui.app import ClusterPilotApp
 
@@ -41,19 +44,63 @@ def stub_config() -> Config:
 
 
 @contextlib.contextmanager
-def offline() -> Iterator[None]:
-    """Stub out everything that would otherwise reach the network."""
+def offline(probe: ClusterProbe | None = None) -> Iterator[None]:
+    """Stub out everything that would otherwise reach the network.
+
+    With no *probe*, the cluster probe raises as it would with no connection.
+    Pass one to exercise the widgets that are built from probed facts.
+    """
     daemon = MagicMock()
     daemon.run_forever = AsyncMock()
+    probe_stub = (
+        AsyncMock(side_effect=RuntimeError("offline"))
+        if probe is None
+        else AsyncMock(return_value=probe)
+    )
     with patch("clusterpilot.tui.app.PollDaemon", return_value=daemon), \
             patch("clusterpilot.tui.app.is_connected", return_value=False), \
             patch("clusterpilot.update.check_for_update", new=AsyncMock(return_value=None)), \
-            patch(
-                "clusterpilot.tui.submit.probe_cluster",
-                new=AsyncMock(side_effect=RuntimeError("offline")),
-            ), \
+            patch("clusterpilot.tui.submit.probe_cluster", new=probe_stub), \
             patch("clusterpilot.tui.submit.fetch_availability", new=AsyncMock(return_value={})):
         yield
+
+
+def narval_probe() -> ClusterProbe:
+    """A cut-down Narval probe: MIG slices arrive as extra partition rows."""
+    return ClusterProbe(
+        cluster_name="testcluster",
+        probed_at=time.time(),
+        partitions=[
+            PartitionInfo("gpubase_bygpu_b1", "3:00:00", "gpu:a100:4", 141, False),
+            PartitionInfo("gpubase_bygpu_b1", "3:00:00", "gpu:a100_3g.20gb:4", 141, False),
+            PartitionInfo("gpubase_bygpu_b1", "3:00:00", "gpu:a100_4g.20gb:1", 141, False),
+            PartitionInfo("cpubase_bycore_b1", "3:00:00", "", 20, True),
+        ],
+        julia_versions=["julia/1.11.3"],
+        accounts=["def-test"],
+        account_max_wall={"def-test": ""},
+    )
+
+
+def cpu_only_probe() -> ClusterProbe:
+    return ClusterProbe(
+        cluster_name="testcluster",
+        probed_at=time.time(),
+        partitions=[PartitionInfo("skylake", "7-00:00:00", "", 10, True)],
+        julia_versions=["julia/1.11.3"],
+        accounts=["def-test"],
+        account_max_wall={"def-test": ""},
+    )
+
+
+def select_values(app: ClusterPilotApp, selector: str) -> list[str]:
+    """The non-blank option values of a Select, in the order they are shown.
+
+    Select.NULL is the empty sentinel on Textual 8.x; Select.BLANK resolves to
+    an unrelated Widget class variable and would not filter anything (#42).
+    """
+    select = app.query_one(selector, Select)
+    return [str(value) for _, value in select._options if value is not Select.NULL]
 
 
 def build_app(tmp_path: Path) -> ClusterPilotApp:
@@ -121,6 +168,54 @@ class TestSubmitScreen:
                 await pilot.press("f2")
                 await pilot.pause()
                 assert app.query_one("#field-help").region.height == 3
+
+
+class TestGpuSizeRow:
+    """WP3: the GPU SIZE picker is built from the probe, never from a table
+    of GPU names in the code. Narval reports each MIG slice as its own
+    partition row, so a whole card and its slices arrive side by side.
+    """
+
+    @pytest.mark.asyncio
+    async def test_whole_cards_are_listed_before_slices(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline(narval_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+                assert select_values(app, "#gpu-size-select") == [
+                    "a100", "a100_3g.20gb", "a100_4g.20gb",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_the_row_is_visible_on_a_gpu_cluster(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline(narval_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+                assert on_screen(app, "#gpu-size-select")
+
+    @pytest.mark.asyncio
+    async def test_the_row_is_hidden_on_a_cpu_only_cluster(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline(cpu_only_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+                assert app.query_one("#gpu-row").display is False
+
+    @pytest.mark.asyncio
+    async def test_the_row_stays_hidden_with_no_probe(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline():
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                assert app.query_one("#gpu-row").display is False
 
 
 class TestJobsScreen:

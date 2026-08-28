@@ -30,6 +30,7 @@ Checks implemented, by slug:
 ``array-mismatch``          the emitted ``--array`` disagrees with the intent
 ``array-missing``           an array was asked for but none was emitted
 ``gpu-count``               a multi-GPU request on a single-task job
+``gpu-size``                a GPU request that does not name the picked size
 ``walltime-over-partition`` ``--time`` exceeds the probed partition limit
 ``driver-not-uploaded``     the script runs a file the upload set omits
 ``truncated``               the generation looks cut off part way through
@@ -107,6 +108,9 @@ class SubmitIntent:
     ``partition_name``      the partition the user picked, never one we chose
     ``requested_walltime``  the walltime the user asked for, for the caller's
                             intended-against-emitted diff
+    ``gpu_size``            the GPU size the user picked, a whole card
+                            ("a100") or a MIG slice ("a100_3g.20gb"), "" when
+                            the choice was left blank
     """
 
     array_spec: str = ""
@@ -115,6 +119,7 @@ class SubmitIntent:
     upload_paths: Sequence[str] = ()
     partition_name: str = ""
     requested_walltime: str = ""
+    gpu_size: str = ""
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -140,6 +145,7 @@ def validate_script(
     findings.extend(_check_miscased_directives(script))
     findings.extend(_check_array(script, intent))
     findings.extend(_check_gpu_count(script))
+    findings.extend(_check_gpu_size(script, intent))
     findings.extend(_check_walltime(script, intent, partitions))
     findings.extend(_check_driver_uploaded(script, intent))
     findings.extend(_check_truncated(script))
@@ -568,6 +574,62 @@ def _check_gpu_count(script: str) -> list[Finding]:
                     f"'{text}' asks for {count} GPUs on a single-task job. That is often "
                     "the partition's whole-node inventory copied into a per-task "
                     "request. Ignore this if the job really does use them all."
+                ),
+                line=number,
+            )
+        )
+    return findings
+
+
+def _request_gpu_types(text: str) -> list[str]:
+    """The GPU types named by one request, one entry per comma-separated item.
+
+    ``"--gres=gpu:a100:1"`` gives ``["a100"]``. An item that names a count but
+    no type, such as ``"--gres=gpu:1"``, gives an empty string in its place, so
+    the caller can tell a type-less request from a mismatched one.
+    """
+    is_gres = text.startswith("--gres=")
+    _, _, value = text.partition("=")
+    types: list[str] = []
+    for item in value.split(","):
+        fields = item.split(":")
+        if is_gres:
+            if not fields or fields[0] != "gpu":
+                continue
+            fields = fields[1:]
+        if len(fields) >= 2:
+            types.append(fields[0])
+        elif len(fields) == 1 and fields[0] and not fields[0].isdigit():
+            types.append(fields[0])
+        else:
+            types.append("")
+    return types
+
+
+def _check_gpu_size(script: str, intent: SubmitIntent) -> list[Finding]:
+    """Check every GPU request names the GPU size the user picked.
+
+    A MIG slice and a whole card are different resources to SLURM, so a
+    mismatch, or a type-less request where a size was picked, gets the job the
+    wrong hardware. Skipped entirely when the picker was left blank.
+    """
+    wanted = intent.gpu_size.strip()
+    if not wanted:
+        return []
+    findings: list[Finding] = []
+    for number, _count, text in _gpu_requests(script):
+        types = _request_gpu_types(text)
+        if types and all(named == wanted for named in types):
+            continue
+        got = ", ".join(named for named in types if named) or "no GPU type"
+        findings.append(
+            Finding(
+                check="gpu-size",
+                severity=Severity.BLOCKING,
+                message=(
+                    f"'{text}' names {got}, but you picked '{wanted}' on the submit "
+                    f"screen. A whole card and a MIG slice are different resources: "
+                    f"SLURM will not substitute one for the other."
                 ),
                 line=number,
             )

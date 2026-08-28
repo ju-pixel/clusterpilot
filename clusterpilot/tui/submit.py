@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -266,6 +267,23 @@ def _sanitise_script(script: str, job_name: str, is_array: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _gres_gpu_type(gres: str) -> str:
+    """The GPU type in a partition GRES, e.g. "a100" from "gpu:a100:4".
+
+    Returns "" for a type-less or non-GPU GRES. A type containing "_" is a MIG
+    slice ("a100_3g.20gb"); the probe lists each slice as its own partition row.
+    """
+    fields = gres.split(":")
+    if len(fields) >= 3 and fields[0] == "gpu":
+        return fields[1]
+    return ""
+
+
+def _sorted_gpu_types(types: Iterable[str]) -> list[str]:
+    """Whole cards first, then MIG slices, each group alphabetical."""
+    return sorted(set(types), key=lambda t: ("_" in t, t))
+
+
 def _resolve_table_path(project_dir_str: str, table_raw: str) -> Path:
     """Resolve the PARAM TABLE field to a local path.
 
@@ -299,6 +317,17 @@ class SubmitView(Static):
                         [],
                         prompt="Select a partition…",
                         id="partition-select",
+                    )
+
+                with Horizontal(id="gpu-row"):
+                    yield Label("GPU SIZE", classes="field-label")
+                    yield Select(
+                        [],
+                        allow_blank=True,
+                        # Short enough not to wrap the row at 100 columns; the
+                        # help line carries the rest.
+                        prompt="(a whole GPU)",
+                        id="gpu-size-select",
                     )
 
                 with Horizontal(id="project-dir-row"):
@@ -371,6 +400,11 @@ class SubmitView(Static):
         self._generated_script = ""
         self._last_script_env: ScriptEnvironment | None = None
         self._partition_availability: dict[str, PartitionAvailability] = {}
+        # GPU types the probe reports, per partition name and across the whole
+        # cluster. The probe lists MIG instances as extra rows for the same
+        # partition, so one partition can offer several types.
+        self._gpu_types_by_partition: dict[str, list[str]] = {}
+        self._all_gpu_types: list[str] = []
         self._init_done = False
         self._populate_cluster_select()
         # Probe immediately in case a ControlMaster socket is already open
@@ -453,6 +487,10 @@ class SubmitView(Static):
     @on(Select.Changed, "#partition-select")
     def on_partition_changed(self, event: Select.Changed) -> None:
         """Warn the user about partition state or saturation on selection."""
+        # Select.NULL, not Select.BLANK, is the empty sentinel on Textual 8.x
+        # (see #42): the GPU sizes must follow the picker either way.
+        chosen = "" if event.value is Select.NULL else str(event.value)
+        self._rebuild_gpu_sizes(chosen)
         if event.value is Select.BLANK:
             return
         name = str(event.value)
@@ -532,6 +570,45 @@ class SubmitView(Static):
         else:
             self.app.notify("No partitions found — check cluster connection.", severity="warning")
 
+        # GPU sizes come from the same probe: every gpu:<type>:<count> row,
+        # whole cards and MIG slices alike (see _rebuild_gpu_sizes).
+        by_partition: dict[str, list[str]] = {}
+        for p in probe.gpu_partitions():
+            gpu_type = _gres_gpu_type(p.gres)
+            if gpu_type and gpu_type not in by_partition.setdefault(p.name, []):
+                by_partition[p.name].append(gpu_type)
+        self._gpu_types_by_partition = by_partition
+        self._all_gpu_types = _sorted_gpu_types(
+            {t for types in by_partition.values() for t in types}
+        )
+        self._rebuild_gpu_sizes(
+            "" if select.value is Select.NULL else str(select.value)
+        )
+
+    def _rebuild_gpu_sizes(self, partition_name: str) -> None:
+        """Refill the GPU SIZE picker for *partition_name*, "" meaning any.
+
+        The row is hidden outright on a cluster whose probe reports no GPU
+        partitions, so a CPU-only site never sees a field it cannot use.
+        """
+        row = self.query_one("#gpu-row")
+        select = self.query_one("#gpu-size-select", Select)
+        if not self._all_gpu_types:
+            row.display = False
+            return
+        types = _sorted_gpu_types(self._gpu_types_by_partition.get(partition_name, []))
+        if not types:
+            # No partition picked, or one the probe has no GPU rows for: offer
+            # every type the cluster has rather than an empty picker.
+            types = self._all_gpu_types
+        row.display = True
+        select.set_options(
+            [
+                (f"{t}, slice" if "_" in t else f"{t}, whole GPU", t)
+                for t in types
+            ]
+        )
+
     # ── Generate ──────────────────────────────────────────────────────────────
 
     @on(Button.Pressed, "#btn-generate")
@@ -569,6 +646,14 @@ class SubmitView(Static):
             str(partition_select.value)
             if partition_select.value is not Select.BLANK
             else ""
+        )
+
+        # GPU size from the picker: a whole card or a MIG slice. Blank leaves
+        # the choice to the prompt's own default for this cluster type. The
+        # empty sentinel is Select.NULL on Textual 8.x, not Select.NULL (#42).
+        gpu_size_select = self.query_one("#gpu-size-select", Select)
+        gpu_size = (
+            "" if gpu_size_select.value is Select.NULL else str(gpu_size_select.value)
         )
 
         # Resolve driver script content for the AI.
@@ -712,6 +797,7 @@ class SubmitView(Static):
                 provider=provider,
                 api_base_url=api_base_url,
                 partition=partition,
+                gpu_size=gpu_size,
                 array_spec=array_spec,
                 script_content=script_content,
                 driver_script=driver_script,
@@ -766,6 +852,7 @@ class SubmitView(Static):
                 driver_rel=driver_script or "",
                 upload_paths=tuple(extra_files),
                 partition_name=partition or "",
+                gpu_size=gpu_size,
             ),
             partitions=probe.partitions,
         )
@@ -1075,6 +1162,11 @@ _HELP_PARTITION_DRAC = (
     "itself. Your choice is only a hint for GPU type and walltime.[/]"
 )
 
+_HELP_GPU_SIZE = (
+    "[#e8a020]GPU SIZE[/]  [#7a6a50]A whole card or a MIG slice. A slice queues "
+    "sooner but cannot span devices. Blank means a whole GPU.[/]"
+)
+
 _HELP_PROJECT_DIR = (
     "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional local project root, rsynced to "
     "the cluster minus the built-in excludes and .clusterpilotignore.[/]"
@@ -1109,6 +1201,7 @@ _HELP_DESCRIPTION = (
 _HELP_MAP: dict[str, str] = {
     "cluster-select":   _HELP_CLUSTER,
     "partition-select": _HELP_PARTITION,
+    "gpu-size-select":  _HELP_GPU_SIZE,
     "project-dir-input": _HELP_PROJECT_DIR,
     "script-path-input": _HELP_SCRIPT_PATH,
     "extra-files-input": _HELP_EXTRA_FILES,

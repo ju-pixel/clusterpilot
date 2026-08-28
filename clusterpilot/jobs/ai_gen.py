@@ -97,6 +97,7 @@ async def generate_script(
     provider: str = "anthropic",
     api_base_url: str = "",
     partition: str = "",
+    gpu_size: str = "",
     array_spec: str = "",
     script_content: str | None = None,
     driver_script: str | None = None,
@@ -117,6 +118,9 @@ async def generate_script(
         api_key:        Anthropic API key.
         partition:      Hard partition constraint from the picker. Empty means
                         the model chooses based on the description.
+        gpu_size:       GPU type picked on the submit screen, either a whole
+                        card ("a100") or a MIG slice ("a100_3g.20gb"). Empty
+                        means one whole GPU of the partition's own type.
         script_content: Contents of the user's local driver script (Julia, Python,
                         etc.). Included verbatim so the model can inspect imports
                         and infer required modules, GPU count, and walltime.
@@ -148,6 +152,7 @@ async def generate_script(
     system = _build_system_prompt(
         probe, profile,
         partition=partition,
+        gpu_size=gpu_size,
         array_spec=array_spec,
         params_table=params_table,
         script_content=script_content,
@@ -287,6 +292,7 @@ def _build_system_prompt(
     profile: ClusterProfile,
     *,
     partition: str = "",
+    gpu_size: str = "",
     array_spec: str = "",
     params_table: ParamsTable | None = None,
     script_content: str | None = None,
@@ -326,12 +332,26 @@ def _build_system_prompt(
         partition_directive_line = ""
         hint_block = ""
         if partition:
-            gres_hint = (
-                f"  - GRES to use: `{selected_partition_gres}` "
-                "(match this exactly in your --gres line)\n"
-                if selected_partition_gres
-                else "  - This partition is CPU-only — do not emit --gres.\n"
+            # The partition's GRES names the GPU type on those nodes, but its
+            # count is the node's whole inventory. Copying it wholesale asks
+            # for every card on the node (#8), so surface the type only.
+            partition_gpu_fields = selected_partition_gres.split(":")
+            partition_gpu_type = (
+                partition_gpu_fields[1] if len(partition_gpu_fields) >= 3 else ""
             )
+            if not selected_partition_gres:
+                gres_hint = "  - This partition is CPU-only: do not emit --gres.\n"
+            elif partition_gpu_type:
+                gres_hint = (
+                    f"  - GPU type on this partition: {partition_gpu_type}. "
+                    "Request the count the job needs, 1 unless the description "
+                    "says otherwise.\n"
+                )
+            else:
+                gres_hint = (
+                    "  - This partition has GPUs. Request the count the job "
+                    "needs, 1 unless the description says otherwise.\n"
+                )
             walltime_hint = (
                 f"  - Walltime ceiling: {selected_partition_max_time} "
                 "(your --time must not exceed this)\n"
@@ -476,8 +496,14 @@ Match module versions to what is available on this cluster.
     # `CUDA.device()` with "CUDA driver not functional" (Narval 2026-05-21).
     gpu_libs = _detect_gpu_libraries(script_env)
     if gpu_libs:
-        if is_drac:
-            gpu_default_gres = selected_partition_gres or "gpu:a100:1"
+        if gpu_size:
+            # The user chose a whole GPU or a slice on the submit screen;
+            # an explicit choice is honoured on every cluster type.
+            gpu_default_gres = f"gpu:{gpu_size}:1"
+        elif is_drac:
+            # One GPU of the partition's type; never the node's full inventory
+            # (#8) and never a hardcoded model (#28).
+            gpu_default_gres = _one_gpu_of(selected_partition_gres) or "gpu:1"
         elif is_grex:
             # Grex's submit_filter.lua rejects --gres=gpu:<type>:<count> on
             # some partitions (notably lgpu) — it expands the partition list to
@@ -509,6 +535,13 @@ Match module versions to what is available on this cluster.
             if is_drac and "CUDA" in gpu_libs
             else ""
         )
+        gpu_size_note = (
+            f" The user chose `{gpu_size}` on the submit screen: emit exactly "
+            f"`--gres=gpu:{gpu_size}:1`, or `:N` only if the description asks "
+            f"for N GPUs."
+            if gpu_size
+            else ""
+        )
         gpu_directive_block = (
             f"\n═══ GPU REQUIRED ═══\n\n"
             f"The driver script imports {', '.join(gpu_libs)}, which requires "
@@ -516,7 +549,8 @@ Match module versions to what is available on this cluster.
             f"in the directive block. Omitting --gres routes the job to a CPU "
             f"node and the runtime will crash with 'CUDA driver not functional' "
             f"or equivalent. If the user's description specifies a GPU count or "
-            f"type, use that; otherwise use the GRES shown above.{grex_type_note}{drac_cuda_note}\n"
+            f"type, use that; otherwise use the GRES shown above."
+            f"{gpu_size_note}{grex_type_note}{drac_cuda_note}\n"
         )
     else:
         gpu_directive_block = ""
@@ -813,6 +847,24 @@ def _detect_gpu_libraries(env: ScriptEnvironment | None) -> list[str]:
     if env is None or not env.third_party_imports:
         return []
     return sorted(set(env.third_party_imports) & _GPU_LIBRARIES)
+
+
+def _one_gpu_of(gres: str) -> str:
+    """One GPU of the type named by a partition GRES string.
+
+    ``"gpu:a100:4"`` becomes ``"gpu:a100:1"`` and ``"gpu:a100_3g.20gb:3"``
+    becomes ``"gpu:a100_3g.20gb:1"``: the type is kept, the node's whole
+    inventory is not. A GRES that names no GPU, and the empty string, both
+    return the empty string so the caller can fall back.
+    """
+    fields = gres.split(":")
+    if not gres or fields[0] != "gpu":
+        return ""
+    if len(fields) >= 3:
+        return f"gpu:{fields[1]}:1"
+    if len(fields) == 2 and not fields[1].isdigit():
+        return f"gpu:{fields[1]}:1"
+    return "gpu:1"
 
 
 def _format_partitions(probe: ClusterProbe) -> str:
