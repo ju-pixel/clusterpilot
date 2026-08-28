@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import LandingPage from '../LandingPage'
 import BlogPage from './blog/BlogPage'
+import DocsPage from './docs/DocsPage'
 import Support from './Support'
 import PrivacyPolicy from './legal/PrivacyPolicy'
 import TermsOfService from './legal/TermsOfService'
@@ -17,6 +18,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <Route path="/" element={<LandingPage />} />
         <Route path="/blog" element={<BlogPage />} />
         <Route path="/blog/:slug" element={<BlogPage />} />
+        <Route path="/docs" element={<DocsPage />} />
+        <Route path="/docs/:slug" element={<DocsPage />} />
         <Route path="/support" element={<Support />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/terms" element={<TermsOfService />} />

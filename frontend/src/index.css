@@ -139,12 +139,50 @@ body {
 /* CSS hover rather than JS handlers, so the effect survives static prerendering. */
 .blog-list-row:hover { opacity: 0.7; }
 
+/* ─── two-column layout (sidebar + content), used by /docs ─────────────────── */
+.cp-side-layout  { display: flex; gap: 56px; max-width: 1200px; margin: 0 auto; padding: 56px 48px 96px; align-items: flex-start; }
+.cp-sidebar      { position: sticky; top: 88px; width: 260px; flex-shrink: 0; max-height: calc(100vh - 120px); overflow-y: auto; }
+.cp-side-content { flex: 1; min-width: 0; max-width: 760px; }
+
+.cp-side-link       { background: transparent; }
+.cp-side-link:hover { background: #1D1913; }
+
+@media (max-width: 860px) {
+  .cp-side-layout  { flex-direction: column; gap: 32px; padding: 32px 24px 72px; }
+  .cp-sidebar      { position: static; width: auto; max-height: none; overflow: visible; }
+  .cp-side-content { max-width: 100%; }
+}
+
 /* ─── blog prose ──────────────────────────────────────────────────────────── */
 .cp-prose { font-size: 19px; line-height: 1.8; color: #C9BEA9; }
 .cp-prose p  { margin-bottom: 26px; }
 .cp-prose h2 { font-size: 27px; font-weight: 700; letter-spacing: -0.4px; color: #F2EBDD; margin: 52px 0 18px; }
+.cp-prose h3 { font-size: 21px; font-weight: 700; letter-spacing: -0.2px; color: #F2EBDD; margin: 38px 0 14px; }
+.cp-prose h4 { font-size: 18px; font-weight: 700; color: #F2EBDD; margin: 30px 0 12px; }
+.cp-prose a  { color: #FFC46B; text-decoration: none; }
+.cp-prose a:hover { text-decoration: underline; }
 .cp-prose ul { padding-left: 24px; margin-bottom: 26px; }
+.cp-prose ol { padding-left: 24px; margin-bottom: 26px; }
 .cp-prose li { margin-bottom: 8px; }
+.cp-prose blockquote {
+  border-left: 3px solid #3A332A;
+  padding: 2px 0 2px 20px;
+  margin-bottom: 26px;
+  color: #9A8F7C;
+}
+/* A wide table has to scroll inside itself: there is no wrapper element to hang
+   overflow on, because the HTML comes straight from marked. */
+.cp-prose table {
+  display: block;
+  overflow-x: auto;
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 26px;
+  font-size: 17px;
+}
+.cp-prose th, .cp-prose td { border: 1px solid #3A332A; padding: 10px 14px; text-align: left; }
+.cp-prose th { background: #1D1913; color: #F2EBDD; font-weight: 700; }
+.cp-prose img { max-width: 100%; }
 .cp-prose code {
   background: #26211A;
   padding: 2px 7px;

@@ -119,6 +119,7 @@ function Nav() {
           <a href="#pricing"      style={linkStyle}>Pricing</a>
           <a href="https://clusterpilot.featurebase.app" target="_blank" rel="noreferrer" style={linkStyle}>Roadmap</a>
           <a href="/blog"         style={linkStyle}>Blog</a>
+          <a href="/docs"         style={linkStyle}>Docs</a>
           <a href="/support"      style={linkStyle}>Support</a>
         </div>
 
@@ -155,6 +156,7 @@ function Nav() {
         <a href="#pricing"      onClick={() => setMenuOpen(false)} style={mobileLink}>Pricing</a>
         <a href="https://clusterpilot.featurebase.app" target="_blank" rel="noreferrer" style={mobileLink}>Roadmap</a>
         <a href="/blog"         onClick={() => setMenuOpen(false)} style={mobileLink}>Blog</a>
+        <a href="/docs"         onClick={() => setMenuOpen(false)} style={mobileLink}>Docs</a>
         <a href="/support"      onClick={() => setMenuOpen(false)} style={mobileLink}>Support</a>
         <div style={{ paddingTop: 12 }}>
           <a href="https://app.clusterpilot.sh" target="_blank" rel="noreferrer">
@@ -808,6 +810,7 @@ function Footer() {
               ['GitHub', 'https://github.com/ju-pixel/clusterpilot'],
               ['PyPI', 'https://pypi.org/project/clusterpilot/'],
               ['Blog', '/blog'],
+              ['Docs', '/docs'],
               ['Roadmap', 'https://clusterpilot.featurebase.app'],
               ['Support', '/support'],
               ['juliafrank.net', 'https://juliafrank.net'],

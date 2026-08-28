@@ -1,11 +1,11 @@
-// ─── postbuild: prerender the blog + generate sitemap and RSS ───────────────────
+// ─── postbuild: prerender the blog + docs, generate sitemap and RSS ────────────
 // Runs after `vite build` (client) and `vite build --ssr` (SSR bundle). It turns
-// the blog routes into standalone static HTML documents with real meta tags, and
-// regenerates dist/sitemap.xml and dist/rss.xml. No JavaScript bundle is injected
-// into the blog pages: they are plain, fully-rendered documents.
+// the blog and docs routes into standalone static HTML documents with real meta
+// tags, and regenerates dist/sitemap.xml and dist/rss.xml. No JavaScript bundle is
+// injected into these pages: they are plain, fully-rendered documents.
 //
-// Zero-posts case is handled: /blog is still emitted, the sitemap still lists the
-// static routes, and a valid (item-less) RSS channel is written.
+// Zero-content case is handled: /blog and /docs are still emitted, the sitemap
+// still lists the static routes, and a valid (item-less) RSS channel is written.
 
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises'
 import path from 'node:path'
@@ -23,6 +23,7 @@ const STATIC_ROUTES = [
   // File-backed routes carry a trailing slash (Netlify 301s the slash-less
   // form to the directory); SPA catch-all routes stay slash-less.
   { loc: '/blog/', priority: '0.7', changefreq: 'weekly' },
+  { loc: '/docs/', priority: '0.7', changefreq: 'weekly' },
   { loc: '/support', priority: '0.5', changefreq: 'monthly' },
   { loc: '/privacy', priority: '0.3', changefreq: 'yearly' },
   { loc: '/terms', priority: '0.3', changefreq: 'yearly' },
@@ -100,15 +101,18 @@ ${styleLinks.map(l => '    ' + l).join('\n')}
 `
 }
 
-// Map a URL to its output file path under dist/.
+// Map a content URL to its output file path under dist/. Section index pages
+// (/blog, /docs) become <section>/index.html; everything else is
+// <section>/<slug>/index.html.
 function outputPathFor(url) {
-  if (url === '/blog') return path.join(dist, 'blog', 'index.html')
-  const slug = url.replace(/^\/blog\//, '').replace(/\/$/, '')
-  return path.join(dist, 'blog', slug, 'index.html')
+  const clean = url.replace(/\/$/, '')
+  const [, section, slug] = clean.split('/')
+  if (!slug) return path.join(dist, section, 'index.html')
+  return path.join(dist, section, slug, 'index.html')
 }
 
 // ─── sitemap and RSS ──────────────────────────────────────────────────────────────
-function buildSitemap(postUrls) {
+function buildSitemap(postUrls, docUrls) {
   const staticEntries = STATIC_ROUTES.map(
     r => `  <url>
     <loc>${SITE}${r.loc}</loc>
@@ -124,9 +128,17 @@ function buildSitemap(postUrls) {
     <priority>0.6</priority>
   </url>`,
   )
+  // Docs carry no publication date, so they get no <lastmod>.
+  const docEntries = docUrls.map(
+    ({ slug }) => `  <url>
+    <loc>${SITE}/docs/${escapeXml(slug)}/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>`,
+  )
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${[...staticEntries, ...postEntries].join('\n')}
+${[...staticEntries, ...postEntries, ...docEntries].join('\n')}
 </urlset>
 `
 }
@@ -165,7 +177,7 @@ ${rssItems}
 // ─── main ─────────────────────────────────────────────────────────────────────────
 async function main() {
   const ssrEntry = await resolveSsrEntry()
-  const { render, urls, postsMeta } = await import(pathToFileURL(ssrEntry).href)
+  const { render, urls, postsMeta, docsMeta = [] } = await import(pathToFileURL(ssrEntry).href)
 
   const indexHtml = await readFile(path.join(dist, 'index.html'), 'utf8')
   const styleLinks = extractHeadLinks(indexHtml)
@@ -183,10 +195,13 @@ async function main() {
     console.log(`postbuild: wrote ${path.relative(dist, outPath)}`)
   }
 
-  // sitemap and RSS from the loader's real post metadata (zero-posts safe).
-  await writeFile(path.join(dist, 'sitemap.xml'), buildSitemap(postsMeta), 'utf8')
+  // sitemap (blog + docs) and RSS (blog only) from the loaders' real metadata.
+  // Zero-content safe: both files are still written with just the static routes.
+  await writeFile(path.join(dist, 'sitemap.xml'), buildSitemap(postsMeta, docsMeta), 'utf8')
   await writeFile(path.join(dist, 'rss.xml'), buildRss(postsMeta), 'utf8')
-  console.log(`postbuild: wrote sitemap.xml and rss.xml (${postsMeta.length} post(s))`)
+  console.log(
+    `postbuild: wrote sitemap.xml (${postsMeta.length} post(s) + ${docsMeta.length} doc(s)) and rss.xml (${postsMeta.length} post(s))`,
+  )
 }
 
 main().catch(err => {

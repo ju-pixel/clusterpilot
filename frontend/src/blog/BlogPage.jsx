@@ -27,6 +27,7 @@ function Nav() {
           <a href="/#features"     style={{ color: T.muted, textDecoration: 'none' }}>features</a>
           <a href="/#pricing"      style={{ color: T.muted, textDecoration: 'none' }}>pricing</a>
           <a href="/blog"          style={{ color: T.text,  textDecoration: 'none' }}>blog</a>
+          <a href="/docs"          style={{ color: T.muted, textDecoration: 'none' }}>docs</a>
         </div>
         <a href="https://app.clusterpilot.sh" target="_blank" rel="noreferrer">
           <button style={{

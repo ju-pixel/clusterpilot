@@ -9,9 +9,18 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { StaticRouter, Routes, Route } from 'react-router-dom'
 import BlogPage from './blog/BlogPage'
+import DocsPage from './docs/DocsPage'
 import { posts, getPost } from './blog/posts'
+import { docs, getDoc } from './docs/docs'
 
 const SITE = 'https://clusterpilot.sh'
+
+// Keep titles readable in search results. Only append the brand suffix when it
+// still fits comfortably under ~60 characters.
+function withSuffix(title) {
+  const suffix = ' | ClusterPilot'
+  return title.length + suffix.length <= 60 ? title + suffix : title
+}
 
 // ─── head builders ──────────────────────────────────────────────────────────────
 function headForIndex() {
@@ -37,11 +46,7 @@ function headForIndex() {
 
 function headForPost(post, slug) {
   const canonical = `${SITE}/blog/${slug}/`
-  // Keep titles readable in search results. Only append the brand suffix when it
-  // still fits comfortably under ~60 characters.
-  const suffix = ' | ClusterPilot'
-  const title =
-    post.title.length + suffix.length <= 60 ? post.title + suffix : post.title
+  const title = withSuffix(post.title)
   const description = post.description || post.excerpt || ''
   const ogTags = {
     'og:title': post.title,
@@ -61,6 +66,44 @@ function headForPost(post, slug) {
   return { title, description, canonical, ogTags, twitterTags }
 }
 
+function headForDocsIndex() {
+  const title = 'ClusterPilot docs'
+  const description =
+    'Guides to installing ClusterPilot, submitting SLURM jobs, and getting more out of your cluster: storage, job efficiency, and GPU requests.'
+  const canonical = `${SITE}/docs/`
+  return {
+    title,
+    description,
+    canonical,
+    ogTags: {
+      'og:title': title,
+      'og:description': description,
+      'og:type': 'website',
+      'og:url': canonical,
+    },
+    twitterTags: { 'twitter:card': 'summary' },
+  }
+}
+
+function headForDoc(doc, slug) {
+  const canonical = `${SITE}/docs/${slug}/`
+  const description = doc.excerpt || ''
+  // Docs pages carry no featured image, so the card is always a plain summary
+  // and no og:image is emitted.
+  return {
+    title: withSuffix(doc.title),
+    description,
+    canonical,
+    ogTags: {
+      'og:title': doc.title,
+      'og:description': description,
+      'og:type': 'article',
+      'og:url': canonical,
+    },
+    twitterTags: { 'twitter:card': 'summary' },
+  }
+}
+
 // ─── render ──────────────────────────────────────────────────────────────────────
 export function render(url) {
   const html = renderToStaticMarkup(
@@ -68,6 +111,8 @@ export function render(url) {
       <Routes>
         <Route path="/blog" element={<BlogPage />} />
         <Route path="/blog/:slug" element={<BlogPage />} />
+        <Route path="/docs" element={<DocsPage />} />
+        <Route path="/docs/:slug" element={<DocsPage />} />
       </Routes>
     </StaticRouter>,
   )
@@ -75,6 +120,12 @@ export function render(url) {
   let head
   if (url === '/blog') {
     head = headForIndex()
+  } else if (url === '/docs') {
+    head = headForDocsIndex()
+  } else if (url.startsWith('/docs/')) {
+    const slug = url.replace(/^\/docs\//, '').replace(/\/$/, '')
+    const doc = getDoc(slug)
+    head = doc ? headForDoc(doc, slug) : headForDocsIndex()
   } else {
     const slug = url.replace(/^\/blog\//, '').replace(/\/$/, '')
     const post = getPost(slug)
@@ -84,9 +135,15 @@ export function render(url) {
   return { html, head }
 }
 
-// The set of routes to prerender: the blog index plus one page per (non-draft in
-// production) post. `posts` is already filtered and sorted by the loader.
-export const urls = ['/blog', ...posts.map(p => `/blog/${p.slug}`)]
+// The set of routes to prerender: both index pages plus one page per (non-draft
+// in production) post and doc. `posts` and `docs` are already filtered and sorted
+// by their loaders.
+export const urls = [
+  '/blog',
+  ...posts.map(p => `/blog/${p.slug}`),
+  '/docs',
+  ...docs.map(d => `/docs/${d.slug}`),
+]
 
 // Lean post metadata for the postbuild script's sitemap and RSS generation. Same
 // filtering and ordering as `posts`; the HTML body is deliberately left out.
@@ -95,4 +152,12 @@ export const postsMeta = posts.map(p => ({
   title: p.title,
   date: p.date,
   description: p.description || p.excerpt || '',
+}))
+
+// Lean docs metadata for the postbuild script's sitemap generation. Docs are not
+// in the RSS feed, which stays blog-only.
+export const docsMeta = docs.map(d => ({
+  slug: d.slug,
+  title: d.title,
+  description: d.excerpt || '',
 }))
