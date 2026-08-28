@@ -429,7 +429,7 @@ class SubmitView(Static):
         if not app._config.clusters:
             return None
         select = self.query_one("#cluster-select", Select)
-        if select.value is not Select.BLANK:
+        if select.value is not Select.NULL:
             profile = app._config.get_cluster(str(select.value))
             if profile is not None:
                 return profile
@@ -469,7 +469,7 @@ class SubmitView(Static):
     @on(Select.Changed, "#cluster-select")
     def on_cluster_changed(self, event: Select.Changed) -> None:
         """Re-probe partitions whenever the user picks a different cluster."""
-        if event.value is not Select.BLANK:
+        if event.value is not Select.NULL:
             self._partition_availability = {}
             self.query_one("#partition-select", Select).set_options([])
             if self._init_done:
@@ -491,7 +491,7 @@ class SubmitView(Static):
         # (see #42): the GPU sizes must follow the picker either way.
         chosen = "" if event.value is Select.NULL else str(event.value)
         self._rebuild_gpu_sizes(chosen)
-        if event.value is Select.BLANK:
+        if event.value is Select.NULL:
             return
         name = str(event.value)
         pa = self._partition_availability.get(name)
@@ -619,7 +619,7 @@ class SubmitView(Static):
             return
 
         partition_select = self.query_one("#partition-select", Select)
-        if partition_select.value is Select.BLANK:
+        if partition_select.value is Select.NULL:
             self.app.notify(
                 "No partition selected — the AI will choose one from the available list.",
                 severity="warning",
@@ -644,7 +644,7 @@ class SubmitView(Static):
         partition_select = self.query_one("#partition-select", Select)
         partition = (
             str(partition_select.value)
-            if partition_select.value is not Select.BLANK
+            if partition_select.value is not Select.NULL
             else ""
         )
 

@@ -38,3 +38,28 @@ class TestResolveTablePath:
             _resolve_table_path("~/project", "params.tsv")
             == Path.home() / "project" / "params.tsv"
         )
+
+
+# ── Blank Select sentinel (#42, root cause of #11) ───────────────────────────
+
+class TestBlankSelectSentinel:
+    """On Textual 8 the empty-Select sentinel is ``Select.NULL``.
+
+    ``Select.BLANK`` no longer exists on ``Select``; the name resolves to
+    ``Widget.BLANK`` (``False``), so ``value is not Select.BLANK`` was always
+    true and a blank partition picker sent the literal ``Select.NULL`` into
+    the generated script as ``--partition=Select.NULL``.
+    """
+
+    def test_blank_select_value_is_the_null_sentinel(self):
+        from textual.widgets import Select
+        select = Select(options=[("a", "a")], allow_blank=True)
+        assert select.value is Select.NULL
+        assert select.value is not getattr(Select, "BLANK", object())
+
+    def test_submit_view_never_compares_against_select_blank(self):
+        from pathlib import Path
+        import clusterpilot.tui.submit as submit
+        source = Path(submit.__file__).read_text()
+        code_lines = [ln for ln in source.splitlines() if not ln.lstrip().startswith("#")]
+        assert not any("Select.BLANK" in ln for ln in code_lines)
