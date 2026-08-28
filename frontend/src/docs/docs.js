@@ -12,7 +12,7 @@
 // by editing this file.
 
 import { marked } from 'marked'
-import { parseFrontmatter } from '../lib/frontmatter'
+import { parseFrontmatter } from '../markdown/frontmatter'
 
 // Sidebar grouping order. Each page has a `category`; the sidebar renders
 // categories in this order and skips any that have no pages yet. Add new

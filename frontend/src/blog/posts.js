@@ -11,10 +11,10 @@
 // CLAUDE.md ("Adding a blog post") for the frontmatter schema.
 
 import { marked } from 'marked'
-// The flat `key: value` frontmatter parser lives in ../lib/frontmatter.js, shared
+// The flat `key: value` frontmatter parser lives in ../markdown/frontmatter.js, shared
 // with the docs loader. We do NOT use gray-matter because it assumes Node Buffers
 // and does not run in the browser bundle.
-import { parseFrontmatter } from '../lib/frontmatter'
+import { parseFrontmatter } from '../markdown/frontmatter'
 
 // Eagerly pull every markdown file in as a raw string. import.meta.glob works in
 // dev, the client build, and the SSR build, so the loader is identical everywhere.
