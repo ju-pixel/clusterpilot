@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, cast
 import aiosqlite
 from textual import on, work
 from textual.app import ComposeResult
-from textual.containers import ScrollableContainer, Vertical
+from textual.binding import Binding
+from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Button, Label, ListItem, ListView, RichLog, Static
 
 from clusterpilot.cluster.slurm import (
@@ -28,10 +30,13 @@ from clusterpilot.jobs.fieldnotes import log_completed_job
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import SSHError, is_connected, remove_remote_dir
 from clusterpilot.ssh.rsync import download
+from clusterpilot.tui.widgets.confirm import ConfirmScreen
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from clusterpilot.tui.app import ClusterPilotApp
 
 _STATUS_STYLE = {
@@ -103,6 +108,17 @@ def _format_meta(job: JobRecord) -> str:
 class JobsView(Static):
     """Two-column jobs view: list on left, detail on right."""
 
+    # The bracketed letters on the buttons are real keys: they fire whenever
+    # focus is anywhere inside this view.
+    BINDINGS = [
+        Binding("r", "rsync", "Rsync", show=False),
+        Binding("k", "kill", "Kill", show=False),
+        Binding("t", "tail", "Tail", show=False),
+        Binding("l", "log", "Log", show=False),
+        Binding("c", "clean", "Clean remote", show=False),
+        Binding("d", "delete", "Forget", show=False),
+    ]
+
     def compose(self) -> ComposeResult:
         with Vertical(id="queue-panel"):
             yield Label("═ QUEUE ", id="queue-title")
@@ -115,17 +131,18 @@ class JobsView(Static):
                 yield Label("═ OUTPUT LOG ", id="log-title")
                 yield RichLog(id="log-display", highlight=False, markup=True)
             with Vertical(id="action-bar"):
-                yield Button("  [R] RSYNC  ", id="btn-rsync", variant="default")
-                yield Button("  [K] KILL   ", id="btn-kill",  variant="default")
-                yield Button("  [T] TAIL   ", id="btn-tail",  variant="default")
-                yield Button("  [L] LOG    ", id="btn-log",   variant="default")
-                yield Button("  [C] CLEAN  ", id="btn-clean",  variant="default")
-                yield Button("  [D] DELETE ", id="btn-delete", variant="default")
+                # The brackets are escaped: a button label is parsed as
+                # Textual markup, which would otherwise swallow "[R]".
+                yield Button(r"\[R] RSYNC", id="btn-rsync", variant="default")
+                yield Button(r"\[K] KILL", id="btn-kill", variant="default")
+                yield Button(r"\[T] TAIL", id="btn-tail", variant="default")
+                yield Button(r"\[L] LOG", id="btn-log", variant="default")
+                yield Button(r"\[C] CLEAN REMOTE", id="btn-clean", variant="default")
+                yield Button(r"\[D] FORGET", id="btn-delete", variant="default")
 
     def on_mount(self) -> None:
         self._jobs: list[JobRecord] = []
         self._selected: int = 0
-        self._log_dirty: bool = False   # True when user-triggered content is showing
         self._tail_timer: object | None = None   # live-polling timer handle
         self._tail_job_id: str | None = None     # job ID being tailed
         self._tail_log_path: str | None = None   # cached log path for polling
@@ -136,9 +153,28 @@ class JobsView(Static):
         self._array_tasks: dict[str, str] = {}    # task index → log path
         self._array_order: list[str] = []         # task indices, numeric order
         self._array_pos: int = 0                  # index into _array_order
-        self._clean_confirm_id: str | None = None  # job_id awaiting clean confirmation
         self.set_interval(10, self._refresh)
         self._refresh()
+        self.focus_job_list()
+
+    def focus_job_list(self) -> None:
+        """Move focus to the queue so the single-letter action keys work."""
+        try:
+            self.query_one("#job-list", ListView).focus()
+        except NoMatches:
+            pass
+
+    def running_jobs(self) -> list[JobRecord]:
+        """Jobs in the list that are still running on a cluster."""
+        return [j for j in getattr(self, "_jobs", []) if j.status == "RUNNING"]
+
+    def _confirm(self, title: str, body: str, on_yes: "Callable[[], None]") -> None:
+        """Ask before doing something irreversible; run *on_yes* if confirmed."""
+        def _handle(confirmed: bool | None) -> None:
+            if confirmed:
+                on_yes()
+
+        self.app.push_screen(ConfirmScreen(title, body), _handle)
 
     @work(thread=False)
     async def _refresh(self) -> None:
@@ -188,7 +224,6 @@ class JobsView(Static):
     def _show_detail(self, job: JobRecord) -> None:
         """Full detail update — metadata + reset the log panel (user selected a new job)."""
         self._stop_tail_polling()
-        self._clean_confirm_id = None
         # Forget the previous job's array-task discovery so the next TAIL
         # re-discovers and starts at the lowest task.
         self._array_job_id = None
@@ -196,10 +231,9 @@ class JobsView(Static):
         self._array_order = []
         self._array_pos = 0
         self._update_meta(job)
-        self._log_dirty = False
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
-        log_widget.write(f"[#7a6a50]Select [T] TAIL to fetch live output.[/]")
+        log_widget.write(r"[#7a6a50]Select \[T] TAIL to fetch live output.[/]")
 
     def _stop_tail_polling(self) -> None:
         """Cancel any active log-polling timer."""
@@ -250,7 +284,7 @@ class JobsView(Static):
         """Build the OUTPUT LOG header line, annotating the array task if any."""
         if task is None:
             return f"{log_path} ({label})"
-        cycle = " — [T] cycles tasks" if len(self._array_order) > 1 else ""
+        cycle = r", \[T] cycles tasks" if len(self._array_order) > 1 else ""
         return f"{log_path} (array task {task}; {label}{cycle})"
 
     @work(thread=False)
@@ -308,7 +342,6 @@ class JobsView(Static):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
-        self._log_dirty = True
         log_widget.write("[#e8a020]Starting rsync…[/]")
         local = __import__("pathlib").Path(job.local_dir) / "results"
         try:
@@ -336,7 +369,13 @@ class JobsView(Static):
     def action_kill(self) -> None:
         if not self._jobs:
             return
-        self._do_kill(self._jobs[self._selected])
+        job = self._jobs[self._selected]
+        self._confirm(
+            "KILL JOB",
+            f"Cancel job {job.job_id} ({job.job_name}) on {job.cluster_name}? "
+            "Anything it has written so far stays on the cluster.",
+            lambda: self._do_kill(job),
+        )
 
     @work(thread=False)
     async def _do_kill(self, job: JobRecord) -> None:
@@ -407,7 +446,6 @@ class JobsView(Static):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
-        self._log_dirty = True
         # Resolve the log path. Array jobs write one log per task (%x-%A-%a),
         # so default to the lowest task and cycle on each repeat TAIL press.
         array_task: str | None = None
@@ -457,7 +495,6 @@ class JobsView(Static):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
-        self._log_dirty = True
         # Array jobs: show the currently selected task's full log (TAIL picks
         # the task; LOG does not advance it).
         array_task: str | None = None
@@ -500,21 +537,13 @@ class JobsView(Static):
         if not self._jobs:
             return
         job = self._jobs[self._selected]
-        log_widget = self.query_one("#log-display", RichLog)
-
-        if not job.synced and self._clean_confirm_id != job.job_id:
-            # First press with unsynced results: warn and ask for confirmation.
-            self._clean_confirm_id = job.job_id
-            log_widget.clear()
-            self._log_dirty = True
-            log_widget.write(
-                "[#e8a020]⚠ Results have not been synced to your local machine.[/]\n"
-                "[#7a6a50]Press [C] CLEAN again to delete the remote directory anyway.[/]"
-            )
-            return
-
-        self._clean_confirm_id = None
-        self._do_clean(job)
+        body = (
+            f"Remove the working directory {job.working_dir} on "
+            f"{job.cluster_name}? The local record and any synced results stay."
+        )
+        if not job.synced:
+            body += " These results have not been synced to this machine yet."
+        self._confirm("CLEAN REMOTE DIRECTORY", body, lambda: self._do_clean(job))
 
     @work(thread=False)
     async def _do_clean(self, job: JobRecord) -> None:
@@ -527,7 +556,6 @@ class JobsView(Static):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
-        self._log_dirty = True
         log_widget.write(f"[#e8a020]Deleting {job.working_dir} …[/]")
         try:
             await remove_remote_dir(profile.host, profile.user, job.working_dir)
@@ -558,7 +586,12 @@ class JobsView(Static):
                 severity="warning",
             )
             return
-        self._do_delete(job)
+        self._confirm(
+            "FORGET JOB",
+            f"Forget job {job.job_id} ({job.job_name}) from the local history? "
+            "Nothing on the cluster is touched.",
+            lambda: self._do_delete(job),
+        )
 
     @work(thread=False)
     async def _do_delete(self, job: JobRecord) -> None:
@@ -573,5 +606,4 @@ class JobsView(Static):
         # Adjust selection index and refresh the list.
         if self._selected > 0:
             self._selected -= 1
-        self._log_dirty = False
         self._refresh()

@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, cast
 
 from textual import on
 from textual.app import ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Static
 
 from clusterpilot.config import CONFIG_PATH, ConfigError, load_config
+from clusterpilot.ssh.connection import _CONTROL_PATH
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
@@ -32,10 +33,10 @@ def _render(app: "ClusterPilotApp") -> str:
         lines.append(_row("Scratch", profile.expand_scratch()))
         lines.append("\n")
 
+    # Only values ClusterPilot actually uses belong here: the ControlPath is
+    # read from the SSH layer so the two can never drift apart.
     lines.append("[bold #e8a020]SSH[/]\n")
-    lines.append(_row("Strategy",       "ControlMaster auto"))
-    lines.append(_row("ControlPath",    "~/.ssh/cm_%h_%p_%r"))
-    lines.append(_row("ControlPersist", "4h"))
+    lines.append(_row("ControlPath", _CONTROL_PATH))
     lines.append("\n")
 
     lines.append("[bold #e8a020]NOTIFICATIONS[/]\n")
@@ -67,7 +68,7 @@ def _render(app: "ClusterPilotApp") -> str:
     lines.append(_row("API URL", cfg.hosted.api_url))
     if cfg.hosted.api_token:
         masked = cfg.hosted.api_token[:6] + "…"
-        lines.append(_row("Token", f"[#7a6a50]{masked}[/] [#50c050](active)[/]"))
+        lines.append(_row("Token", f"[#7a6a50]{masked}[/] [#6ed86e](active)[/]"))
     else:
         lines.append(
             f"[#7a6a50]{'Token':<20}[/] [#7a6a50](not set — issue one from the dashboard)[/]\n"
@@ -80,7 +81,8 @@ class ConfigView(Static):
     """Scrollable config display with an open-in-editor button."""
 
     def compose(self) -> ComposeResult:
-        yield Static(id="config-content")
+        with VerticalScroll(id="config-scroll"):
+            yield Static(id="config-content")
         with Horizontal(id="config-actions"):
             yield Button("✎  EDIT CONFIG", id="btn-edit-config")
 

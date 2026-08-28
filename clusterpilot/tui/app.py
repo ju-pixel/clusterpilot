@@ -9,7 +9,9 @@ import aiosqlite
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Input, Label, Static, TabbedContent, TabPane
+from textual.css.query import NoMatches
+from textual.events import DescendantFocus
+from textual.widgets import Input, Static, TabbedContent, TabPane
 
 from clusterpilot import __version__
 from clusterpilot.config import Config
@@ -21,6 +23,7 @@ from clusterpilot.ssh.connection import is_connected, open_connection
 from clusterpilot.tui.config_view import ConfigView
 from clusterpilot.tui.jobs import JobsView
 from clusterpilot.tui.submit import SubmitView
+from clusterpilot.tui.widgets.confirm import ConfirmScreen
 from clusterpilot.tui.widgets.file_explorer import FileExplorer, save_recent_path
 
 log = logging.getLogger(__name__)
@@ -68,6 +71,55 @@ class StatusBar(Static):
         super().__init__(self.DEFAULT_TEXT)
 
 
+HINT_DEFAULT = "Tab moves between fields.  F1 jobs  F2 submit  F3 files  F9 config  Q quit"
+
+# One line per focusable control, keyed by widget id. Anything the user can
+# tab to on F1, F2 or F9 belongs here: the hint bar is the only always-visible
+# explanation of what the focused control does.
+HINTS: dict[str, str] = {
+    # F1 JOBS
+    "job-list":           "Up and down pick a job. The bracketed letters act on the selected one.",
+    "btn-rsync":          "Download this job's results and logs to your machine.",
+    "btn-kill":           "Cancel this job on the cluster with scancel. Asks first.",
+    "btn-tail":           "Show the last 500 log lines, refreshing while the job runs.",
+    "btn-log":            "Fetch the whole log for the selected job.",
+    "btn-clean":          "Delete the job's working directory on the cluster. Local results are kept.",
+    "btn-delete":         "Forget this job from the local history. Nothing on the cluster is touched.",
+    "log-display":        "Output log. PageUp and PageDown scroll it.",
+    # F2 SUBMIT
+    "cluster-select":     "Choose which configured cluster the job goes to.",
+    "partition-select":   "Choose the partition. Left blank, the AI picks one from the probed list.",
+    "project-dir-input":  "Local project root to upload. Blank for a self-contained single script.",
+    "script-path-input":  "The script the job runs, relative to the project directory.",
+    "extra-files-input":  "Extra files to upload, comma-separated, bypassing the exclude rules.",
+    "params-table-input": "A .tsv or .csv of per-task parameters, one row per array task.",
+    "array-input":        "SLURM array spec, e.g. 0-9 or 1-100%5. Blank for a single job.",
+    "description-input":  "Describe the job in plain English, then press GENERATE SCRIPT.",
+    "btn-generate":       "Ask the AI for a SLURM script for this cluster and driver.",
+    "btn-submit":         "Upload the project and submit the script with sbatch.",
+    "btn-edit-script":    "Open the generated script in your editor before submitting.",
+    "btn-save":           "Save the generated script to a file.",
+    "btn-clear":          "Clear the description and the generated script.",
+    "script-scroll":      "The generated script. PageUp and PageDown scroll it.",
+    # F9 CONFIG
+    "config-scroll":      "Your loaded configuration. PageUp and PageDown scroll it.",
+    "btn-edit-config":    "Open config.toml in your editor, then reload it.",
+    # Confirmation modal
+    "btn-confirm":        "Go ahead with the action described above. The y key does the same.",
+    "btn-cancel":         "Leave everything as it is. Escape or n does the same.",
+}
+
+
+class HintBar(Static):
+    """One-line explanation of whatever currently has focus."""
+
+    def __init__(self) -> None:
+        super().__init__(HINT_DEFAULT)
+
+    def show_hint(self, text: str) -> None:
+        self.update(text)
+
+
 class ClusterPilotApp(App):
     """ClusterPilot terminal UI — amber phosphor edition."""
 
@@ -79,7 +131,7 @@ class ClusterPilotApp(App):
         Binding("f2", "show_submit", "Submit", show=False),
         Binding("f3", "toggle_explorer", "Files", show=False),
         Binding("f9", "show_config", "Config", show=False),
-        Binding("q", "quit", "Quit", show=False),
+        Binding("q", "confirm_quit", "Quit", show=False),
     ]
 
     CSS = """
@@ -118,6 +170,17 @@ StatusBar {
     height: 1;
     background: $amberLo;
     color: $amberDim;
+    padding: 0 1;
+}
+
+/* margin-bottom lifts it clear of the status bar: Textual docks every
+   bottom-docked widget onto the same edge, so they would otherwise overlap. */
+HintBar {
+    dock: bottom;
+    height: 1;
+    margin-bottom: 1;
+    background: $bg3;
+    color: $dim;
     padding: 0 1;
 }
 
@@ -192,7 +255,8 @@ ListView > ListItem.--highlight {
 }
 
 #meta-panel {
-    height: 10;
+    height: auto;
+    max-height: 10;
     border: solid $amberDim;
     background: $bg;
     padding: 0 1;
@@ -209,7 +273,7 @@ ListView > ListItem.--highlight {
 #meta-content {
     color: $white;
     padding: 0 1;
-    height: 1fr;
+    height: auto;
 }
 
 #log-panel {
@@ -234,10 +298,22 @@ ListView > ListItem.--highlight {
     padding: 0 1;
 }
 
+/* Six action buttons on two rows of three, so the bar never clips: at the
+   detail column's width (about 60 columns on a 100-column terminal) six
+   buttons side by side do not fit. */
 #action-bar {
-    height: 3;
+    height: 6;
     margin-top: 1;
-    layout: horizontal;
+    layout: grid;
+    grid-size: 3;
+    grid-rows: 3;
+    grid-gutter: 0 1;
+}
+
+#action-bar Button {
+    width: 1fr;
+    min-width: 12;
+    margin: 0;
 }
 
 /* ── Submit view ────────────────────────── */
@@ -259,6 +335,7 @@ SubmitView {
     background: $bg;
     height: 1fr;
     padding: 0 1;
+    scrollbar-color: $amberDim;
 }
 
 #cluster-row {
@@ -313,6 +390,23 @@ SubmitView {
     layout: horizontal;
 }
 
+#params-table-row {
+    height: auto;
+    margin-bottom: 0;
+    layout: horizontal;
+}
+
+#params-table-input {
+    width: 1fr;
+    background: $bg3;
+    border: solid $border2;
+    color: $white;
+}
+
+#params-table-input:focus {
+    border: solid $amberDim;
+}
+
 #array-row {
     height: auto;
     margin-bottom: 0;
@@ -342,7 +436,7 @@ SubmitView {
 }
 
 .field-label {
-    width: 12;
+    width: 14;
     color: $dim;
     text-style: bold;
     height: 3;
@@ -391,8 +485,10 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
     border: solid $amberDim;
 }
 
+/* Fixed height: the help text changes with focus, and an auto height moved
+   the GENERATE button every time it did. */
 #field-help {
-    height: auto;
+    height: 3;
     margin-top: 0;
     margin-bottom: 1;
     padding: 0 1;
@@ -412,8 +508,9 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
     border: solid $border2;
     background: $bg3;
     color: $white;
-    height: 4;
+    height: 8;
     margin-top: 0;
+    scrollbar-color: $amberDim;
 }
 
 #description-input:focus {
@@ -470,18 +567,23 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
     background: $bg;
 }
 
+/* Two rows of two, like #action-bar on F1, so the four buttons fit inside
+   the script pane at 100 columns instead of clipping to SUBMIT alone (#40). */
 #submit-actions {
-    height: 3;
+    height: 6;
     margin-top: 1;
-    layout: horizontal;
+    layout: grid;
+    grid-size: 2;
+    grid-rows: 3;
+    grid-gutter: 0 1;
 }
 
-/* All four action buttons: equal width, no margins between them */
 #btn-submit,
 #btn-edit-script,
 #btn-save,
 #btn-clear {
     width: 1fr;
+    min-width: 12;
     margin: 0;
 }
 
@@ -492,7 +594,7 @@ SelectOverlay > OptionList > .option-list--option-highlighted {
     text-style: bold;
 }
 
-#btn-submit:hover { background: #1a5a1a; }
+#btn-submit:hover { background: $green; color: $bg; }
 #btn-submit:disabled { background: $dimmer; color: $dim; border: solid $dimmer; }
 
 /* ── Config view ────────────────────────── */
@@ -500,16 +602,15 @@ ConfigView {
     layout: vertical;
     background: $bg;
     padding: 1;
-    overflow: auto;
-    scrollbar-color: $amberDim;
+    height: 1fr;
 }
 
-.cfg-section {
-    border: solid $amberDim;
+/* Focusable so the keyboard can scroll it; the EDIT button is docked out of
+   the scroll flow so it is always reachable. */
+#config-scroll {
+    height: 1fr;
     background: $bg;
-    padding: 1;
-    margin-bottom: 1;
-    height: auto;
+    scrollbar-color: $amberDim;
 }
 
 #config-content {
@@ -517,6 +618,7 @@ ConfigView {
 }
 
 #config-actions {
+    dock: bottom;
     height: 3;
     margin-top: 1;
     layout: horizontal;
@@ -585,6 +687,48 @@ DirectoryTree .--highlight {
     color: $amber;
 }
 
+/* ── Confirmation modal ─────────────────── */
+ConfirmScreen {
+    align: center middle;
+    background: $bg 70%;
+}
+
+#confirm-panel {
+    width: 60;
+    max-width: 100%;
+    height: auto;
+    border: solid $amber;
+    background: $bg2;
+    padding: 1 2;
+}
+
+#confirm-title {
+    color: $amber;
+    text-style: bold;
+    width: 1fr;
+    margin-bottom: 1;
+}
+
+#confirm-body {
+    color: $white;
+    height: auto;
+    margin-bottom: 1;
+}
+
+#confirm-actions {
+    height: 3;
+    align: right middle;
+}
+
+#btn-confirm {
+    color: $red;
+    border: solid $redDim;
+}
+
+#btn-confirm:hover {
+    background: $redDim;
+}
+
 /* ── Shared ─────────────────────────────── */
 Button {
     background: $bg3;
@@ -594,7 +738,6 @@ Button {
 }
 
 Button:hover { background: $amberLo; }
-Button.-error { color: $red; border: solid $redDim; background: $redDim; }
 #btn-clean { color: $red; border: solid $redDim; }
 #btn-clean:hover { background: $redDim; }
 #btn-clean:disabled { color: $dim; border: solid $dimmer; background: $bg3; }
@@ -616,7 +759,10 @@ Button.-error { color: $red; border: solid $redDim; background: $redDim; }
                 yield SubmitView()
             with TabPane("  F9  CONFIG  ", id="config"):
                 yield ConfigView()
+        # Docked bottom in this order: the status bar sits on the last row,
+        # the hint bar on the row above it.
         yield StatusBar()
+        yield HintBar()
 
     async def on_mount(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -693,16 +839,70 @@ Button.-error { color: $red; border: solid $redDim; background: $redDim; }
         if self._daemon_task:
             self._daemon_task.cancel()
 
+    # ── Hint bar ──────────────────────────────────────────────────────────────
+
+    def on_descendant_focus(self, event: DescendantFocus) -> None:
+        """Show the hint for whatever just took focus."""
+        try:
+            hint_bar = self.query_one(HintBar)
+        except NoMatches:
+            return
+        # Walk up in case focus landed on an internal child (Select's
+        # SelectCurrent, for instance) rather than the widget we know by id.
+        for node in event.widget.ancestors_with_self:
+            node_id = getattr(node, "id", None)
+            if node_id in HINTS:
+                hint_bar.show_hint(HINTS[node_id])
+                return
+        hint_bar.show_hint(HINT_DEFAULT)
+
+    # ── Quit ──────────────────────────────────────────────────────────────────
+
+    def action_confirm_quit(self) -> None:
+        """Quit, but confirm first when jobs are still running."""
+        try:
+            running = self.query_one(JobsView).running_jobs()
+        except NoMatches:
+            running = []
+        if not running:
+            self.exit()
+            return
+        listed = ", ".join(f"{j.job_name} (#{j.job_id})" for j in running[:3])
+        if len(running) > 3:
+            listed += f", and {len(running) - 3} more"
+        body = (
+            f"{len(running)} job(s) are still running on the cluster: {listed}. "
+            "Quitting stops monitoring and notifications; the jobs keep running "
+            "and ClusterPilot picks them up again next time it starts."
+        )
+        self.push_screen(ConfirmScreen("QUIT CLUSTERPILOT", body), self._quit_confirmed)
+
+    def _quit_confirmed(self, confirmed: bool | None) -> None:
+        if confirmed:
+            self.exit()
+
     # ── Tab navigation ────────────────────────────────────────────────────────
 
     def action_show_jobs(self) -> None:
         self.query_one(TabbedContent).active = "jobs"
+        # Put focus inside JobsView so its single-letter action keys work
+        # straight away rather than only after the user tabs into the pane.
+        self.query_one(JobsView).focus_job_list()
 
     def action_show_submit(self) -> None:
         self.query_one(TabbedContent).active = "submit"
+        self._focus("#cluster-select")
 
     def action_show_config(self) -> None:
         self.query_one(TabbedContent).active = "config"
+        self._focus("#config-scroll")
+
+    def _focus(self, selector: str) -> None:
+        """Focus the first control on a screen, so the hint bar follows it."""
+        try:
+            self.query_one(selector).focus()
+        except NoMatches:
+            pass
 
     def action_toggle_explorer(self) -> None:
         explorer = self.query_one(FileExplorer)

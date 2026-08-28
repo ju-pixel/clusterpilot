@@ -266,6 +266,19 @@ def _sanitise_script(script: str, job_name: str, is_array: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _resolve_table_path(project_dir_str: str, table_raw: str) -> Path:
+    """Resolve the PARAM TABLE field to a local path.
+
+    An absolute path is taken as given. A relative one is resolved against
+    PROJECT DIR when that field is filled in, and against the working
+    directory otherwise.
+    """
+    table_path = Path(table_raw).expanduser()
+    if table_path.is_absolute() or not project_dir_str:
+        return table_path
+    return Path(project_dir_str).expanduser() / table_path
+
+
 class SubmitView(Static):
     """Left: description + partition picker + script path. Right: generated script."""
 
@@ -672,9 +685,7 @@ class SubmitView(Static):
         self._params_table = None
         table_raw = self.query_one("#params-table-input", Input).value.strip()
         if table_raw:
-            table_path = Path(table_raw)
-            if not table_path.is_absolute():
-                table_path = project_dir / table_path
+            table_path = _resolve_table_path(project_dir_str, table_raw)
             try:
                 params_table = load_params_table(table_path)
             except ParamsTableError as exc:
@@ -1036,7 +1047,7 @@ class SubmitView(Static):
 
 _EMPTY_HINT = (
     "[#3a3020]Describe your job on the left,\n"
-    "then press [GENERATE SCRIPT].\n\n"
+    "then press \\[GENERATE SCRIPT].\n\n"
     "ClusterPilot will query:\n"
     "  sinfo        → available partitions\n"
     "  module avail → installed software\n"
@@ -1047,76 +1058,61 @@ _EMPTY_HINT = (
 
 _HELP_DEFAULT = "[#7a6a50]Tab into any field for contextual tips.[/]"
 
+# Each help string is kept short enough to render in three lines at 60
+# columns: #field-help has a fixed height so GENERATE never moves.
 _HELP_CLUSTER = (
-    "[#e8a020]CLUSTER[/]  [#7a6a50]Select the cluster to submit your job to. "
-    "Clusters are loaded from your config file. "
-    "Changing cluster re-probes partitions automatically.[/]"
+    "[#e8a020]CLUSTER[/]  [#7a6a50]Which cluster to submit to. The list comes "
+    "from your config file; changing it re-probes the partitions.[/]"
 )
 
 _HELP_PARTITION = (
-    "[#e8a020]PARTITION[/]  [#7a6a50]Select the SLURM partition for your job. "
-    "GPU partitions are listed first — pick one your account has access to. "
-    "sbatch will return a clear error if you pick a partition you cannot use.[/]"
+    "[#e8a020]PARTITION[/]  [#7a6a50]The SLURM partition for the job. GPU "
+    "partitions are listed first; pick one your account can use.[/]"
 )
 
 _HELP_PARTITION_DRAC = (
-    "[#e8a020]PARTITION[/]  [#7a6a50]On DRAC clusters (Narval, Cedar, Beluga, Graham) "
-    "you do [#f0e8d0]not[/][#7a6a50] strictly need to choose a partition — the cluster's "
-    "own scheduler routes your job onto the right partition automatically. "
-    "Your pick here is used only as a hint to the AI for the [#f0e8d0]GPU type[/][#7a6a50] "
-    "(a100 vs a100_4g.20gb vs a100_3g.20gb, etc.) and the "
-    "[#f0e8d0]walltime ceiling[/][#7a6a50]. Pick the partition whose GPU and max time "
-    "match your job — load percentages don't matter, the scheduler picks the real "
-    "partition at submit time.[/]"
+    "[#e8a020]PARTITION[/]  [#7a6a50]On DRAC the scheduler picks the partition "
+    "itself. Your choice is only a hint for GPU type and walltime.[/]"
 )
 
 _HELP_PROJECT_DIR = (
-    "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional. Local root of your project package. "
-    "If set, the project tree is rsynced to the cluster job directory, minus the "
-    "built-in excludes and anything in [#f0e8d0].clusterpilotignore[/][#7a6a50] at the root. "
-    "For a Julia project (Project.toml present) only Project/Manifest.toml, src/, "
-    "and the driver are shipped, preserving layout. "
-    "Leave blank for self-contained single-script jobs.[/]"
+    "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional local project root, rsynced to "
+    "the cluster minus the built-in excludes and .clusterpilotignore.[/]"
 )
 
 _HELP_SCRIPT_PATH = (
-    "[#e8a020]DRIVER SCRIPT[/]  [#7a6a50]The script the SLURM job will execute. "
-    "With PROJECT DIR set: relative path within the project (e.g. scripts/run.jl). "
-    "Without PROJECT DIR: absolute or ~/path to a self-contained script. "
-    "The AI reads this file to infer modules, GPU count, and resource needs.[/]"
+    "[#e8a020]DRIVER SCRIPT[/]  [#7a6a50]The script the job runs. Relative to "
+    "PROJECT DIR when that is set, otherwise an absolute path.[/]"
 )
 
 _HELP_EXTRA_FILES = (
-    "[#e8a020]EXTRA FILES[/]  [#7a6a50]Comma-separated files to upload alongside the project, "
-    "bypassing the ignore rules. Use for per-job input data that normally "
-    "lives in an excluded directory, e.g. a precomputed temperature ladder, "
-    "a parameter file, a helper script the driver includes, or a checkpoint from "
-    "a previous run. Paths are relative to PROJECT DIR. Leave blank if not needed.[/]"
+    "[#e8a020]EXTRA FILES[/]  [#7a6a50]Comma-separated extra files to upload, "
+    "bypassing the ignore rules. Paths are relative to PROJECT DIR.[/]"
+)
+
+_HELP_PARAMS_TABLE = (
+    "[#e8a020]PARAM TABLE[/]  [#7a6a50]Optional .tsv or .csv, one row per array "
+    "task, header naming the variables. It also sets the array size.[/]"
 )
 
 _HELP_ARRAY = (
-    "[#e8a020]ARRAY[/]  [#7a6a50]Optional. SLURM job array spec — e.g. [#f0e8d0]0-9[/][#7a6a50] (10 tasks) "
-    "or [#f0e8d0]1-100%5[/][#7a6a50] (100 tasks, max 5 running at once). Leave blank for a single job. "
-    "Tip: describe how each task index maps to parameters in the job description — "
-    "e.g. [#f0e8d0]'use $SLURM_ARRAY_TASK_ID to select from learning rates [0.001, 0.01, 0.1]'[/][#7a6a50] "
-    "— and the AI will generate the selection logic in the script automatically.[/]"
+    "[#e8a020]ARRAY[/]  [#7a6a50]Optional array spec, e.g. 0-9 or 1-100%5 (five "
+    "at a time). Blank for a single job; a param table fills it in.[/]"
 )
 
 _HELP_DESCRIPTION = (
-    "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]What the job does, in plain English. "
-    "The AI reads your driver script and project manifest, then picks sensible "
-    "defaults for modules, GPU type, memory, and walltime.\n\n"
-    "[#f0e8d0]Example:[/][#7a6a50]  \"train ResNet-18 on CIFAR-10 for 4 hours\"\n\n"
-    "[#f0e8d0]Already know SLURM?[/][#7a6a50] Pin resources inline if you want — "
-    "e.g. \"2× V100, 64G RAM, 12h\". Otherwise leave it to the AI.[/]"
+    "[#e8a020]DESCRIBE YOUR JOB[/]  [#7a6a50]What the job does, in plain "
+    "English. The AI reads your driver script and manifest, then picks "
+    "modules, GPU, memory and walltime.[/]"
 )
 
-_HELP_MAP = {
+_HELP_MAP: dict[str, str] = {
     "cluster-select":   _HELP_CLUSTER,
     "partition-select": _HELP_PARTITION,
     "project-dir-input": _HELP_PROJECT_DIR,
     "script-path-input": _HELP_SCRIPT_PATH,
     "extra-files-input": _HELP_EXTRA_FILES,
+    "params-table-input": _HELP_PARAMS_TABLE,
     "array-input":      _HELP_ARRAY,
     "description-input": _HELP_DESCRIPTION,
 }
