@@ -10,12 +10,16 @@ each notification. These tests pin two contracts:
   2. ``PollDaemon._should_notify`` allows everything when there are no cloud
      preferences, and otherwise honours the stored boolean. An event the
      dashboard has no switch for stays allowed.
+  3. Issue #43: the topic typed on the same page is read too. When set, the
+     daemon posts there instead of to the topic in config.toml; a URL also
+     picks the server, a bare topic keeps the local one.
 """
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from clusterpilot.config import Config, Defaults, HostedConfig
+from clusterpilot.config import Config, Defaults, HostedConfig, NotificationConfig
+from clusterpilot.db import JobRecord
 from clusterpilot.jobs.daemon import PollDaemon
 from clusterpilot.jobs.sync import (
     NotificationPreferences,
@@ -63,7 +67,8 @@ class TestFetchPreferences:
                 HostedConfig(api_token="cp-abcd1234")
             )
         assert prefs == NotificationPreferences(
-            started=True, completed=True, failed=False, low_time=False
+            started=True, completed=True, failed=False, low_time=False,
+            ntfy_topic="https://ntfy.sh/julia-jobs",
         )
 
     async def test_calls_the_daemon_route_with_the_bearer_token(self):
@@ -127,3 +132,77 @@ class TestShouldNotify:
         # The dashboard has no switch for the periodic ETA, so it is local-only.
         daemon = _daemon(NotificationPreferences(started=False))
         assert daemon._should_notify("eta") is True
+
+
+_LOCAL = NotificationConfig(ntfy_topic="local-topic", ntfy_server="https://ntfy.example.org")
+
+
+class TestWithTopic:
+    def test_url_sets_server_and_topic(self):
+        cfg = _LOCAL.with_topic("https://ntfy.sh/julia-jobs")
+        assert (cfg.ntfy_server, cfg.ntfy_topic) == ("https://ntfy.sh", "julia-jobs")
+        assert cfg.resolved_url == "https://ntfy.sh/julia-jobs"
+
+    def test_bare_topic_keeps_the_local_server(self):
+        cfg = _LOCAL.with_topic("julia-jobs")
+        assert (cfg.ntfy_server, cfg.ntfy_topic) == ("https://ntfy.example.org", "julia-jobs")
+
+    def test_self_hosted_url_under_a_path_prefix(self):
+        cfg = _LOCAL.with_topic("https://lab.example.org/ntfy/jobs/")
+        assert (cfg.ntfy_server, cfg.ntfy_topic) == ("https://lab.example.org/ntfy", "jobs")
+
+    def test_empty_and_server_only_change_nothing(self):
+        assert _LOCAL.with_topic("") == _LOCAL
+        assert _LOCAL.with_topic("   ") == _LOCAL
+        assert _LOCAL.with_topic("https://ntfy.sh") == _LOCAL
+        assert _LOCAL.with_topic("https://ntfy.sh/") == _LOCAL
+
+    def test_does_not_mutate_the_original(self):
+        _LOCAL.with_topic("https://ntfy.sh/other")
+        assert _LOCAL.ntfy_topic == "local-topic"
+
+
+def _job() -> JobRecord:
+    return JobRecord(
+        job_id="123", job_name="spin", cluster_name="grex", host="h", user="u",
+        account="", partition="p", script_path="", working_dir="", local_dir="",
+        walltime="01:00:00", status="FAILED",
+    )
+
+
+class TestCloudTopic:
+    def _daemon_with(self, prefs: NotificationPreferences | None) -> PollDaemon:
+        daemon = _daemon(prefs)
+        daemon.config.notifications = _LOCAL
+        return daemon
+
+    def test_local_config_without_cloud_prefs(self):
+        assert self._daemon_with(None)._notifications() == _LOCAL
+
+    def test_local_config_when_the_dashboard_topic_is_empty(self):
+        daemon = self._daemon_with(NotificationPreferences(ntfy_topic=""))
+        assert daemon._notifications() == _LOCAL
+
+    def test_dashboard_topic_wins_when_set(self):
+        daemon = self._daemon_with(
+            NotificationPreferences(ntfy_topic="https://ntfy.sh/julia-jobs")
+        )
+        assert daemon._notifications().resolved_url == "https://ntfy.sh/julia-jobs"
+
+    def test_dashboard_topic_fills_an_empty_local_topic(self):
+        # Hosted user who never set [notifications] locally still gets pushes.
+        daemon = self._daemon_with(NotificationPreferences(ntfy_topic="https://ntfy.sh/jobs"))
+        daemon.config.notifications = NotificationConfig()
+        assert daemon._notifications().resolved_url == "https://ntfy.sh/jobs"
+
+    async def test_failure_notification_is_posted_to_the_dashboard_topic(self):
+        daemon = self._daemon_with(
+            NotificationPreferences(ntfy_topic="https://ntfy.sh/julia-jobs")
+        )
+        sent = AsyncMock()
+        with patch("clusterpilot.jobs.daemon.notify_failed", sent), \
+             patch.object(daemon, "_failure_excerpt", AsyncMock(return_value="")), \
+             patch.object(daemon, "_sync", AsyncMock()):
+            await daemon._notify_failed(MagicMock(), _job(), "FAILED")
+        cfg = sent.await_args.args[0]
+        assert cfg.resolved_url == "https://ntfy.sh/julia-jobs"

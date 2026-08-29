@@ -33,17 +33,20 @@ _ALLOWANCE_TIMEOUT = 5.0  # seconds
 
 @dataclass(frozen=True)
 class NotificationPreferences:
-    """Per-event notification switches held in the user's cloud account.
+    """Notification settings held in the user's cloud account.
 
-    Mirrors the booleans stored by the dashboard's Notifications page. Only
-    events the dashboard actually offers appear here; anything else the daemon
-    sends (the periodic ETA, for instance) stays under local config control.
+    Mirrors the dashboard's Notifications page: the per-event switches, and
+    the topic typed there (issue #43), which the daemon prefers over the one
+    in config.toml when set. Only events the dashboard actually offers appear
+    here; anything else the daemon sends (the periodic ETA, for instance)
+    stays under local config control.
     """
 
     started: bool = True
     completed: bool = True
     failed: bool = True
     low_time: bool = True
+    ntfy_topic: str = ""  # as typed: usually a full https://ntfy.sh/<topic> URL
 
 
 async def fetch_notification_preferences(
@@ -86,6 +89,7 @@ async def fetch_notification_preferences(
         completed=bool(data.get("notify_on_complete", True)),
         failed=bool(data.get("notify_on_fail", True)),
         low_time=bool(data.get("notify_on_walltime_warn", True)),
+        ntfy_topic=str(data.get("ntfy_topic") or "").strip(),
     )
 
 

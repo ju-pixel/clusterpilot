@@ -456,6 +456,9 @@ function NotificationsPage() {
             {saved ? "Saved" : saving ? "Saving..." : "Save"}
           </button>
         </div>
+        <p style={{ margin: "6px 0 0", fontFamily: T.sans, fontSize: 14, color: T.dim }}>
+          When set, the daemon posts here instead of the topic in your config.toml.
+        </p>
         {topic && (
           <p style={{ margin: "6px 0 0", fontFamily: T.sans, fontSize: 14, color: T.dim }}>
             Subscribe on any device:{" "}

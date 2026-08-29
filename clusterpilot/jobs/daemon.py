@@ -32,7 +32,7 @@ from clusterpilot.cluster.slurm import (
     query_status,
     tail_log,
 )
-from clusterpilot.config import ClusterProfile, Config
+from clusterpilot.config import ClusterProfile, Config, NotificationConfig
 from clusterpilot.db import (
     DB_PATH,
     JobRecord,
@@ -245,7 +245,7 @@ class PollDaemon:
             job.log_path = log_path
             try:
                 if self._should_notify("started"):
-                    await notify_started(self.config.notifications, job)
+                    await notify_started(self._notifications(), job)
             except Exception:
                 log.warning("Failed to send start notification for %s", job.job_id, exc_info=True)
             await self._sync(job, new_status)
@@ -318,7 +318,7 @@ class PollDaemon:
         job.synced = synced
         try:
             if self._should_notify("completed"):
-                await notify_completed(self.config.notifications, job)
+                await notify_completed(self._notifications(), job)
         except Exception:
             log.warning("Failed to send completion notification for %s", job.job_id, exc_info=True)
 
@@ -469,7 +469,7 @@ class PollDaemon:
         log_tail = await self._failure_excerpt(profile, job)
         try:
             if self._should_notify("failed"):
-                await notify_failed(self.config.notifications, job, log_tail)
+                await notify_failed(self._notifications(), job, log_tail)
         except Exception:
             log.warning("Failed to send failure notification for %s", job.job_id, exc_info=True)
         await self._sync(job, status, log_tail=log_tail or None)
@@ -497,7 +497,7 @@ class PollDaemon:
             try:
                 if self._should_notify("low_time"):
                     await notify_low_time(
-                        self.config.notifications, job, int(remaining_min),
+                        self._notifications(), job, int(remaining_min),
                     )
             except Exception:
                 log.warning("Failed low-time notification for %s", job.job_id, exc_info=True)
@@ -510,7 +510,7 @@ class PollDaemon:
             try:
                 if self._should_notify("eta"):
                     await notify_eta(
-                        self.config.notifications, job, int(remaining_min),
+                        self._notifications(), job, int(remaining_min),
                     )
             except Exception:
                 log.warning("Failed ETA notification for %s", job.job_id, exc_info=True)
@@ -525,6 +525,16 @@ class PollDaemon:
         if self._cloud_prefs is None:
             return True
         return bool(getattr(self._cloud_prefs, event, True))
+
+    def _notifications(self) -> NotificationConfig:
+        """Where notifications go: the dashboard's topic when set, else config.toml.
+
+        Issue #43. The dashboard stores a topic URL, so a URL there also picks
+        the server; a bare topic keeps the local ``ntfy_server``.
+        """
+        if self._cloud_prefs is None or not self._cloud_prefs.ntfy_topic:
+            return self.config.notifications
+        return self.config.notifications.with_topic(self._cloud_prefs.ntfy_topic)
 
     # ── Hosted sync ───────────────────────────────────────────────────────────
 
@@ -573,6 +583,12 @@ class PollDaemon:
         prefs = await fetch_notification_preferences(self.config.hosted)
         if prefs is not None:
             self._cloud_prefs = prefs
+            if prefs.ntfy_topic and self._notifications() != self.config.notifications:
+                log.info(
+                    "Notifications go to the dashboard's ntfy topic %s, "
+                    "not the one in config.toml",
+                    self._notifications().resolved_url,
+                )
 
         async with aiosqlite.connect(self.db_path) as db:
             await init_db(db)

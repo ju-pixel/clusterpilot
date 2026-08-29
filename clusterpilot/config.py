@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from clusterpilot import paths
@@ -117,6 +117,26 @@ class NotificationConfig:
         if not self.ntfy_topic:
             return ""
         return f"{self.ntfy_server.rstrip('/')}/{self.ntfy_topic}"
+
+    def with_topic(self, value: str) -> NotificationConfig:
+        """A copy pointed at ``value``, as the dashboard's topic field stores it.
+
+        The field holds either a full topic URL (``https://ntfy.sh/my-jobs``,
+        the placeholder the page shows) or a bare topic. A URL sets both the
+        server and the topic, so a self-hosted ntfy typed there is honoured; a
+        bare topic keeps the local ``ntfy_server``. An empty value, or a server
+        URL with no topic, changes nothing.
+        """
+        raw = value.strip().rstrip("/")
+        if not raw:
+            return self
+        _, has_scheme, rest = raw.partition("://")
+        if not has_scheme:
+            return replace(self, ntfy_topic=raw)
+        if "/" not in rest:
+            return self
+        server, _, topic = raw.rpartition("/")
+        return replace(self, ntfy_server=server, ntfy_topic=topic)
 
 
 @dataclass
