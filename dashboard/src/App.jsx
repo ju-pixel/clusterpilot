@@ -939,7 +939,7 @@ function SubscribeGate({ email, getToken }) {
                 }}
               />
               <span style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>
-                × $2.55 / month
+                × $5.10 / month
               </span>
             </div>
             <button
