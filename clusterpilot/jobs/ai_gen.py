@@ -55,7 +55,9 @@ TRUNCATION_STOP_REASON = "max_tokens"
 # Per-million-token pricing (input, output) by model.
 # Unknown models (e.g. local Ollama) default to (0, 0).
 _PRICING: dict[str, tuple[float, float]] = {
-    # Anthropic
+    # Anthropic. The 4.6 rows stay: existing configs still name them.
+    "claude-sonnet-5":    (2.00,  10.00),
+    "claude-opus-5":      (5.00,  25.00),
     "claude-sonnet-4-6":  (3.00,  15.00),
     "claude-opus-4-6":    (5.00,  25.00),
     "claude-haiku-4-5":   (0.80,   4.00),
@@ -75,6 +77,12 @@ class ApiUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     stop_reason: str = ""   # "max_tokens" means the generation was cut short
+    # Hosted tier only. The proxy substitutes the fallback model once the
+    # month's Opus allowance is spent and says so in its response; the fields
+    # are absent from an older API, so the defaults must stay harmless.
+    fallback: bool = False
+    remaining_opus: int | None = None
+    remaining_total: int | None = None
 
     @property
     def truncated(self) -> bool:
@@ -124,7 +132,7 @@ async def generate_script(
         description:    User's plain-language job description.
         probe:          Fresh or cached cluster probe (partitions, modules, account).
         profile:        Cluster connection profile (host, user, account, scratch).
-        model:          Model ID, e.g. "claude-sonnet-4-6".
+        model:          Model ID, e.g. "claude-sonnet-5".
         api_key:        Anthropic API key.
         partition:      Hard partition constraint from the picker. Empty means
                         the model chooses based on the description.
@@ -223,6 +231,24 @@ async def _stream_anthropic(
                 usage.model = model  # tokens stay 0, not fatal
 
 
+def _apply_allowance(usage: ApiUsage, data: dict, requested_model: str) -> None:
+    """Record the model actually used and the hosted allowance left, if given.
+
+    ``model_used``, ``fallback``, ``remaining_opus`` and ``remaining_total``
+    are additions to the proxy response. An API that predates them sends none
+    of the four, and every field then keeps its default, so an older deployment
+    keeps working exactly as before.
+    """
+    usage.model = str(data.get("model_used") or requested_model)
+    usage.fallback = bool(data.get("fallback", False))
+    remaining_opus = data.get("remaining_opus")
+    if remaining_opus is not None:
+        usage.remaining_opus = int(remaining_opus)
+    remaining_total = data.get("remaining_total")
+    if remaining_total is not None:
+        usage.remaining_total = int(remaining_total)
+
+
 async def _stream_proxy(
     system: str,
     description: str,
@@ -273,10 +299,10 @@ async def _stream_proxy(
     data = resp.json()
     text: str = data.get("text", "")
     if usage is not None:
-        usage.model = model
         usage.stop_reason = data.get("stop_reason", "") or ""
         usage.input_tokens = data.get("input_tokens", 0)
         usage.output_tokens = data.get("output_tokens", 0)
+        _apply_allowance(usage, data, model)
 
     # Yield in small chunks so the script panel updates progressively.
     chunk_size = 40
@@ -311,10 +337,10 @@ async def _read_ndjson(
             raise RuntimeError(f"Proxy returned an error: {event['error']}")
         if event.get("done"):
             if usage is not None:
-                usage.model = model
                 usage.stop_reason = event.get("stop_reason", "") or ""
                 usage.input_tokens = event.get("input_tokens", 0)
                 usage.output_tokens = event.get("output_tokens", 0)
+                _apply_allowance(usage, event, model)
             return
         delta = event.get("text")
         if delta:

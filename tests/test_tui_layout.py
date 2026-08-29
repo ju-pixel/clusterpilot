@@ -218,6 +218,56 @@ class TestGpuSizeRow:
                 assert app.query_one("#gpu-row").display is False
 
 
+class TestHarderJobRow:
+    """HARDER JOB picks Opus 5 for one generation. It is a per-job switch, so
+    what matters is that it is reachable at the smallest supported terminal and
+    that it actually reaches the model argument.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_switch_is_on_screen(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline():
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                assert on_screen(app, "#opus-switch")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("switched_on", "expected"),
+        [(False, "claude-sonnet-5"), (True, "claude-opus-5")],
+    )
+    async def test_the_switch_chooses_the_model(
+        self, tmp_path: Path, switched_on: bool, expected: str,
+    ):
+        from textual.widgets import Switch
+
+        recorded: dict[str, str] = {}
+
+        def fake_generate_script(*args, **kwargs):
+            recorded["model"] = kwargs["model"]
+
+            async def _stream():
+                yield "#!/bin/bash\n#SBATCH --job-name=test\necho hi\n"
+
+            return _stream()
+
+        app = build_app(tmp_path)
+        with offline(narval_probe()), \
+                patch("clusterpilot.tui.submit.generate_script", fake_generate_script):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                app.query_one("#opus-switch", Switch).value = switched_on
+                view = app.query_one("SubmitView")
+                view._stream_script("run my job")   # type: ignore[attr-defined]
+                for _ in range(8):
+                    await pilot.pause()
+
+        assert recorded["model"] == expected
+
+
 class TestJobsScreen:
     @pytest.mark.asyncio
     async def test_all_six_action_buttons_fit(self, tmp_path: Path):

@@ -143,6 +143,7 @@ HINTS: dict[str, str] = {
     "cluster-select":     "Choose which configured cluster the job goes to.",
     "partition-select":   "Choose the partition. Left blank, the AI picks one from the probed list.",
     "gpu-size-select":    "Whole GPU or a MIG slice. Blank asks for a whole GPU of the partition's type.",
+    "opus-switch":        "Generate this script with Opus 5. Hosted users have a monthly allowance; after it, Sonnet 5 is used and you are told.",
     "project-dir-input":  "Local project root to upload. Blank for a self-contained single script.",
     "script-path-input":  "The script the job runs, relative to the project directory.",
     "extra-files-input":  "Extra files to upload, comma-separated, bypassing the exclude rules.",
@@ -443,6 +444,29 @@ SubmitView {
 
 #gpu-size-select:focus {
     border: solid $amberDim;
+}
+
+#opus-row {
+    height: auto;
+    margin-bottom: 0;
+    layout: horizontal;
+}
+
+#opus-switch {
+    background: $bg3;
+    border: solid $border2;
+}
+
+#opus-switch:focus {
+    border: solid $amberDim;
+}
+
+#opus-caption {
+    width: 1fr;
+    height: 3;
+    padding-left: 1;
+    content-align: left middle;
+    color: $dim;
 }
 
 #project-dir-row {

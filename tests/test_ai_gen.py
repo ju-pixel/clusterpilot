@@ -1230,3 +1230,113 @@ class TestProxyStreaming:
         _install(monkeypatch, client)
         with pytest.raises(RuntimeError, match="HTTP 500"):
             await _collect(self._stream())
+
+
+class TestPricing:
+    """Sonnet 5 and Opus 5 are priced; the 4.6 rows stay for existing configs."""
+
+    def test_sonnet_5_is_priced(self):
+        usage = ApiUsage(model="claude-sonnet-5",
+                         input_tokens=1_000_000, output_tokens=1_000_000)
+        assert usage.cost_usd == pytest.approx(12.00)
+
+    def test_opus_5_is_priced(self):
+        usage = ApiUsage(model="claude-opus-5",
+                         input_tokens=1_000_000, output_tokens=1_000_000)
+        assert usage.cost_usd == pytest.approx(30.00)
+
+    def test_the_4_6_rows_are_kept(self):
+        from clusterpilot.jobs.ai_gen import _PRICING
+        assert _PRICING["claude-sonnet-4-6"] == (3.00, 15.00)
+        assert _PRICING["claude-opus-4-6"] == (5.00, 25.00)
+        assert _PRICING["claude-haiku-4-5"] == (0.80, 4.00)
+
+    def test_an_unknown_model_still_costs_nothing(self):
+        usage = ApiUsage(model="llama3.2", input_tokens=1000, output_tokens=1000)
+        assert usage.cost_usd == 0.0
+
+
+class TestAllowanceFieldsFromTheProxy:
+    """The proxy reports which model it actually used and what is left of the
+    month's allowance. The fields are additions, so an API that predates them
+    must leave every default in place rather than read as a spent allowance.
+    """
+
+    def _stream(self, usage):
+        from clusterpilot.jobs.ai_gen import _stream_proxy
+        return _stream_proxy(
+            "system", "description", "claude-opus-5", "cp-token",
+            "https://api.clusterpilot.sh/proxy", usage,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_done_line_carries_the_substitution(self, monkeypatch):
+        client = _FakeClient(_FakeStreamResponse(200, [
+            '{"text": "#!/bin/bash\\n"}',
+            '{"done": true, "input_tokens": 10, "output_tokens": 5,'
+            ' "stop_reason": "end_turn", "model_used": "claude-sonnet-5",'
+            ' "fallback": true, "remaining_opus": 0, "remaining_total": 109}',
+        ]))
+        _install(monkeypatch, client)
+        usage = ApiUsage()
+        await _collect(self._stream(usage))
+        assert usage.model == "claude-sonnet-5"
+        assert usage.fallback is True
+        assert usage.remaining_opus == 0
+        assert usage.remaining_total == 109
+
+    @pytest.mark.asyncio
+    async def test_the_done_line_without_the_fields_is_unchanged(self, monkeypatch):
+        client = _FakeClient(_FakeStreamResponse(200, [
+            '{"text": "#!/bin/bash\\n"}',
+            '{"done": true, "input_tokens": 10, "output_tokens": 5,'
+            ' "stop_reason": "end_turn"}',
+        ]))
+        _install(monkeypatch, client)
+        usage = ApiUsage()
+        await _collect(self._stream(usage))
+        assert usage.model == "claude-opus-5"   # the model asked for
+        assert usage.fallback is False
+        assert usage.remaining_opus is None
+        assert usage.remaining_total is None
+
+    @pytest.mark.asyncio
+    async def test_the_json_response_carries_the_substitution(self, monkeypatch):
+        client = _FakeClient(
+            _FakeStreamResponse(404, body=b"Not Found"),
+            _FakePostResponse(200, {
+                "text": "#!/bin/bash\n",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "stop_reason": "end_turn",
+                "model_used": "claude-sonnet-5",
+                "fallback": True,
+                "remaining_opus": 0,
+                "remaining_total": 42,
+            }),
+        )
+        _install(monkeypatch, client)
+        usage = ApiUsage()
+        await _collect(self._stream(usage))
+        assert usage.model == "claude-sonnet-5"
+        assert usage.fallback is True
+        assert (usage.remaining_opus, usage.remaining_total) == (0, 42)
+
+    @pytest.mark.asyncio
+    async def test_the_json_response_without_the_fields_is_unchanged(self, monkeypatch):
+        client = _FakeClient(
+            _FakeStreamResponse(404, body=b"Not Found"),
+            _FakePostResponse(200, {
+                "text": "#!/bin/bash\n",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "stop_reason": "end_turn",
+            }),
+        )
+        _install(monkeypatch, client)
+        usage = ApiUsage()
+        await _collect(self._stream(usage))
+        assert usage.model == "claude-opus-5"
+        assert usage.fallback is False
+        assert usage.remaining_opus is None
+        assert usage.remaining_total is None

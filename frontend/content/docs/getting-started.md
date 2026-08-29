@@ -25,7 +25,7 @@ The file has three parts: your defaults, one block per cluster, and notification
 
 ```toml
 [defaults]
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 api_key = ""              # or set ANTHROPIC_API_KEY in your shell
 poll_interval = 300       # seconds between job status checks
 

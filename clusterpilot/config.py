@@ -31,7 +31,10 @@ CONFIG_PATH = paths.config_path()
 _DEFAULT_TOML = """\
 [defaults]
 provider = "anthropic"        # "anthropic", "openai", or "ollama"
-model = "claude-sonnet-4-6"   # model name for the chosen provider
+model = "claude-sonnet-5"     # model name for the chosen provider
+                              #   anthropic: claude-sonnet-5 (default), or
+                              #   claude-opus-5 for harder jobs. Opus can also
+                              #   be picked per job with HARDER JOB on F2.
 api_key = ""                  # API key (not required for ollama)
                               #   anthropic: set here or export ANTHROPIC_API_KEY
                               #   openai:    set here or export OPENAI_API_KEY
@@ -180,7 +183,7 @@ _DEFAULT_DOWNLOAD_EXCLUDES: list[str] = [
 @dataclass
 class Defaults:
     provider: str = "anthropic"   # "anthropic", "openai", or "ollama"
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5"
     api_key: str = ""
     api_base_url: str = ""
     poll_interval: int = 300
@@ -418,7 +421,7 @@ def _from_dict(data: dict) -> Config:
     raw_defaults = data.get("defaults", {})
     defaults = Defaults(
         provider=raw_defaults.get("provider", "anthropic"),
-        model=raw_defaults.get("model", "claude-sonnet-4-6"),
+        model=raw_defaults.get("model", "claude-sonnet-5"),
         api_key=raw_defaults.get("api_key", ""),
         api_base_url=raw_defaults.get("api_base_url", ""),
         poll_interval=int(raw_defaults.get("poll_interval", 300)),

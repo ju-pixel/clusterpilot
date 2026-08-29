@@ -17,7 +17,9 @@ ClusterPilot automates the full local to cluster to local research cycle:
 
 Everything runs from a keyboard-driven terminal UI (amber phosphor aesthetic, naturally).
 
-<video src="https://github.com/user-attachments/assets/7bc688b2-9c35-4215-ae52-04750aaef889" autoplay loop muted playsinline></video>
+![ClusterPilot demo: describe a job, generate and check the script, submit it, watch it run](docs/demo/clusterpilot-demo.gif)
+
+*95 seconds, invented data, rendered from the real TUI by `tests/demo_video.py`. [MP4 version](docs/demo/clusterpilot-demo.mp4).*
 
 ### F2 — Describe your job and generate a SLURM script
 
@@ -124,7 +126,7 @@ or pairing is required.
 
 ```toml
 [defaults]
-model = "claude-sonnet-4-6"   # AI model to use for script generation
+model = "claude-sonnet-5"     # AI model to use for script generation
 api_key = ""                  # or set ANTHROPIC_API_KEY env var
 poll_interval = 300           # seconds between job status checks
 
@@ -145,7 +147,7 @@ ntfy_server = "https://ntfy.sh"
 
 | `provider` | `model` examples | API key |
 |------------|-----------------|---------|
-| `anthropic` (default) | `claude-sonnet-4-6`, `claude-opus-4-6` | `ANTHROPIC_API_KEY` env var or `api_key` in config |
+| `anthropic` (default) | `claude-sonnet-5` (default), `claude-opus-5` | `ANTHROPIC_API_KEY` env var or `api_key` in config |
 | `openai` | `gpt-4o`, `gpt-4o-mini`, `o4-mini` | `OPENAI_API_KEY` env var or `api_key` in config |
 | `ollama` | `llama3.2`, `qwen2.5-coder`, any local model | not required |
 

@@ -53,7 +53,7 @@ class TestFromDict:
 
     def test_minimal_config_uses_defaults(self):
         cfg = _from_dict({"clusters": [{"name": "grex", "host": "grex.example.com"}]})
-        assert cfg.defaults.model == "claude-sonnet-4-6"
+        assert cfg.defaults.model == "claude-sonnet-5"
         assert cfg.defaults.poll_interval == 300
         assert cfg.clusters[0].user == ""
         assert cfg.notifications.ntfy_server == "https://ntfy.sh"
@@ -79,7 +79,7 @@ class TestConfigMethods:
     @pytest.fixture
     def cfg(self):
         return Config(
-            defaults=Defaults(model="claude-sonnet-4-6", api_key="", poll_interval=300),
+            defaults=Defaults(api_key="", poll_interval=300),
             clusters=[
                 ClusterProfile(
                     name="grex",
@@ -119,7 +119,7 @@ class TestConfigMethods:
         assert cfg.api_key == ""
 
     def test_model_property(self, cfg):
-        assert cfg.model == "claude-sonnet-4-6"
+        assert cfg.model == "claude-sonnet-5"
 
     def test_poll_interval_property(self, cfg):
         assert cfg.poll_interval == 300
@@ -433,3 +433,27 @@ class TestProfilePaths:
         finally:
             monkeypatch.delenv("CLUSTERPILOT_HOME", raising=False)
             importlib.reload(config_module)
+
+
+# ── Default model ─────────────────────────────────────────────────────────────
+
+class TestDefaultModel:
+    """Sonnet 5 is the default everywhere; Opus is a per-job choice on F2."""
+
+    def test_dataclass_default(self):
+        assert Defaults().model == "claude-sonnet-5"
+
+    def test_missing_key_falls_back_to_sonnet_5(self):
+        cfg = _from_dict({})
+        assert cfg.model == "claude-sonnet-5"
+
+    def test_the_template_names_both_models(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        write_default_config(config_file)
+        text = config_file.read_text()
+        assert 'model = "claude-sonnet-5"' in text
+        assert "claude-opus-5" in text
+
+    def test_an_older_4_6_name_is_still_accepted(self):
+        cfg = _from_dict({"defaults": {"model": "claude-sonnet-4-6"}})
+        assert cfg.model == "claude-sonnet-4-6"

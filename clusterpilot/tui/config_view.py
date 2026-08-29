@@ -5,23 +5,36 @@ import os
 import subprocess
 from typing import TYPE_CHECKING, cast
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Static
 
 from clusterpilot.config import CONFIG_PATH, ConfigError, load_config
+from clusterpilot.jobs.sync import Allowance, fetch_allowance
 from clusterpilot.ssh.connection import _CONTROL_PATH
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
+
+_ALLOWANCE_LOADING = "[#7a6a50]loading…[/]"
+_ALLOWANCE_UNKNOWN = "[#7a6a50](unknown)[/]"
 
 
 def _row(key: str, value: str) -> str:
     return f"[#7a6a50]{key:<20}[/] [#f0e8d0]{value}[/]\n"
 
 
-def _render(app: "ClusterPilotApp") -> str:
+def _format_allowance(allowance: Allowance) -> str:
+    """One line for the F9 row: what is spent, out of what, and when it resets."""
+    return (
+        f"Opus {allowance.opus_used}/{allowance.opus_limit}, "
+        f"total {allowance.total_used}/{allowance.total_limit}, "
+        f"resets {allowance.resets_on}"
+    )
+
+
+def _render(app: "ClusterPilotApp", allowance: str = "") -> str:
     cfg = app._config
     lines: list[str] = []
 
@@ -85,6 +98,10 @@ def _render(app: "ClusterPilotApp") -> str:
     if cfg.hosted.api_token:
         masked = cfg.hosted.api_token[:6] + "…"
         lines.append(_row("Token", f"[#7a6a50]{masked}[/] [#6ed86e](active)[/]"))
+        # This month's generation budget, fetched in the background so a slow
+        # or unreachable API cannot hold up the screen. Self-hosted users pay
+        # their own key and have no allowance, so they get no row at all.
+        lines.append(_row("Allowance", allowance or _ALLOWANCE_LOADING))
     else:
         lines.append(
             f"[#7a6a50]{'Token':<20}[/] [#7a6a50](not set — issue one from the dashboard)[/]\n"
@@ -103,11 +120,31 @@ class ConfigView(Static):
             yield Button("✎  EDIT CONFIG", id="btn-edit-config")
 
     def on_mount(self) -> None:
+        self._allowance: str = ""
         self._refresh_display()
+        self._load_allowance()
 
     def _refresh_display(self) -> None:
         app = cast("ClusterPilotApp", self.app)
-        self.query_one("#config-content", Static).update(_render(app))
+        self.query_one("#config-content", Static).update(
+            _render(app, getattr(self, "_allowance", ""))
+        )
+
+    @work(exclusive=True)
+    async def _load_allowance(self) -> None:
+        """Fill the Allowance row in the background, never blocking the render.
+
+        A failure leaves the row reading "unknown": the config view is not the
+        place to raise, and a missing figure is better than a wrong one.
+        """
+        app = cast("ClusterPilotApp", self.app)
+        if not app._config.hosted.api_token:
+            return
+        allowance: Allowance | None = await fetch_allowance(app._config.hosted)
+        self._allowance = (
+            _format_allowance(allowance) if allowance is not None else _ALLOWANCE_UNKNOWN
+        )
+        self._refresh_display()
 
     @on(Button.Pressed, "#btn-edit-config")
     def on_edit_config(self) -> None:

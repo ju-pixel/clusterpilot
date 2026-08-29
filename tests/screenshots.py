@@ -92,7 +92,7 @@ def demo_jobs() -> list[tuple[JobRecord, float | None, float | None, bool]]:
             script_path="/scratch/alice/job.sh",
             local_dir="/home/alice/projects/spinglass",
             walltime="04:00:00",
-            model_used="claude-sonnet-4-6",
+            model_used="claude-sonnet-5",
             input_tokens=5_200,
             output_tokens=1_150,
         )

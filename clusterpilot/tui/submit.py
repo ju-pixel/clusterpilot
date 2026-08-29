@@ -18,7 +18,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.events import DescendantFocus
 from textual.suggester import Suggester
-from textual.widgets import Button, Input, Label, Select, Static, TextArea
+from textual.widgets import Button, Input, Label, Select, Static, Switch, TextArea
 
 from clusterpilot.cluster.probe import PartitionAvailability, fetch_availability, probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
@@ -134,6 +134,10 @@ _JOB_NAME_SUFFIX_RE = re.compile(r"-\d{4}-\d{4}$")
 # is a hint rather than a constraint, and whose compute nodes have no internet
 # and need the login-node pre-flight. Trillium joined DRAC here in issue #29.
 _ROUTED_TYPES: frozenset[str] = frozenset({"drac", "trillium"})
+
+# The model the HARDER JOB switch asks for, in place of the configured
+# default, for one generation.
+_OPUS_MODEL = "claude-opus-5"
 
 
 def _strip_job_name_suffix(job_name: str) -> str:
@@ -471,6 +475,11 @@ class SubmitView(Static):
                         prompt="(a whole GPU)",
                         id="gpu-size-select",
                     )
+
+                with Horizontal(id="opus-row"):
+                    yield Label("HARDER JOB", classes="field-label")
+                    yield Switch(id="opus-switch", value=False)
+                    yield Static("Opus 5 for this script", id="opus-caption")
 
                 with Horizontal(id="project-dir-row"):
                     yield Label("PROJECT DIR", classes="field-label")
@@ -951,10 +960,19 @@ class SubmitView(Static):
                     severity="information",
                 )
 
+        # HARDER JOB is per generation, never a stored default: Opus costs
+        # more on a self-hosted key and eats a hosted allowance, so it is
+        # chosen deliberately each time the switch is left on.
+        model = (
+            _OPUS_MODEL
+            if self.query_one("#opus-switch", Switch).value
+            else app._config.model
+        )
+
         try:
             async for token in generate_script(
                 description, probe, profile,
-                model=app._config.model,
+                model=model,
                 api_key=api_key,
                 provider=provider,
                 api_base_url=api_base_url,
@@ -990,6 +1008,15 @@ class SubmitView(Static):
             severity="information",
             timeout=8,
         )
+
+        # The proxy substitutes Sonnet once the month's Opus allowance is
+        # spent. Say so: a quietly downgraded model is exactly the kind of
+        # thing that is noticed weeks later, in the script.
+        if self._last_usage.fallback:
+            self.app.notify(
+                "Opus allowance used up for this month; generated with Sonnet 5.",
+                severity="warning",
+            )
 
         # A generation cut off at the token ceiling looks plausible and is
         # missing its tail. Refuse it outright: it must never reach sbatch.
@@ -1397,6 +1424,12 @@ _HELP_GPU_SIZE = (
     "sooner but cannot span devices. Blank means a whole GPU.[/]"
 )
 
+_HELP_OPUS = (
+    "[#e8a020]HARDER JOB[/]  [#7a6a50]Generate this script with Opus 5. Hosted "
+    "users have a monthly allowance; after it, Sonnet 5 is used and you are "
+    "told.[/]"
+)
+
 _HELP_PROJECT_DIR = (
     "[#e8a020]PROJECT DIR[/]  [#7a6a50]Optional local project root, rsynced to "
     "the cluster minus the built-in excludes and .clusterpilotignore.[/]"
@@ -1432,6 +1465,7 @@ _HELP_MAP: dict[str, str] = {
     "cluster-select":   _HELP_CLUSTER,
     "partition-select": _HELP_PARTITION,
     "gpu-size-select":  _HELP_GPU_SIZE,
+    "opus-switch":      _HELP_OPUS,
     "project-dir-input": _HELP_PROJECT_DIR,
     "script-path-input": _HELP_SCRIPT_PATH,
     "extra-files-input": _HELP_EXTRA_FILES,
