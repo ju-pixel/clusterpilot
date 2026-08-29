@@ -642,7 +642,7 @@ function AccountPage({ email, userInfo }) {
           <div>
             <div style={{ fontFamily: T.sans, fontSize: 17, fontWeight: 600, color: T.text }}>
               Researcher{" "}
-              <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>$3 / month</span>
+              <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>$6 / month</span>
             </div>
             <div style={{ fontFamily: T.sans, fontSize: 15, color: T.dim, marginTop: 3 }}>
               {userInfo?.subscription_status === "trialing" ? "Free trial active"
@@ -880,7 +880,7 @@ function SubscribeGate({ email, getToken }) {
               Start your free trial
             </h2>
             <p style={{ margin: "0 0 28px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
-              14 days free, then $3 / month. Cancel any time.
+              14 days free, then $6 / month. Founding price, locked for the first 50 subscribers. Cancel any time.
             </p>
             <div style={{ marginBottom: 28 }}>
               {[

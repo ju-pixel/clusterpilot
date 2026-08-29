@@ -557,11 +557,11 @@ function Pricing() {
             featured={true}
           />
           <PricingCard
-            badge="New"
+            badge="Founding price"
             title="Hosted"
-            price="$3"
+            price="$6"
             priceSub="/ month"
-            desc="Zero setup. Managed API key, web dashboard, and cloud sync across all your machines. For researchers who want it to just work."
+            desc="Zero setup. Managed API key, web dashboard, and cloud sync across all your machines. For researchers who want it to just work. The first 50 subscribers keep this price for as long as they stay."
             features={[
               'Everything in Self-hosted',
               'Managed API key – no Anthropic account needed',
