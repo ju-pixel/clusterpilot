@@ -123,3 +123,31 @@ class TestSyncPayloadAccounting:
         payload = await self._payload(_make_job(account="", array_spec=""))
         assert payload["account"] is None
         assert payload["array_spec"] is None
+
+
+class TestSyncPayloadProvenance:
+    """A measured figure must reach the dashboard labelled as measured."""
+
+    async def _payload(self, job: JobRecord) -> dict:
+        client = _mock_http_client(200)
+        with patch("clusterpilot.jobs.sync.httpx.AsyncClient", return_value=client):
+            await sync_job(job, "COMPLETED", HostedConfig(api_token="cp-abc"))
+        return client.post.await_args.kwargs["json"]
+
+    async def test_billing_travels(self):
+        payload = await self._payload(_make_job(
+            alloc_billing=16000, billing_seconds=57_600_000.0,
+        ))
+        assert payload["alloc_billing"] == 16000
+        assert payload["billing_seconds"] == 57_600_000.0
+
+    async def test_the_source_travels(self):
+        assert (await self._payload(
+            _make_job(accounting_source="measured")
+        ))["accounting_source"] == "measured"
+        assert (await self._payload(
+            _make_job(accounting_source="sacct")
+        ))["accounting_source"] == "sacct"
+
+    async def test_an_unaccounted_job_sends_no_source(self):
+        assert (await self._payload(_make_job()))["accounting_source"] is None

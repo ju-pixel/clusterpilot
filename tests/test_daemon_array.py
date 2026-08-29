@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from clusterpilot.cluster.slurm import JobAccounting, JobStatus
+from clusterpilot.cluster.slurm import JobAccounting, JobAllocation, JobStatus
 from clusterpilot.config import ClusterProfile, Config, Defaults
 from clusterpilot.db import JobRecord
 from clusterpilot.jobs.daemon import PollDaemon
@@ -68,11 +68,18 @@ async def _poll(
         "job_efficiency": AsyncMock(return_value=""),
         "job_accounting": AsyncMock(return_value=JobAccounting()),
         "update_accounting": AsyncMock(),
+        # squeue runs every poll to measure reserved time (issue #47).
+        "job_allocation": AsyncMock(return_value=JobAllocation()),
+        "update_allocation": AsyncMock(),
+        "accumulate_reserved": AsyncMock(),
     }
     with patch("clusterpilot.jobs.daemon.find_array_logs", new=mocks["find_array_logs"]), \
          patch("clusterpilot.jobs.daemon.job_efficiency", new=mocks["job_efficiency"]), \
          patch("clusterpilot.jobs.daemon.job_accounting", new=mocks["job_accounting"]), \
          patch("clusterpilot.jobs.daemon.update_accounting", new=mocks["update_accounting"]), \
+         patch("clusterpilot.jobs.daemon.job_allocation", new=mocks["job_allocation"]), \
+         patch("clusterpilot.jobs.daemon.update_allocation", new=mocks["update_allocation"]), \
+         patch("clusterpilot.jobs.daemon.accumulate_reserved", new=mocks["accumulate_reserved"]), \
          patch("clusterpilot.jobs.daemon.query_status",
                new=AsyncMock(return_value=status)), \
          patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
@@ -271,6 +278,9 @@ class TestEfficiencyAtTerminalTransition:
             "job_efficiency": AsyncMock(return_value="CPU 12%, mem 6% of 16 GB"),
             "job_accounting": AsyncMock(return_value=JobAccounting()),
             "update_accounting": AsyncMock(),
+            "job_allocation": AsyncMock(return_value=JobAllocation()),
+            "update_allocation": AsyncMock(),
+            "accumulate_reserved": AsyncMock(),
         }
         with patch("clusterpilot.jobs.daemon.query_status",
                    new=AsyncMock(return_value=status)), \
@@ -285,6 +295,9 @@ class TestEfficiencyAtTerminalTransition:
              patch("clusterpilot.jobs.daemon.job_efficiency", new=mocks["job_efficiency"]), \
              patch("clusterpilot.jobs.daemon.job_accounting", new=mocks["job_accounting"]), \
              patch("clusterpilot.jobs.daemon.update_accounting", new=mocks["update_accounting"]), \
+             patch("clusterpilot.jobs.daemon.job_allocation", new=mocks["job_allocation"]), \
+             patch("clusterpilot.jobs.daemon.update_allocation", new=mocks["update_allocation"]), \
+             patch("clusterpilot.jobs.daemon.accumulate_reserved", new=mocks["accumulate_reserved"]), \
              patch.object(daemon, "_sync", new=AsyncMock()):
             await daemon._poll_job(MagicMock(), _PROFILE, job)
 
@@ -346,11 +359,17 @@ class TestAccountingAtTerminalTransition:
             "log_completed_job": MagicMock(),
             "job_efficiency": AsyncMock(return_value=""),
             "job_accounting": AsyncMock(return_value=acct),
+            "job_allocation": AsyncMock(return_value=JobAllocation()),
+            "update_allocation": AsyncMock(),
+            "accumulate_reserved": AsyncMock(),
         }
         with patch("clusterpilot.jobs.daemon.query_status",
                    new=AsyncMock(return_value=status)), \
              patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
              patch("clusterpilot.jobs.daemon.update_accounting", new=mocks["update_accounting"]), \
+             patch("clusterpilot.jobs.daemon.job_allocation", new=mocks["job_allocation"]), \
+             patch("clusterpilot.jobs.daemon.update_allocation", new=mocks["update_allocation"]), \
+             patch("clusterpilot.jobs.daemon.accumulate_reserved", new=mocks["accumulate_reserved"]), \
              patch("clusterpilot.jobs.daemon.download", new=mocks["download"]), \
              patch("clusterpilot.jobs.daemon.notify_completed", new=mocks["notify_completed"]), \
              patch("clusterpilot.jobs.daemon.notify_failed", new=mocks["notify_failed"]), \
@@ -401,6 +420,10 @@ class TestAccountingAtTerminalTransition:
                    new=AsyncMock(return_value=status)), \
              patch("clusterpilot.jobs.daemon.update_status", new=AsyncMock()), \
              patch("clusterpilot.jobs.daemon.update_accounting", new=AsyncMock()), \
+             patch("clusterpilot.jobs.daemon.job_allocation",
+                   new=AsyncMock(return_value=JobAllocation())), \
+             patch("clusterpilot.jobs.daemon.update_allocation", new=AsyncMock()), \
+             patch("clusterpilot.jobs.daemon.accumulate_reserved", new=AsyncMock()), \
              patch("clusterpilot.jobs.daemon.job_efficiency", new=AsyncMock(return_value="")), \
              patch("clusterpilot.jobs.daemon.job_accounting",
                    new=AsyncMock(side_effect=RuntimeError("slurmdbd unreachable"))), \

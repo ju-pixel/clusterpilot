@@ -26,7 +26,7 @@ from clusterpilot import paths
 if TYPE_CHECKING:
     import aiosqlite
 
-    from clusterpilot.cluster.slurm import JobAccounting
+    from clusterpilot.cluster.slurm import JobAccounting, JobAllocation
 
 # Resolved once at import. Set CLUSTERPILOT_HOME to relocate this, the config
 # file, the probe cache and the systemd unit together (see paths.py).
@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     core_seconds    REAL,              -- sum of cpus x elapsed over every task
     gpu_seconds     REAL,              -- sum of gpus x elapsed over every task
     exit_code       TEXT    NOT NULL DEFAULT '',  -- worst task's "<exit>:<signal>"
+    alloc_billing   INTEGER,           -- SLURM billing weight per task
+    billing_seconds REAL,              -- sum of billing x elapsed over every task
+    -- How the figures above were arrived at: 'sacct' when SLURM accounting
+    -- answered, 'measured' when ClusterPilot integrated the running task
+    -- count over its own poll cycles, empty when neither has happened. A
+    -- usage report must never present 'measured' as an accounting record.
+    accounting_source TEXT  NOT NULL DEFAULT '',
+    measured_at     REAL,              -- poll time the running total reaches
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -114,6 +122,10 @@ class JobRecord:
     core_seconds: float | None = None
     gpu_seconds: float | None = None
     exit_code: str = ""
+    alloc_billing: int | None = None
+    billing_seconds: float | None = None
+    accounting_source: str = ""   # 'sacct', 'measured', or "" for neither
+    measured_at: float | None = None
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -159,6 +171,10 @@ async def init_db(db: "aiosqlite.Connection") -> None:
         ("core_seconds",    "REAL"),
         ("gpu_seconds",     "REAL"),
         ("exit_code",      "TEXT NOT NULL DEFAULT ''"),
+        ("alloc_billing",   "INTEGER"),
+        ("billing_seconds", "REAL"),
+        ("accounting_source", "TEXT NOT NULL DEFAULT ''"),
+        ("measured_at",     "REAL"),
     ):
         try:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -260,13 +276,95 @@ async def update_accounting(
         UPDATE jobs SET
             alloc_cpus = ?, alloc_gpus = ?, alloc_nodes = ?,
             runtime_seconds = ?, core_seconds = ?, gpu_seconds = ?,
-            exit_code = ?
+            exit_code = ?, accounting_source = 'sacct'
         WHERE job_id = ? AND cluster_name = ?
         """,
         (
             acct.cpus, acct.gpus, acct.nodes,
             acct.runtime_seconds, acct.core_seconds, acct.gpu_seconds,
             acct.exit_code, job_id, cluster_name,
+        ),
+    )
+    await db.commit()
+
+
+async def update_allocation(
+    db: "aiosqlite.Connection",
+    job_id: str,
+    cluster_name: str,
+    alloc: "JobAllocation",
+    *,
+    measured_at: float,
+) -> None:
+    """Store the per-task allocation squeue reported, once, when it is known.
+
+    An empty allocation is a no-op, so a squeue that answered nothing never
+    replaces one that answered something.
+    """
+    if alloc.is_empty:
+        return
+    await db.execute(
+        """
+        UPDATE jobs SET
+            alloc_cpus = ?, alloc_gpus = ?, alloc_nodes = ?, alloc_billing = ?,
+            measured_at = COALESCE(measured_at, ?)
+        WHERE job_id = ? AND cluster_name = ?
+        """,
+        (alloc.cpus, alloc.gpus, alloc.nodes, alloc.billing,
+         measured_at, job_id, cluster_name),
+    )
+    await db.commit()
+
+
+async def accumulate_reserved(
+    db: "aiosqlite.Connection",
+    job_id: str,
+    cluster_name: str,
+    *,
+    running_tasks: int,
+    seconds: float,
+    cpus: int | None,
+    gpus: int | None,
+    billing: int | None,
+    now: float,
+) -> None:
+    """Add one poll interval's worth of reserved resource time.
+
+    ClusterPilot cannot ask SLURM accounting what an array cost on a cluster
+    whose sacct is unreachable, so it measures instead: every poll it knows how
+    many tasks are running, and multiplies that by the per-task allocation and
+    the time since the previous poll. Summed over the job's life that is the
+    reserved resource time, accurate to within one poll interval per task
+    transition rather than assuming every task ran for the whole wall-clock
+    span, which is what a single start-to-finish figure would do.
+
+    Nothing is added when no task is running, so queued time is never charged.
+    """
+    if running_tasks <= 0 or seconds <= 0:
+        await db.execute(
+            "UPDATE jobs SET measured_at = ? WHERE job_id = ? AND cluster_name = ?",
+            (now, job_id, cluster_name),
+        )
+        await db.commit()
+        return
+
+    task_seconds = running_tasks * seconds
+    await db.execute(
+        """
+        UPDATE jobs SET
+            core_seconds    = COALESCE(core_seconds, 0)    + ?,
+            gpu_seconds     = COALESCE(gpu_seconds, 0)     + ?,
+            billing_seconds = COALESCE(billing_seconds, 0) + ?,
+            accounting_source = CASE WHEN accounting_source = 'sacct'
+                                     THEN 'sacct' ELSE 'measured' END,
+            measured_at = ?
+        WHERE job_id = ? AND cluster_name = ?
+        """,
+        (
+            (cpus or 0) * task_seconds,
+            (gpus or 0) * task_seconds,
+            (billing or 0) * task_seconds,
+            now, job_id, cluster_name,
         ),
     )
     await db.commit()
@@ -346,12 +444,13 @@ async def get_jobs_missing_accounting(
     limit: int | None = None,
     cluster_name: str | None = None,
 ) -> list[JobRecord]:
-    """Finished jobs that never got an accounting record, newest first.
+    """Finished jobs SLURM accounting has never answered about, newest first.
 
-    ``runtime_seconds`` is the marker rather than ``core_seconds``: it is set
-    whenever sacct returned any record at all, while a job on a site that does
-    not report CPU counts legitimately has no core-seconds. Keying off
-    core-seconds would ask sacct about those jobs again on every backfill.
+    Keyed on ``accounting_source`` rather than on any figure being NULL, so a
+    job ClusterPilot measured for itself is still offered to a later backfill.
+    That is deliberate: a measured estimate should be upgraded to a real
+    accounting record whenever slurmdbd becomes reachable again, and on the
+    Alliance clusters that outage is often temporary (issue #47).
 
     Newest first because a site's accounting retention is finite: the oldest
     jobs are the ones sacct will have forgotten, so the useful work happens at
@@ -360,7 +459,7 @@ async def get_jobs_missing_accounting(
     from clusterpilot.cluster.slurm import TERMINAL_STATES
     placeholders = ",".join("?" * len(TERMINAL_STATES))
     sql = (
-        f"SELECT * FROM jobs WHERE runtime_seconds IS NULL "
+        f"SELECT * FROM jobs WHERE accounting_source != 'sacct' "
         f"AND status IN ({placeholders})"
     )
     params: list[object] = list(TERMINAL_STATES)
@@ -409,7 +508,7 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         efficiency = values[24] if len(values) > 24 else ""
     # Accounting columns, added later still again. Absent on a row written
     # before this release, which reads as None rather than zero.
-    acct = values[25:32] + (None,) * max(0, 32 - len(values))
+    acct = values[25:36] + (None,) * max(0, 36 - len(values))
     return JobRecord(
         row_id=row_id,
         job_id=job_id,
@@ -443,4 +542,8 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         core_seconds=acct[4],
         gpu_seconds=acct[5],
         exit_code=acct[6] or "",
+        alloc_billing=acct[7],
+        billing_seconds=acct[8],
+        accounting_source=acct[9] or "",
+        measured_at=acct[10],
     )

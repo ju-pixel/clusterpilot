@@ -232,6 +232,13 @@ async def sync_job(
         "runtime_seconds": job.runtime_seconds,
         "core_seconds": job.core_seconds,
         "gpu_seconds": job.gpu_seconds,
+        "alloc_billing": job.alloc_billing,
+        "billing_seconds": job.billing_seconds,
+        # 'sacct' or 'measured'. The dashboard and any exported report must
+        # keep the two apart: a measured figure is ClusterPilot's own
+        # integration of running tasks over its poll cycles, not a scheduler
+        # accounting record, and must never be presented as one.
+        "accounting_source": job.accounting_source or None,
     }
     if log_tail:
         payload["log_tail"] = log_tail

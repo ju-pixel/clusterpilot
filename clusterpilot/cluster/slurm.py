@@ -21,8 +21,11 @@ TERMINAL_STATES = frozenset({
     "OUT_OF_MEMORY", "NODE_FAIL",
 })
 
-# States that mean at least one task is on a node right now.
-_RUNNING_LIKE = ("RUNNING", "COMPLETING")
+# States that mean at least one task is on a node right now. Public because
+# the daemon counts running tasks to measure reserved time (issue #47), and
+# that count has to agree with what aggregate() calls running.
+RUNNING_STATES = frozenset({"RUNNING", "COMPLETING"})
+_RUNNING_LIKE = tuple(sorted(RUNNING_STATES))
 
 # Worst-first severity used to pick the aggregate state of a finished array.
 _FAILURE_SEVERITY = (
@@ -719,3 +722,93 @@ def _first_sacct_error(message: str) -> str:
         if stripped.startswith("sacct: error:"):
             return stripped[len("sacct: error:"):].strip()
     return message.strip().splitlines()[0] if message.strip() else "sacct failed"
+
+
+# ── Live allocation (squeue) ──────────────────────────────────────────────────
+
+# squeue's --Format fields are fixed-width and truncate silently. A job with
+# several GRES types runs long: the widest seen on Narval is about 70
+# characters, so this leaves room and the truncation check below catches the
+# day it does not.
+_ALLOC_WIDTH = 200
+
+
+@dataclass(frozen=True)
+class JobAllocation:
+    """What the scheduler has actually given one task of a job, right now.
+
+    Read from ``squeue``, which talks to slurmctld rather than slurmdbd. That
+    matters: sacct cannot reach slurmdbd from an Alliance login node (issue
+    #47), while squeue works there every poll cycle.
+
+    ``billing`` is SLURM's own weighting of the allocation and is the number a
+    scheduler charges against an allocation. It is not proportional to CPU
+    count: a Narval job with four CPUs and four A100s bills at 16000 while a
+    plain eight-CPU job bills at 8. Reporting the first as "four core-hours"
+    would understate it by three orders of magnitude.
+    """
+
+    cpus: int | None = None
+    gpus: int | None = None
+    nodes: int | None = None
+    billing: int | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return self.cpus is None and self.gpus is None and self.billing is None
+
+
+def _parse_allocation(text: str) -> JobAllocation:
+    """Fold squeue's per-task TRES lines into one per-task allocation.
+
+    Every task of an array is allocated identically, so the largest value seen
+    wins; that only matters when one line is truncated or blank.
+    """
+    cpus = gpus = nodes = billing = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if len(line) >= _ALLOC_WIDTH:
+            # The field filled its column, so the tail is probably missing and
+            # with it the GRES entries. Half an allocation is worse than none:
+            # it would yield a confident, wrong core-hour figure.
+            log.warning(
+                "squeue TRES output hit the %d character field width and may "
+                "be truncated; ignoring it", _ALLOC_WIDTH,
+            )
+            continue
+        tres = _parse_tres(line)
+        if not tres:
+            continue
+        line_gpus = _tres_gpus(tres)
+        if tres.get("cpu") is not None:
+            cpus = max(cpus or 0, int(tres["cpu"]))
+        if line_gpus is not None:
+            gpus = max(gpus or 0, int(line_gpus))
+        if tres.get("node") is not None:
+            nodes = max(nodes or 0, int(tres["node"]))
+        if tres.get("billing") is not None:
+            billing = max(billing or 0, int(tres["billing"]))
+    return JobAllocation(cpus=cpus, gpus=gpus, nodes=nodes, billing=billing)
+
+
+async def job_allocation(host: str, user: str, job_id: str) -> JobAllocation:
+    """What the scheduler has given a queued or running job, empty if unknown.
+
+    Best-effort and never raises, but a failure is logged: this is the only
+    source of allocation data on a cluster whose sacct cannot reach slurmdbd,
+    so silence here means the usage report is empty and nothing says why.
+
+    Only answers while the job is still in the queue. Once it leaves, squeue
+    forgets it and sacct becomes the only source.
+    """
+    try:
+        output = await run_remote(
+            host, user,
+            f"squeue -j {job_id} -h -O tres-alloc:{_ALLOC_WIDTH}",
+        )
+    except Exception as exc:
+        log.debug("squeue allocation lookup failed for %s: %s", job_id, exc)
+        return JobAllocation()
+    return _parse_allocation(output)

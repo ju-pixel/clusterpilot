@@ -24,12 +24,14 @@ import aiosqlite
 
 from clusterpilot import paths
 from clusterpilot.cluster.slurm import (
+    RUNNING_STATES,
     TERMINAL_STATES,
     JobAccounting,
     JobStatus,
     find_array_logs,
     find_log,
     job_accounting,
+    job_allocation,
     job_efficiency,
     query_status,
     tail_log,
@@ -40,8 +42,10 @@ from clusterpilot.db import (
     JobRecord,
     get_active_jobs,
     get_all_jobs,
+    accumulate_reserved,
     init_db,
     update_accounting,
+    update_allocation,
     update_status,
 )
 from clusterpilot.jobs.fieldnotes import log_completed_job
@@ -200,6 +204,10 @@ class PollDaemon:
             )
             job.status_detail = summary
 
+        # Measured before the transition is handled, so the final poll of a
+        # job still charges the interval it was running for.
+        await self._measure_reserved(db, profile, job, status)
+
         if new_status != job.status:
             await self._handle_transition(db, profile, job, status)
             return
@@ -268,8 +276,9 @@ class PollDaemon:
             job.finished_at = now
             job.efficiency = efficiency
             if not acct.is_empty:
-                # Same rule as update_accounting: a cluster that told us
-                # nothing must not blank what we already hold.
+                # sacct is authoritative where it answers, so it replaces
+                # whatever was measured. Where it does not, the measured
+                # figures stand and keep saying so.
                 job.alloc_cpus = acct.cpus
                 job.alloc_gpus = acct.gpus
                 job.alloc_nodes = acct.nodes
@@ -277,6 +286,9 @@ class PollDaemon:
                 job.core_seconds = acct.core_seconds
                 job.gpu_seconds = acct.gpu_seconds
                 job.exit_code = acct.exit_code
+                job.accounting_source = "sacct"
+            elif job.finished_at and job.started_at and not job.runtime_seconds:
+                job.runtime_seconds = int(job.finished_at - job.started_at)
 
             if new_status == "COMPLETED":
                 await self._sync_and_notify_completed(db, profile, job, new_status)
@@ -397,6 +409,74 @@ class PollDaemon:
         except Exception:
             log.debug("seff failed for job %s, continuing", job.job_id, exc_info=True)
             return ""
+
+    async def _measure_reserved(
+        self,
+        db: aiosqlite.Connection,
+        profile: ClusterProfile,
+        job: JobRecord,
+        status: JobStatus,
+    ) -> None:
+        """Integrate reserved resource time over this poll interval.
+
+        Exists because sacct cannot reach slurmdbd from an Alliance login node
+        (issue #47), so on the clusters ClusterPilot is mostly used on there is
+        no accounting record to read afterwards. squeue talks to slurmctld,
+        which does answer, and it answers only while the job is in the queue,
+        so the measurement has to happen as the job runs rather than once at
+        the end.
+
+        Never raises: a failure here must not cost a status update.
+        """
+        try:
+            running = sum(
+                count for state, count in status.counts.items()
+                if state in RUNNING_STATES
+            )
+            now = time.time()
+
+            if job.alloc_cpus is None and job.alloc_billing is None and running:
+                alloc = await job_allocation(profile.host, profile.user, job.job_id)
+                if alloc.is_empty:
+                    return
+                await update_allocation(
+                    db, job.job_id, job.cluster_name, alloc, measured_at=now,
+                )
+                job.alloc_cpus = alloc.cpus
+                job.alloc_gpus = alloc.gpus
+                job.alloc_nodes = alloc.nodes
+                job.alloc_billing = alloc.billing
+                job.measured_at = job.measured_at or now
+                # No time has passed since the allocation became known, so
+                # there is nothing to charge for yet.
+                return
+
+            if job.measured_at is None:
+                return
+
+            elapsed = now - job.measured_at
+            await accumulate_reserved(
+                db, job.job_id, job.cluster_name,
+                running_tasks=running,
+                seconds=elapsed,
+                cpus=job.alloc_cpus,
+                gpus=job.alloc_gpus,
+                billing=job.alloc_billing,
+                now=now,
+            )
+            job.measured_at = now
+            if running > 0:
+                task_seconds = running * elapsed
+                job.core_seconds = (job.core_seconds or 0) + (job.alloc_cpus or 0) * task_seconds
+                job.gpu_seconds = (job.gpu_seconds or 0) + (job.alloc_gpus or 0) * task_seconds
+                job.billing_seconds = (
+                    (job.billing_seconds or 0) + (job.alloc_billing or 0) * task_seconds
+                )
+                if job.accounting_source != "sacct":
+                    job.accounting_source = "measured"
+        except Exception:
+            log.debug("Reserved-time measurement failed for %s, continuing",
+                      job.job_id, exc_info=True)
 
     async def _job_accounting(
         self,

@@ -135,6 +135,13 @@ class Job(Base):
     runtime_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     core_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     gpu_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    alloc_billing: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    billing_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # 'sacct' or 'measured'. See the client's db.py: 'measured' figures are
+    # ClusterPilot's own integration of running tasks over poll cycles, used
+    # where sacct cannot reach slurmdbd. A usage report must show which is
+    # which rather than blending them into one total.
+    accounting_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # Placeholder for Track F: populated when the user links a Fieldnotes run.
     fieldnotes_run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 

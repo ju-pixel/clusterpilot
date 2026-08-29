@@ -54,6 +54,9 @@ class JobUpsert(BaseModel):
     runtime_seconds: Optional[int] = None
     core_seconds: Optional[float] = None
     gpu_seconds: Optional[float] = None
+    alloc_billing: Optional[int] = None
+    billing_seconds: Optional[float] = None
+    accounting_source: Optional[str] = None
 
 
 class JobOut(BaseModel):
@@ -79,6 +82,9 @@ class JobOut(BaseModel):
     runtime_seconds: Optional[int]
     core_seconds: Optional[float]
     gpu_seconds: Optional[float]
+    alloc_billing: Optional[int]
+    billing_seconds: Optional[float]
+    accounting_source: Optional[str]
 
     submitted_at: Optional[datetime]
     started_at: Optional[datetime]
