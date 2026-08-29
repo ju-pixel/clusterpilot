@@ -49,10 +49,12 @@ user = ""          # your Grex username
 account = ""       # your SLURM account, e.g. def-stamps (leave blank if not required)
 scratch = "$HOME/clusterpilot_jobs"
 cluster_type = "grex"   # REQUIRED, set it per cluster: "drac" (Alliance/DRAC),
-                        # "grex" (UofM Grex), or "generic" (any other SLURM
-                        # cluster). Copying this stanza for a different cluster
-                        # means changing this line too: the wrong value silently
-                        # generates scripts the scheduler rejects.
+                        # "trillium" (Alliance Trillium at SciNet: whole-node
+                        # scheduling, 24 h cap, read-only $HOME on compute
+                        # nodes), "grex" (UofM Grex), or "generic" (any other
+                        # SLURM cluster). Copying this stanza for a different
+                        # cluster means changing this line too: the wrong value
+                        # silently generates scripts the scheduler rejects.
 
 [notifications]
 backend = "ntfy"
@@ -78,7 +80,7 @@ class ClusterProfile:
     user: str
     account: str
     scratch: str        # may contain $HOME — call expand_scratch() to resolve
-    cluster_type: str = "generic"   # "drac", "grex", or "generic"
+    cluster_type: str = "generic"   # "drac", "trillium", "grex", or "generic"
     inferred_cluster_type: bool = False   # True when cluster_type was guessed
                                           # from the host, not read from config
 
@@ -318,7 +320,18 @@ def write_default_config(path: Path = CONFIG_PATH) -> None:
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
 
-VALID_CLUSTER_TYPES: frozenset[str] = frozenset({"drac", "grex", "generic"})
+VALID_CLUSTER_TYPES: frozenset[str] = frozenset(
+    {"drac", "trillium", "grex", "generic"}
+)
+
+# Host fragments that identify a cluster type when cluster_type is absent, each
+# tested as a substring of the hostname. Order matters and the first match wins:
+# Trillium is reached at trillium.alliancecan.ca and trillium-gpu.alliancecan.ca,
+# both of which also end in .alliancecan.ca, and its quirks are not DRAC's
+# (issue #29), so it has to be matched first.
+_HOST_SUBSTRING_TYPES: tuple[tuple[str, str], ...] = (
+    ("trillium", "trillium"),
+)
 
 # Host suffixes that identify a cluster type when cluster_type is absent.
 _HOST_SUFFIX_TYPES: tuple[tuple[str, str], ...] = (
@@ -331,6 +344,9 @@ _HOST_SUFFIX_TYPES: tuple[tuple[str, str], ...] = (
 def infer_cluster_type(host: str) -> str:
     """Guess a cluster type from its hostname, defaulting to "generic"."""
     hostname = host.strip().lower().rstrip(".")
+    for fragment, cluster_type in _HOST_SUBSTRING_TYPES:
+        if fragment in hostname:
+            return cluster_type
     for suffix, cluster_type in _HOST_SUFFIX_TYPES:
         if hostname.endswith(suffix):
             return cluster_type

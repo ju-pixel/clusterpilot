@@ -953,3 +953,109 @@ class TestResourcesCheck:
             partitions=sized_partitions,
         )
         assert any(f.check == "resources" for f in findings)
+
+
+# ── Check: Trillium's own rules (#29) ─────────────────────────────────────────
+
+TRILLIUM_CLEAN = _sbatch(
+    "--job-name=demo",
+    "--account=def-stamps",
+    "--gpus-per-node=1",
+    "--time=12:00:00",
+    "--output=%x-%j.out",
+)
+
+
+class TestTrilliumCheck:
+    """Issue #29: Trillium schedules whole and quarter nodes, ignores --mem,
+    caps walltime at 24 h and mounts $HOME read-only on its compute nodes.
+    None of that is probeable, so the check is keyed off the configured type.
+    """
+
+    def _checks(self, script: str) -> list[str]:
+        findings = validate._check_trillium(script, SubmitIntent(cluster_type="trillium"))
+        assert all(f.severity is Severity.BLOCKING for f in findings)
+        return [f.message for f in findings]
+
+    def test_a_correct_trillium_script_passes(self):
+        assert self._checks(TRILLIUM_CLEAN) == []
+
+    def test_four_gpus_per_node_is_a_whole_node_and_passes(self):
+        assert self._checks(_sbatch("--gpus-per-node=4", "--time=24:00:00")) == []
+
+    def test_mem_is_refused(self):
+        messages = self._checks(_sbatch("--mem=16G"))
+        assert len(messages) == 1
+        assert "--mem" in messages[0]
+
+    def test_gres_is_refused(self):
+        messages = self._checks(_sbatch("--gres=gpu:h100:1"))
+        assert len(messages) == 1
+        assert "--gpus-per-node" in messages[0]
+
+    def test_gpus_is_refused(self):
+        messages = self._checks(_sbatch("--gpus=h100:1"))
+        assert len(messages) == 1
+        assert "--gpus=" in messages[0]
+
+    def test_two_gpus_per_node_is_refused(self):
+        messages = self._checks(_sbatch("--gpus-per-node=2"))
+        assert len(messages) == 1
+        assert "quarter node" in messages[0]
+
+    def test_walltime_over_twenty_four_hours_is_refused(self):
+        messages = self._checks(_sbatch("--time=1-12:00:00"))
+        assert len(messages) == 1
+        assert "24 hour" in messages[0]
+
+    def test_exactly_twenty_four_hours_passes(self):
+        assert self._checks(_sbatch("--time=24:00:00")) == []
+
+    def test_partition_is_refused(self):
+        messages = self._checks(_sbatch("--partition=compute"))
+        assert len(messages) == 1
+        assert "no user-facing" in messages[0]
+
+    def test_an_output_path_under_home_is_refused(self):
+        messages = self._checks(_sbatch("--output=/home/juliaf/logs/%x-%j.out"))
+        assert len(messages) == 1
+        assert "read-only" in messages[0]
+
+    def test_an_error_path_under_home_is_refused(self):
+        messages = self._checks(_sbatch("--error=$HOME/logs/%x-%j.err"))
+        assert len(messages) == 1
+        assert "--error=" in messages[0]
+
+    def test_a_scratch_path_passes(self):
+        assert self._checks(_sbatch("--output=$SCRATCH/logs/%x-%j.out")) == []
+        assert self._checks(_sbatch("--output=/scratch/juliaf/%x-%j.out")) == []
+
+    def test_a_relative_path_passes(self):
+        assert self._checks(_sbatch("--output=%x-%j.out")) == []
+
+    def test_every_problem_is_reported_at_once(self):
+        messages = self._checks(
+            _sbatch("--mem=16G", "--gres=gpu:h100:1", "--time=2-00:00:00")
+        )
+        assert len(messages) == 3
+
+    def test_no_other_cluster_type_is_touched(self):
+        script = _sbatch("--mem=16G", "--gres=gpu:1", "--time=7-00:00:00")
+        for cluster_type in ("drac", "grex", "generic", ""):
+            intent = SubmitIntent(cluster_type=cluster_type)
+            assert validate._check_trillium(script, intent) == []
+
+    def test_reached_through_validate_script(self, no_bash):
+        findings = validate_script(
+            _sbatch("--mem=16G"),
+            intent=SubmitIntent(cluster_type="trillium"),
+        )
+        assert any(f.check == "trillium" for f in findings)
+        assert blocking(findings)
+
+    def test_a_drac_script_through_validate_script_is_untouched(self, no_bash):
+        findings = validate_script(
+            _sbatch("--mem=16G", "--gres=gpu:a100:1", "--time=3-00:00:00"),
+            intent=SubmitIntent(cluster_type="drac"),
+        )
+        assert not any(f.check == "trillium" for f in findings)

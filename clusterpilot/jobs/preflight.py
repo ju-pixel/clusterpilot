@@ -1,9 +1,9 @@
 """Pre-flight dependency installation on cluster login nodes.
 
-DRAC compute nodes (Narval, Cedar, Beluga, Graham) have no outbound internet
-by Alliance Canada policy. Login nodes do. This module warms the user's
-package depot on the login node BEFORE sbatch, so the compute-node script
-can run offline against the depot via the NFS-shared ``$HOME``.
+DRAC compute nodes (Narval, Cedar, Beluga, Graham) and Trillium's have no
+outbound internet by Alliance Canada policy. Login nodes do. This module warms
+the user's package depot on the login node BEFORE sbatch, so the compute-node
+script can run offline against the depot via the NFS-shared ``$HOME``.
 
 Public entry point: :func:`warm_depot`. Dispatches on ``env.language``.
 Phase A implements Julia; Phase B will add Python.
@@ -23,6 +23,12 @@ from clusterpilot.ssh.connection import SSHError, run_remote
 # subsequent instantiate calls against the same depot are sub-minute. 30 min is
 # the headroom we give first-run cold warms.
 _DEFAULT_TIMEOUT = 1800.0
+
+# Cluster types whose compute nodes have no outbound internet, so the depot and
+# the Python site-packages have to be warmed on the login node first. Trillium
+# (SciNet) is an Alliance Canada site with the same no-internet policy as the
+# rest of DRAC, so it shares every step here (issue #29).
+_OFFLINE_COMPUTE_TYPES: frozenset[str] = frozenset({"drac", "trillium"})
 
 
 class PreflightError(Exception):
@@ -60,9 +66,11 @@ async def warm_depot(
         script:       The generated SLURM script, used to recover the exact
                       ``module load`` line (so the login-node Julia matches the
                       compute-node Julia).
-        cluster_type: ``"drac"``, ``"grex"``, or ``"generic"``. Triggers
-                      DRAC-specific quirk handling (writing
-                      ``LocalPreferences.toml`` for CUDA.jl).
+        cluster_type: ``"drac"``, ``"trillium"``, ``"grex"`` or ``"generic"``.
+                      ``"drac"`` and ``"trillium"`` are both Alliance Canada
+                      sites with no compute-node internet, so both trigger the
+                      DRAC quirk handling (writing ``LocalPreferences.toml``
+                      for CUDA.jl, and the login-node pip pre-install).
         timeout:      Maximum seconds to wait for the install command.
 
     Returns:
@@ -105,7 +113,7 @@ async def _warm_julia(
     # on the compute node provides libcuda.so. The `[ -f ... ]` guard lets a
     # user-authored LocalPreferences.toml from their project tree win.
     if (
-        cluster_type == "drac"
+        cluster_type in _OFFLINE_COMPUTE_TYPES
         and "CUDA" in env.third_party_imports
     ):
         await _ensure_drac_cuda_preferences(host, user, remote_dir)
@@ -157,13 +165,13 @@ async def _warm_python(
 ) -> bool:
     """Pre-install Python dependencies on the login node.
 
-    Only relevant on DRAC: Alliance Canada compute nodes have no outbound
-    internet, but the login node does and ``$HOME/.local`` is NFS-shared
-    between the two. On Grex and generic clusters the compute node can
-    reach PyPI directly, so the AI's in-script pip install is sufficient
+    Only relevant on DRAC and Trillium: Alliance Canada compute nodes have no
+    outbound internet, but the login node does and ``$HOME/.local`` is
+    NFS-shared between the two. On Grex and generic clusters the compute node
+    can reach PyPI directly, so the AI's in-script pip install is sufficient
     and this function is a no-op.
     """
-    if cluster_type != "drac":
+    if cluster_type not in _OFFLINE_COMPUTE_TYPES:
         return False
     if not env.has_manifest and not env.third_party_imports:
         return False

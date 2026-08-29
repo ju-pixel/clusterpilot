@@ -11,7 +11,12 @@ as an argument: walltime limits come from the probe (``PartitionInfo``), and
 everything else comes from the user's own submit fields (``SubmitIntent``).
 Where a check could only be made by building in per-cluster knowledge (queue
 walltime buckets, a site's GPU naming rules), the check is deliberately absent
-rather than guessed at. Note that despite its name ``cluster/slurm.py`` holds
+rather than guessed at. The single exception is ``trillium``, and it is a
+deliberate one: Trillium's whole-node scheduling, its ignored ``--mem`` and its
+read-only ``$HOME`` are site policy that no probe reports, and a script that
+breaks any of them is refused by sbatch or dies on its first write. That check
+runs only when ``SubmitIntent.cluster_type`` says the cluster is Trillium.
+Note that despite its name ``cluster/slurm.py`` holds
 no cluster-specific branching at all: the DRAC and Grex quirks live in
 ``jobs/ai_gen.py`` and ``jobs/preflight.py``. This module deliberately depends
 on none of them.
@@ -34,6 +39,7 @@ Checks implemented, by slug:
 ``walltime-over-partition`` ``--time`` exceeds the probed partition limit
 ``account-walltime``        ``--time`` exceeds the account's probed ceiling
 ``resources``               cores or memory exceed what a node in the partition has
+``trillium``                a directive Trillium refuses, on a Trillium cluster
 ``driver-not-uploaded``     the script runs a file the upload set omits
 ``stdbuf``                  the script wraps a command in stdbuf or LD_PRELOAD
 ``truncated``               the generation looks cut off part way through
@@ -116,6 +122,11 @@ class SubmitIntent:
                             the choice was left blank
     ``account``             the SLURM account the job will be charged to, taken
                             from the cluster profile, "" when none is set
+    ``cluster_type``        the profile's cluster type, "" when unknown. The
+                            only cluster fact here, and it is the user's own
+                            configuration rather than a probe result: it gates
+                            the Trillium check, whose rules are site policy and
+                            cannot be probed.
     """
 
     array_spec: str = ""
@@ -126,6 +137,7 @@ class SubmitIntent:
     requested_walltime: str = ""
     gpu_size: str = ""
     account: str = ""
+    cluster_type: str = ""
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -158,6 +170,7 @@ def validate_script(
     findings.extend(_check_walltime(script, intent, partitions))
     findings.extend(_check_account_walltime(script, intent, account_max_wall))
     findings.extend(_check_resources(script, intent, partitions))
+    findings.extend(_check_trillium(script, intent))
     findings.extend(_check_driver_uploaded(script, intent))
     findings.extend(_check_stdbuf(script))
     findings.extend(_check_truncated(script))
@@ -916,6 +929,137 @@ def _check_resources(
                         )
 
     return findings
+
+
+# ── Check: Trillium's own scheduling rules ────────────────────────────────────
+
+# Trillium (SciNet) schedules whole nodes and quarter nodes and nothing else,
+# and its documented rules cannot be probed from sinfo: they are site policy.
+# The check therefore runs only when the user's own profile says the cluster is
+# Trillium, and every other cluster type leaves it untouched (issue #29).
+_TRILLIUM_MAX_WALL_SECONDS = 24 * 3600
+_TRILLIUM_GPUS_PER_NODE = (1, 4)
+
+# A write target Trillium accepts from a compute node. $HOME and $PROJECT are
+# read-only there, so anything else that is rooted somewhere absolute fails on
+# the job's first write.
+_TRILLIUM_WRITABLE_PREFIXES = ("$SCRATCH", "${SCRATCH", "/scratch")
+
+
+def _trillium_finding(message: str, line: int | None) -> Finding:
+    """One Trillium finding, always blocking: each of these is a hard refusal."""
+    return Finding(
+        check="trillium",
+        severity=Severity.BLOCKING,
+        message=message,
+        line=line,
+    )
+
+
+def _check_trillium(script: str, intent: SubmitIntent) -> list[Finding]:
+    """Report directives Trillium refuses, on a Trillium cluster only.
+
+    Whole-node scheduling, an ignored ``--mem``, a 24 hour cap and a read-only
+    ``$HOME`` are all documented Trillium behaviour rather than anything sinfo
+    reports, so this is the one check keyed off the configured cluster type.
+    Every other cluster type returns immediately.
+    """
+    if intent.cluster_type.strip().lower() != "trillium":
+        return []
+
+    findings: list[Finding] = []
+
+    emitted_mem = _directive_value(script, "mem")
+    if emitted_mem is not None:
+        line, raw = emitted_mem
+        findings.append(_trillium_finding(
+            f"The script asks for --mem={raw}, but Trillium ignores --mem and its "
+            "documentation says not to set it: a node's memory comes with the node.",
+            line,
+        ))
+
+    emitted_gres = _directive_value(script, "gres")
+    if emitted_gres is not None:
+        line, raw = emitted_gres
+        findings.append(_trillium_finding(
+            f"The script asks for --gres={raw}. Trillium takes GPUs only through "
+            "--gpus-per-node=1 (a quarter node) or --gpus-per-node=4 (a whole node), "
+            "and has no MIG slices.",
+            line,
+        ))
+
+    emitted_gpus = _directive_value(script, "gpus")
+    if emitted_gpus is not None:
+        line, raw = emitted_gpus
+        findings.append(_trillium_finding(
+            f"The script asks for --gpus={raw}. On Trillium the GPU request is "
+            "--gpus-per-node=1 or --gpus-per-node=4, never --gpus.",
+            line,
+        ))
+
+    emitted_per_node = _directive_value(script, "gpus-per-node")
+    if emitted_per_node is not None:
+        line, raw = emitted_per_node
+        count = raw.split(":")[-1]
+        if not count.isdigit() or int(count) not in _TRILLIUM_GPUS_PER_NODE:
+            findings.append(_trillium_finding(
+                f"The script asks for --gpus-per-node={raw}. Trillium allocates one "
+                "quarter node (1) or a whole node (4) and nothing in between, so no "
+                "other value can be scheduled.",
+                line,
+            ))
+
+    emitted_time = _directive_value(script, "time")
+    if emitted_time is not None:
+        line, raw = emitted_time
+        requested = _parse_walltime_seconds(raw)
+        if requested is not None and requested > _TRILLIUM_MAX_WALL_SECONDS:
+            findings.append(_trillium_finding(
+                f"The script asks for --time={raw}, above Trillium's hard 24 hour "
+                "cap, so sbatch will refuse the job.",
+                line,
+            ))
+
+    emitted_partition = _directive_value(script, "partition")
+    if emitted_partition is not None:
+        line, raw = emitted_partition
+        findings.append(_trillium_finding(
+            f"The script emits --partition={raw}. Trillium has no user-facing "
+            "partition selection: the scheduler routes the job itself, and naming a "
+            "partition is rejected.",
+            line,
+        ))
+
+    for option in ("output", "error"):
+        emitted_path = _directive_value(script, option)
+        if emitted_path is None:
+            continue
+        line, raw = emitted_path
+        if _is_trillium_writable(raw):
+            continue
+        findings.append(_trillium_finding(
+            f"--{option}={raw} is rooted outside $SCRATCH. $HOME and $PROJECT are "
+            "read-only from Trillium compute nodes, so the job dies on its first "
+            "write. Leave the path relative, or put it under $SCRATCH.",
+            line,
+        ))
+
+    return findings
+
+
+def _is_trillium_writable(path: str) -> bool:
+    """True when a Trillium compute node could write to *path*.
+
+    A relative path is always fine: the job directory is under $SCRATCH already.
+    An absolute one has to name $SCRATCH or /scratch, and ``~``, ``$HOME`` and
+    ``$PROJECT`` are read-only there however they are spelled.
+    """
+    value = path.strip().strip('"').strip("'")
+    if not value:
+        return True
+    if value.startswith(_TRILLIUM_WRITABLE_PREFIXES):
+        return True
+    return not value.startswith(("/", "~", "$HOME", "${HOME", "$PROJECT", "${PROJECT"))
 
 
 # ── Check: the driver is in the upload set ────────────────────────────────────

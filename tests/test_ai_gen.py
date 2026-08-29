@@ -9,6 +9,7 @@ import pytest
 from clusterpilot.cluster.probe import ClusterProbe, PartitionInfo
 from clusterpilot.config import ClusterProfile
 from clusterpilot.jobs.ai_gen import (
+    ApiUsage,
     _build_system_prompt,
     _format_partitions,
     _one_gpu_of,
@@ -810,3 +811,422 @@ class TestNoStdbufRule:
     def test_python_alternative_is_named(self, grex_probe, grex_profile):
         prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
         assert "for Python use `python -u`" in prompt
+
+
+# ── #22: node cores and memory in the partition table ─────────────────────────
+
+class TestPartitionResourcesInTheTable:
+    """Issue #22: sinfo now reports %c and %m, so the model can size
+    --cpus-per-task and --mem against a real node instead of guessing.
+    """
+
+    def _sized_probe(self):
+        return ClusterProbe(
+            cluster_name="grex", probed_at=time.time(),
+            partitions=[
+                PartitionInfo(
+                    "skylake", "7-00:00:00", "", 10, is_default=True,
+                    cpus=52, memory_mb=192 * 1024,
+                ),
+            ],
+            julia_versions=[], accounts=[], account_max_wall={},
+        )
+
+    def test_cores_and_memory_are_rendered(self):
+        result = _format_partitions(self._sized_probe())
+        assert "cpus=52" in result
+        assert "mem=192G" in result
+
+    def test_a_probe_without_them_renders_as_before(self, grex_probe):
+        result = _format_partitions(grex_probe)
+        assert "cpus=" not in result
+        assert "mem=" not in result
+        assert "skylake        nodes=10   max=7-00:00:00  (CPU only)  [DEFAULT]" in result
+
+    def test_the_sizing_rule_is_in_the_prompt(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile)
+        assert (
+            "Size --cpus-per-task and --mem from the partition table above; "
+            "never request\n   more than a node has." in prompt
+        )
+
+
+# ── #23: the account's probed walltime ceiling ────────────────────────────────
+
+class TestAccountWalltimeCeiling:
+    """Issue #23: account_max_wall was probed and never used. An account
+    ceiling is enforced independently of the partition's, so it has to reach
+    the model.
+    """
+
+    def test_present_in_the_drac_routing_hint(self, narval_probe, narval_profile):
+        narval_probe.account_max_wall = {"def-stamps": "1-00:00:00"}
+        prompt = _build_system_prompt(
+            narval_probe, narval_profile, partition="gpubase_bynode_b3"
+        )
+        assert "Account walltime ceiling: 1-00:00:00 (hard limit)" in prompt
+
+    def test_stated_once_only(self, narval_probe, narval_profile):
+        narval_probe.account_max_wall = {"def-stamps": "1-00:00:00"}
+        prompt = _build_system_prompt(
+            narval_probe, narval_profile, partition="gpubase_bynode_b3"
+        )
+        assert prompt.count("Account walltime ceiling") == 1
+
+    def test_present_without_a_picked_partition(self, narval_probe, narval_profile):
+        narval_probe.account_max_wall = {"def-stamps": "1-00:00:00"}
+        prompt = _build_system_prompt(narval_probe, narval_profile)
+        assert "Account walltime ceiling: 1-00:00:00 (hard limit)" in prompt
+
+    def test_present_on_a_generic_cluster(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
+        assert "Account walltime ceiling: 7-00:00:00 (hard limit)" in prompt
+
+    def test_absent_when_the_account_is_not_in_the_dict(self, grex_probe, grex_profile):
+        grex_probe.account_max_wall = {}
+        prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
+        assert "Account walltime ceiling" not in prompt
+
+    def test_absent_when_the_ceiling_is_empty(self, narval_probe, narval_profile):
+        # sacctmgr is best-effort on DRAC: an unlimited account reports "".
+        prompt = _build_system_prompt(
+            narval_probe, narval_profile, partition="gpubase_bynode_b3"
+        )
+        assert "Account walltime ceiling" not in prompt
+
+
+# ── #31: the in-script GPU usage sampler ──────────────────────────────────────
+
+class TestGpuUsageSampler:
+    """Issue #31: a GPU job that never reports what it used cannot be sized
+    properly next time. The sampler runs on every cluster type.
+    """
+
+    def _cuda_env(self):
+        from clusterpilot.jobs.env_detect import ScriptEnvironment
+        return ScriptEnvironment(
+            language="julia",
+            has_manifest=True,
+            third_party_imports=["CUDA"],
+            driver_extension=".jl",
+        )
+
+    @pytest.mark.parametrize("cluster_type", ["drac", "grex", "generic"])
+    def test_the_sampler_is_in_the_gpu_block(self, grex_probe, cluster_type):
+        profile = ClusterProfile(
+            name="c", host="h", user="u", account="def-stamps",
+            scratch="$HOME/jobs", cluster_type=cluster_type,
+        )
+        prompt = _build_system_prompt(
+            grex_probe, profile, partition="stamps", script_env=self._cuda_env()
+        )
+        block = gpu_block(prompt)
+        assert "nvidia-smi --query-gpu=utilization.gpu,memory.used" in block
+        assert "gpu_usage.csv" in block
+        assert "kill %1 2>/dev/null || true" in block
+
+    def test_no_sampler_without_a_gpu_job(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
+        assert "nvidia-smi" not in prompt
+
+
+# ── #29: Trillium is not a general-purpose DRAC cluster ───────────────────────
+
+@pytest.fixture
+def trillium_probe():
+    return ClusterProbe(
+        cluster_name="trillium",
+        probed_at=time.time(),
+        partitions=[
+            PartitionInfo(
+                "compute", "1-00:00:00", "gpu:h100:4", 60, is_default=True,
+                cpus=192, memory_mb=768 * 1024,
+            ),
+        ],
+        julia_versions=["julia/1.11.3"],
+        accounts=["def-stamps"],
+        account_max_wall={"def-stamps": ""},
+        scratch_env="/scratch/juliaf",
+    )
+
+
+@pytest.fixture
+def trillium_profile():
+    return ClusterProfile(
+        name="trillium",
+        host="trillium-gpu.alliancecan.ca",
+        user="juliaf",
+        account="def-stamps",
+        scratch="$SCRATCH/clusterpilot_jobs",
+        cluster_type="trillium",
+    )
+
+
+class TestTrilliumPrompt:
+    """Issue #29: Trillium shares DRAC's routed scheduling, $SCRATCH policy,
+    sticky module environment and offline compute nodes, and nothing else.
+    Whole-node scheduling, a 24 h cap, an ignored --mem and a read-only $HOME
+    are its own.
+    """
+
+    def _cuda_env(self):
+        from clusterpilot.jobs.env_detect import ScriptEnvironment
+        return ScriptEnvironment(
+            language="julia",
+            has_manifest=True,
+            third_party_imports=["CUDA"],
+            driver_extension=".jl",
+        )
+
+    def test_no_hard_partition_directive(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(
+            trillium_probe, trillium_profile, partition="compute"
+        )
+        assert "   --partition      " not in prompt
+        assert "MUST use exactly `--partition=" not in prompt
+        assert "TRILLIUM SCHEDULING" in prompt
+
+    def test_no_module_purge(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(trillium_probe, trillium_profile)
+        assert "module purge" not in prompt
+
+    def test_gpu_request_is_gpus_per_node(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(
+            trillium_probe, trillium_profile, partition="compute",
+            script_env=self._cuda_env(),
+        )
+        block = gpu_block(prompt)
+        assert "#SBATCH --gpus-per-node=1" in block
+        assert "--gres=" not in block
+
+    def test_the_rules_block_forbids_gres_and_mem(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(trillium_probe, trillium_profile)
+        assert "TRILLIUM RULES" in prompt
+        assert "Never emit --gres" in prompt
+        assert "NEVER emit --mem" in prompt
+
+    def test_the_twenty_four_hour_cap_is_stated(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(trillium_probe, trillium_profile)
+        assert "--time must never exceed 24:00:00" in prompt
+
+    def test_home_is_read_only(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(trillium_probe, trillium_profile)
+        assert "$HOME and $PROJECT are READ-ONLY from compute nodes" in prompt
+        assert "must land under $SCRATCH" in prompt
+
+    def test_slurm_tmpdir_is_a_ram_disk_not_an_ssd(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(trillium_probe, trillium_profile)
+        assert "RAM disk" in prompt
+        assert "fast local node SSD" not in prompt
+
+    def test_the_script_must_not_submit_jobs(self, trillium_probe, trillium_profile):
+        prompt = _build_system_prompt(trillium_probe, trillium_profile)
+        assert "The script must not submit jobs" in prompt
+
+    def test_the_offline_julia_branch_is_shared_with_drac(
+        self, trillium_probe, trillium_profile
+    ):
+        prompt = _build_system_prompt(
+            trillium_probe, trillium_profile, script_env=self._cuda_env()
+        )
+        assert "JULIA_PKG_OFFLINE=true" in prompt
+        assert "Do NOT run Pkg.instantiate() or Pkg.add()" in prompt
+
+    def test_the_cuda_module_note_is_shared_with_drac(
+        self, trillium_probe, trillium_profile
+    ):
+        prompt = _build_system_prompt(
+            trillium_probe, trillium_profile, partition="compute",
+            script_env=self._cuda_env(),
+        )
+        assert "module load cuda/12.2" in prompt
+
+    def test_a_picked_gpu_size_becomes_a_count_not_a_type(
+        self, trillium_probe, trillium_profile
+    ):
+        prompt = _build_system_prompt(
+            trillium_probe, trillium_profile, partition="compute",
+            gpu_size="h100", script_env=self._cuda_env(),
+        )
+        block = gpu_block(prompt)
+        assert "--gres=gpu:h100:1" not in block
+        assert "emit `--gpus-per-node=1`" in block
+
+    def test_no_trillium_block_on_any_other_cluster_type(
+        self, narval_probe, narval_profile, grex_probe, grex_profile
+    ):
+        for probe, profile in (
+            (narval_probe, narval_profile), (grex_probe, grex_profile)
+        ):
+            prompt = _build_system_prompt(probe, profile)
+            assert "TRILLIUM" not in prompt
+
+
+# ── #41: the hosted proxy streams newline-delimited JSON ──────────────────────
+
+class _FakeStreamResponse:
+    """A stand-in for the streaming half of httpx's response."""
+
+    def __init__(self, status_code: int, lines: list[str] | None = None, body: bytes = b""):
+        self.status_code = status_code
+        self._lines = lines or []
+        self._body = body
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def aread(self) -> bytes:
+        return self._body
+
+
+class _FakePostResponse:
+    def __init__(self, status_code: int, payload: dict, text: str = ""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeClient:
+    """Records the URLs asked for and answers with prepared responses."""
+
+    def __init__(self, stream_response, post_response=None):
+        self.stream_response = stream_response
+        self.post_response = post_response
+        self.urls: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, method, url, **kwargs):
+        self.urls.append(url)
+        client = self
+
+        class _Ctx:
+            async def __aenter__(self):
+                return client.stream_response
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+    async def post(self, url, **kwargs):
+        self.urls.append(url)
+        return self.post_response
+
+
+async def _collect(agen) -> list[str]:
+    return [token async for token in agen]
+
+
+def _install(monkeypatch, client) -> None:
+    from clusterpilot.jobs import ai_gen
+    monkeypatch.setattr(ai_gen.httpx, "AsyncClient", lambda **kw: client)
+
+
+class TestProxyStreaming:
+    """Issue #41: the hosted tier stopped streaming when generation moved to a
+    single POST. The client now reads newline-delimited JSON as it arrives and
+    falls back to that POST only when the endpoint is not deployed yet.
+    """
+
+    def _stream(self, usage=None):
+        from clusterpilot.jobs.ai_gen import _stream_proxy
+        return _stream_proxy(
+            "system", "description", "claude-sonnet-4-6", "cp-token",
+            "https://api.clusterpilot.sh/proxy", usage,
+        )
+
+    @pytest.mark.asyncio
+    async def test_deltas_arrive_in_order(self, monkeypatch):
+        client = _FakeClient(_FakeStreamResponse(200, [
+            '{"text": "#!/bin/bash\\n"}',
+            '{"text": "#SBATCH --time=01:00:00\\n"}',
+            '',
+            '{"done": true, "input_tokens": 1200, "output_tokens": 340, "stop_reason": "end_turn"}',
+        ]))
+        _install(monkeypatch, client)
+        usage = ApiUsage()
+        tokens = await _collect(self._stream(usage))
+        assert tokens == ["#!/bin/bash\n", "#SBATCH --time=01:00:00\n"]
+        assert client.urls == ["https://api.clusterpilot.sh/proxy/generate-stream"]
+        assert usage.model == "claude-sonnet-4-6"
+        assert (usage.input_tokens, usage.output_tokens) == (1200, 340)
+        assert usage.stop_reason == "end_turn"
+        assert usage.truncated is False
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_generation_is_still_visible(self, monkeypatch):
+        client = _FakeClient(_FakeStreamResponse(200, [
+            '{"text": "#!/bin/bash"}',
+            '{"done": true, "stop_reason": "max_tokens"}',
+        ]))
+        _install(monkeypatch, client)
+        usage = ApiUsage()
+        await _collect(self._stream(usage))
+        assert usage.truncated is True
+
+    @pytest.mark.asyncio
+    async def test_an_error_line_raises(self, monkeypatch):
+        client = _FakeClient(_FakeStreamResponse(200, [
+            '{"text": "#!/bin/bash"}',
+            '{"error": "subscription inactive"}',
+        ]))
+        _install(monkeypatch, client)
+        with pytest.raises(RuntimeError, match="subscription inactive"):
+            await _collect(self._stream())
+
+    @pytest.mark.asyncio
+    async def test_a_404_falls_back_to_the_single_post(self, monkeypatch):
+        client = _FakeClient(
+            _FakeStreamResponse(404, body=b"Not Found"),
+            _FakePostResponse(200, {
+                "text": "#!/bin/bash\necho hi\n",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "stop_reason": "end_turn",
+            }),
+        )
+        _install(monkeypatch, client)
+        usage = ApiUsage()
+        tokens = await _collect(self._stream(usage))
+        assert "".join(tokens) == "#!/bin/bash\necho hi\n"
+        assert client.urls == [
+            "https://api.clusterpilot.sh/proxy/generate-stream",
+            "https://api.clusterpilot.sh/proxy/generate",
+        ]
+        assert (usage.input_tokens, usage.output_tokens) == (10, 5)
+
+    @pytest.mark.asyncio
+    async def test_a_405_falls_back_too(self, monkeypatch):
+        client = _FakeClient(
+            _FakeStreamResponse(405, body=b"Method Not Allowed"),
+            _FakePostResponse(200, {"text": "ok"}),
+        )
+        _install(monkeypatch, client)
+        assert "".join(await _collect(self._stream())) == "ok"
+
+    @pytest.mark.asyncio
+    async def test_any_other_status_raises_without_falling_back(self, monkeypatch):
+        client = _FakeClient(_FakeStreamResponse(402, body=b"payment required"))
+        _install(monkeypatch, client)
+        with pytest.raises(RuntimeError, match="HTTP 402"):
+            await _collect(self._stream())
+        assert client.urls == ["https://api.clusterpilot.sh/proxy/generate-stream"]
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_still_reports_a_bad_status(self, monkeypatch):
+        client = _FakeClient(
+            _FakeStreamResponse(404, body=b"Not Found"),
+            _FakePostResponse(500, {}, text="upstream exploded"),
+        )
+        _install(monkeypatch, client)
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            await _collect(self._stream())

@@ -287,6 +287,36 @@ class TestClusterTypeResolution:
         assert "drac" in warnings[0].getMessage()
         assert "narval" in warnings[0].getMessage()
 
+    def test_trillium_is_a_valid_value(self):
+        cfg = _from_dict(
+            self._cluster(host="trillium-gpu.alliancecan.ca", cluster_type="trillium")
+        )
+        assert cfg.clusters[0].cluster_type == "trillium"
+        assert cfg.clusters[0].inferred_cluster_type is False
+
+    def test_a_trillium_host_infers_trillium_not_drac(self):
+        """Issue #29: trillium-gpu.alliancecan.ca ends in .alliancecan.ca, so
+        the DRAC suffix rule would claim it. Trillium's quirks are not DRAC's,
+        so the Trillium rule has to be tried first.
+        """
+        cfg = _from_dict(self._cluster(host="trillium-gpu.alliancecan.ca"))
+        assert cfg.clusters[0].cluster_type == "trillium"
+        assert cfg.clusters[0].inferred_cluster_type is True
+
+    def test_the_cpu_login_node_also_infers_trillium(self):
+        cfg = _from_dict(self._cluster(host="trillium.alliancecan.ca"))
+        assert cfg.clusters[0].cluster_type == "trillium"
+
+    def test_other_alliance_hosts_still_infer_drac(self):
+        for host in ("narval.alliancecan.ca", "fir.alliancecan.ca", "cedar.computecanada.ca"):
+            cfg = _from_dict(self._cluster(host=host))
+            assert cfg.clusters[0].cluster_type == "drac", host
+
+    def test_the_starter_template_names_all_four_types(self):
+        from clusterpilot.config import _DEFAULT_TOML
+        for value in ("drac", "trillium", "grex", "generic"):
+            assert f'"{value}"' in _DEFAULT_TOML
+
     def test_the_starter_template_tells_the_user_to_set_it(self):
         from clusterpilot.config import _DEFAULT_TOML
         line = [ln for ln in _DEFAULT_TOML.splitlines() if "cluster_type" in ln][0]

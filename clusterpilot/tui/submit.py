@@ -130,6 +130,11 @@ _TRUNCATED_MESSAGE = (
 # A job-name suffix ClusterPilot itself appends: "-MMDD-HHMM".
 _JOB_NAME_SUFFIX_RE = re.compile(r"-\d{4}-\d{4}$")
 
+# Cluster types whose scheduler routes the job itself, so the picked partition
+# is a hint rather than a constraint, and whose compute nodes have no internet
+# and need the login-node pre-flight. Trillium joined DRAC here in issue #29.
+_ROUTED_TYPES: frozenset[str] = frozenset({"drac", "trillium"})
+
 
 def _strip_job_name_suffix(job_name: str) -> str:
     """Remove a ClusterPilot "-MMDD-HHMM" suffix from a job name.
@@ -597,7 +602,7 @@ class SubmitView(Static):
             node_id = getattr(node, "id", None)
             if node_id == "partition-select":
                 profile = self._selected_profile()
-                if profile is not None and profile.cluster_type == "drac":
+                if profile is not None and profile.cluster_type in _ROUTED_TYPES:
                     help_widget.update(_HELP_PARTITION_DRAC)
                 else:
                     help_widget.update(_HELP_PARTITION)
@@ -659,7 +664,7 @@ class SubmitView(Static):
             # places the job onto whatever partition matches at submit time, so
             # this partition's load is not predictive of queueing behaviour.
             profile = self._selected_profile()
-            if profile is None or profile.cluster_type != "drac":
+            if profile is None or profile.cluster_type not in _ROUTED_TYPES:
                 self.app.notify(
                     f"Partition '{name}' has no free nodes (0/{pa.total}) — "
                     "your job will queue until resources free up.",
@@ -1015,6 +1020,7 @@ class SubmitView(Static):
                 partition_name=partition or "",
                 gpu_size=gpu_size,
                 account=profile.account,
+                cluster_type=profile.cluster_type,
             ),
             partitions=probe.partitions,
             account_max_wall=probe.account_max_wall,
@@ -1219,7 +1225,7 @@ class SubmitView(Static):
         # login node now, against the rsynced project, so the compute-node
         # script can run offline. Skipped on Grex/generic where compute nodes
         # can reach pkg.julialang.org / PyPI directly.
-        if profile.cluster_type == "drac" and self._last_script_env is not None:
+        if profile.cluster_type in _ROUTED_TYPES and self._last_script_env is not None:
             self.app.notify(
                 "Warming dependency cache on login node… first cold warm of a "
                 "CUDA-heavy Manifest can take 15-25 min; subsequent runs against "
@@ -1381,8 +1387,9 @@ _HELP_PARTITION = (
 )
 
 _HELP_PARTITION_DRAC = (
-    "[#e8a020]PARTITION[/]  [#7a6a50]On DRAC the scheduler picks the partition "
-    "itself. Your choice is only a hint for GPU type and walltime.[/]"
+    "[#e8a020]PARTITION[/]  [#7a6a50]On DRAC and Trillium the scheduler picks "
+    "the partition itself. Your choice is only a hint for GPU type and "
+    "walltime.[/]"
 )
 
 _HELP_GPU_SIZE = (

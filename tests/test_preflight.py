@@ -516,3 +516,91 @@ class TestWarmDepotPython:
             )
         assert ran is False
         assert called["n"] == 0
+
+
+# ── Trillium shares the DRAC pre-flight (#29) ─────────────────────────────────
+
+class TestTrilliumSharesTheDracPreflight:
+    """Trillium (SciNet) is an Alliance Canada site with the same no-internet
+    compute nodes as the rest of DRAC, so every pre-flight step DRAC gets it
+    gets too: the CUDA LocalPreferences.toml write and the login-node pip
+    pre-install.
+    """
+
+    @pytest.mark.asyncio
+    async def test_trillium_cuda_writes_local_preferences(self):
+        env = ScriptEnvironment(
+            language="julia",
+            has_manifest=True,
+            third_party_imports=["CUDA"],
+            driver_extension=".jl",
+        )
+        commands: list[str] = []
+
+        async def fake_run_remote(host, user, cmd, **kw):
+            commands.append(cmd)
+            return ""
+
+        with patch("clusterpilot.jobs.preflight.run_remote", new=fake_run_remote):
+            ran = await warm_depot(
+                "trillium-gpu.alliancecan.ca", "juliaf", "/scratch/juliaf/job", env,
+                script="module load julia/1.11.3",
+                cluster_type="trillium",
+            )
+        assert ran is True
+        prefs = [c for c in commands if "LocalPreferences.toml" in c]
+        assert len(prefs) == 1
+        assert "local_toolkit = true" in prefs[0]
+        # The guard still lets a user-shipped file win.
+        assert "if [ ! -f LocalPreferences.toml ]" in prefs[0]
+
+    @pytest.mark.asyncio
+    async def test_trillium_python_pre_installs_on_the_login_node(self):
+        env = ScriptEnvironment(
+            language="python",
+            has_manifest=True,
+            third_party_imports=[],
+            driver_extension=".py",
+            manifest_name="requirements.txt",
+        )
+        captured: dict = {}
+
+        async def fake_run_remote(host, user, cmd, **kw):
+            captured["cmd"] = cmd
+            return ""
+
+        with patch("clusterpilot.jobs.preflight.run_remote", new=fake_run_remote):
+            ran = await warm_depot(
+                "trillium-gpu.alliancecan.ca", "juliaf", "/scratch/juliaf/job", env,
+                script="module load python/3.11.5",
+                cluster_type="trillium",
+            )
+        assert ran is True
+        assert "pip install --user --quiet -r requirements.txt" in captured["cmd"]
+
+    @pytest.mark.asyncio
+    async def test_grex_still_skips_the_python_pre_install(self):
+        """The widened condition must not pull Grex in: its compute nodes can
+        reach PyPI, so the in-script pip install is the right thing there.
+        """
+        env = ScriptEnvironment(
+            language="python",
+            has_manifest=True,
+            third_party_imports=[],
+            driver_extension=".py",
+            manifest_name="requirements.txt",
+        )
+        called = {"n": 0}
+
+        async def fake_run_remote(host, user, cmd, **kw):
+            called["n"] += 1
+            return ""
+
+        with patch("clusterpilot.jobs.preflight.run_remote", new=fake_run_remote):
+            ran = await warm_depot(
+                "yak.hpc.umanitoba.ca", "juliaf", "/home/juliaf/job", env,
+                script="module load python/3.11.5",
+                cluster_type="grex",
+            )
+        assert ran is False
+        assert called["n"] == 0

@@ -10,6 +10,16 @@ Usage
     async for token in generate_script(description, probe, profile, model, api_key, usage=usage):
         print(token, end="", flush=True)
     print(f"Cost: ${usage.cost_usd:.4f}")
+
+Hosted tier
+-----------
+When ``api_base_url`` contains ``/proxy`` the Anthropic SDK is bypassed
+entirely: its stream state machine breaks on proxied responses and Fly.io
+buffers ``text/event-stream``. The proxy path streams newline-delimited JSON
+from ``/proxy/generate-stream`` and falls back to the single non-streaming
+``/proxy/generate`` POST. Any change to that path, and SSE above all, must be
+tested against the DEPLOYED proxy, not only against a local mock: the failure
+this design works around only appears there.
 """
 from __future__ import annotations
 
@@ -164,8 +174,9 @@ async def generate_script(
     )
 
     if provider == "anthropic":
-        # When routing through the CP proxy, bypass the Anthropic SDK and parse
-        # SSE events directly — the SDK's internal state machine breaks on proxied responses.
+        # When routing through the CP proxy, bypass the Anthropic SDK and read
+        # newline-delimited JSON directly: the SDK's internal state machine
+        # breaks on proxied responses.
         if api_base_url and "/proxy" in api_base_url:
             async for token in _stream_proxy(system, description, model, api_key, api_base_url, usage):
                 yield token
@@ -220,25 +231,41 @@ async def _stream_proxy(
     api_base_url: str,
     usage: ApiUsage | None,
 ) -> AsyncIterator[str]:
-    """Generate via the ClusterPilot hosted proxy using a single non-streaming call.
+    """Generate via the ClusterPilot hosted proxy, streaming when it can.
 
-    Uses /proxy/generate (non-SSE) to avoid Fly.io response-buffering issues with
-    text/event-stream. Yields the full text in small chunks to keep the TUI display
-    updating progressively.
+    Tries /proxy/generate-stream first, which answers with newline-delimited
+    JSON over a plain chunked response: Fly.io does not buffer that the way it
+    buffers text/event-stream, so the script appears line by line again (#41).
+    A proxy that predates the endpoint answers 404 or 405, and the call falls
+    back to the original single POST to /proxy/generate, chunked afterwards for
+    display. Neither path goes through the Anthropic SDK.
     """
-    url = api_base_url.rstrip("/") + "/generate"
+    base = api_base_url.rstrip("/")
     payload = {
         "model": model,
         "max_tokens": _MAX_TOKENS,
         "system": system,
         "messages": [{"role": "user", "content": description}],
     }
+    headers = {"x-api-key": api_key}
+
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            url,
-            json=payload,
-            headers={"x-api-key": api_key},
-        )
+        async with client.stream(
+            "POST", base + "/generate-stream", json=payload, headers=headers
+        ) as resp:
+            if resp.status_code == 200:
+                async for token in _read_ndjson(resp, model, usage):
+                    yield token
+                return
+            if resp.status_code not in (404, 405):
+                body = await resp.aread()
+                detail = body.decode("utf-8", "replace") if body else ""
+                raise RuntimeError(
+                    f"Proxy returned HTTP {resp.status_code}: {detail[:300]}"
+                )
+
+        # The deployed proxy has no streaming endpoint yet: one POST, as before.
+        resp = await client.post(base + "/generate", json=payload, headers=headers)
 
     if resp.status_code != 200:
         raise RuntimeError(f"Proxy returned HTTP {resp.status_code}: {resp.text[:300]}")
@@ -255,6 +282,43 @@ async def _stream_proxy(
     chunk_size = 40
     for i in range(0, len(text), chunk_size):
         yield text[i : i + chunk_size]
+
+
+async def _read_ndjson(
+    response: httpx.Response,
+    model: str,
+    usage: ApiUsage | None,
+) -> AsyncIterator[str]:
+    """Yield the text deltas of a newline-delimited JSON proxy response.
+
+    Each line is one JSON object: ``{"text": ...}`` is a delta, ``{"done":
+    true, ...}`` closes the stream and carries the token counts, and
+    ``{"error": ...}`` raises the same ``RuntimeError`` the non-streaming path
+    raises. An unreadable line is skipped rather than allowed to kill a
+    generation that is otherwise arriving fine.
+    """
+    async for line in response.aiter_lines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            event = json.loads(text)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("error"):
+            raise RuntimeError(f"Proxy returned an error: {event['error']}")
+        if event.get("done"):
+            if usage is not None:
+                usage.model = model
+                usage.stop_reason = event.get("stop_reason", "") or ""
+                usage.input_tokens = event.get("input_tokens", 0)
+                usage.output_tokens = event.get("output_tokens", 0)
+            return
+        delta = event.get("text")
+        if delta:
+            yield delta
 
 
 async def _stream_openai(
@@ -312,8 +376,24 @@ def _build_system_prompt(
 
     is_drac = profile.cluster_type == "drac"
     is_grex = profile.cluster_type == "grex"
+    # Trillium (SciNet) is an Alliance Canada site, so it shares the DRAC
+    # branches for routed scheduling, $SCRATCH policy, the sticky base
+    # environment and the offline compute nodes. Everything it does NOT share
+    # lives in the TRILLIUM RULES block below (issue #29).
+    is_trillium = profile.cluster_type == "trillium"
+    is_routed = is_drac or is_trillium
 
-    env_setup = _build_env_setup_section(script_env, is_drac=is_drac)
+    env_setup = _build_env_setup_section(script_env, is_drac=is_routed)
+
+    # The account's own walltime ceiling, when sacctmgr reported one (#23). It
+    # is enforced independently of the partition's limit, so a job can sit
+    # inside the partition's ceiling and still be refused.
+    account_ceiling = (probe.account_max_wall.get(account, "") or "").strip()
+    account_ceiling_hint = (
+        f"  - Account walltime ceiling: {account_ceiling} (hard limit)\n"
+        if account_ceiling
+        else ""
+    )
 
     # On DRAC (Alliance Canada: Narval, Cedar, Beluga, Graham) the partition is
     # not a user-facing concept — the scheduler routes jobs by --account, --gres,
@@ -328,7 +408,8 @@ def _build_system_prompt(
             selected_partition_gres = match.gres
             selected_partition_max_time = match.max_time
 
-    if is_drac:
+    ceiling_shown_in_hint = False
+    if is_routed:
         partition_directive_line = ""
         hint_block = ""
         if partition:
@@ -339,7 +420,13 @@ def _build_system_prompt(
             partition_gpu_type = (
                 partition_gpu_fields[1] if len(partition_gpu_fields) >= 3 else ""
             )
-            if not selected_partition_gres:
+            if is_trillium:
+                gres_hint = (
+                    "  - GPUs on Trillium come by the quarter node: emit "
+                    "`--gpus-per-node=1`, or `--gpus-per-node=4` for a whole "
+                    "node. Never --gres.\n"
+                )
+            elif not selected_partition_gres:
                 gres_hint = "  - This partition is CPU-only: do not emit --gres.\n"
             elif partition_gpu_type:
                 gres_hint = (
@@ -360,14 +447,21 @@ def _build_system_prompt(
             )
             hint_block = (
                 f"\nThe user picked partition `{partition}` from the TUI as a "
-                f"routing hint:\n{gres_hint}{walltime_hint}"
+                f"routing hint:\n{gres_hint}{walltime_hint}{account_ceiling_hint}"
             )
+            ceiling_shown_in_hint = bool(account_ceiling_hint)
+        site_name = "Trillium" if is_trillium else "DRAC"
+        routing_basis = (
+            "--account, --gpus-per-node, --time and node count"
+            if is_trillium
+            else "--account, --gres, --time, --mem, and node count"
+        )
         drac_scheduling_note = (
-            "═══ DRAC SCHEDULING ═══\n\n"
-            "This is an Alliance Canada (DRAC) cluster. DO NOT emit "
-            "`#SBATCH --partition=` in the script. DRAC has no user-facing "
+            f"═══ {site_name.upper()} SCHEDULING ═══\n\n"
+            f"This is an Alliance Canada ({site_name}) cluster. DO NOT emit "
+            f"`#SBATCH --partition=` in the script. {site_name} has no user-facing "
             "partition selection; the scheduler routes the job automatically "
-            "based on --account, --gres, --time, --mem, and node count. "
+            f"based on {routing_basis}. "
             "Emitting --partition= against any probed partition name will be "
             "rejected by sbatch."
             f"{hint_block}\n"
@@ -382,6 +476,35 @@ def _build_system_prompt(
             else "Choose the most appropriate partition from the list above based on the job description."
         )
         partition_directive_line = f"   --partition      {partition_rule}\n"
+
+    # ── Trillium-only rules (issue #29) ───────────────────────────────────────
+    # Everything Trillium does NOT share with the rest of DRAC lives here, in
+    # one block, so the general rules above stay untouched for every other
+    # cluster type. Sourced from the Alliance wiki's Trillium pages.
+    trillium_block = (
+        "═══ TRILLIUM RULES ═══\n\n"
+        "Trillium schedules whole nodes and its filesystems behave differently "
+        "from the rest of Alliance Canada. Every line here overrides the "
+        "general rules below:\n"
+        "  - A GPU request is `--gpus-per-node=1` (one quarter node: 1 GPU, 24 "
+        "cores, 188 GiB) or `--gpus-per-node=4` (a whole node). No other value "
+        "is valid. Never emit --gres, never emit --gpus, and never a MIG "
+        "slice: Trillium has none.\n"
+        "  - NEVER emit --mem. Trillium ignores it and its documentation says "
+        "not to set it; a node's memory comes with the node.\n"
+        "  - --time must never exceed 24:00:00, the cluster's hard cap.\n"
+        "  - $HOME and $PROJECT are READ-ONLY from compute nodes. --output, "
+        "--error and every file the job writes must land under $SCRATCH. The "
+        "job directory already is under $SCRATCH, so the relative paths "
+        "required below are exactly right and no path prefix is needed.\n"
+        "  - $SLURM_TMPDIR is a RAM disk, not a local SSD: what it holds is "
+        "taken out of the node's memory. Use it for small temporary files "
+        "only.\n"
+        "  - The script must not submit jobs: sbatch is not available from a "
+        "compute node, so chained submission patterns are out.\n"
+        if is_trillium
+        else ""
+    )
 
     # The job directory base shown to the AI is for context only — the script
     # must NOT reference it.  All paths must be relative because the submission
@@ -500,7 +623,7 @@ Match module versions to what is available on this cluster.
             # The user chose a whole GPU or a slice on the submit screen;
             # an explicit choice is honoured on every cluster type.
             gpu_default_gres = f"gpu:{gpu_size}:1"
-        elif is_drac:
+        elif is_routed:
             # One GPU of the partition's type; never the node's full inventory
             # (#8) and never a hardcoded model (#28).
             gpu_default_gres = _one_gpu_of(selected_partition_gres) or "gpu:1"
@@ -525,32 +648,68 @@ Match module versions to what is available on this cluster.
         # ClusterPilot's preflight separately writes LocalPreferences.toml
         # with `local_toolkit = true, version = "12.2"`. The module load below
         # pins the matching toolkit version.
+        cuda_site_name = "Trillium" if is_trillium else "DRAC"
+        cuda_default_site = "" if is_trillium else "default on Narval; "
+        cuda_request_phrase = "--gpus-per-node" if is_trillium else "--gres=gpu"
         drac_cuda_note = (
-            "\n\nThis is a DRAC cluster and the driver uses CUDA. After "
+            f"\n\nThis is a {cuda_site_name} cluster and the driver uses CUDA. After "
             "`module load julia/<version>`, you MUST also emit "
-            "`module load cuda/12.2` (default on Narval; pin to match "
+            f"`module load cuda/12.2` ({cuda_default_site}pin to match "
             "LocalPreferences.toml). Without it the CUDA toolkit libraries "
             "(libcudart, libnvrtc, ...) may not be on LD_LIBRARY_PATH and "
-            "CUDA.jl can fail at runtime even with --gres=gpu set."
-            if is_drac and "CUDA" in gpu_libs
+            f"CUDA.jl can fail at runtime even with {cuda_request_phrase} set."
+            if is_routed and "CUDA" in gpu_libs
             else ""
         )
-        gpu_size_note = (
-            f" The user chose `{gpu_size}` on the submit screen: emit exactly "
-            f"`--gres=gpu:{gpu_size}:1`, or `:N` only if the description asks "
-            f"for N GPUs."
-            if gpu_size
-            else ""
+        # Trillium has one GPU type and no MIG, so the picked size names
+        # nothing SLURM can be asked for: the count is the only free choice.
+        if is_trillium:
+            gpu_size_note = (
+                f" You picked `{gpu_size}` on the submit screen: Trillium has a "
+                f"single GPU type and no MIG slices, so ignore the type and "
+                f"emit `--gpus-per-node=1`, or `4` for a whole node."
+                if gpu_size
+                else ""
+            )
+        else:
+            gpu_size_note = (
+                f" The user chose `{gpu_size}` on the submit screen: emit exactly "
+                f"`--gres=gpu:{gpu_size}:1`, or `:N` only if the description asks "
+                f"for N GPUs."
+                if gpu_size
+                else ""
+            )
+        # Trillium takes whole quarter nodes through --gpus-per-node and
+        # rejects --gres outright, so the directive it is told to emit differs
+        # (issue #29). Everywhere else this is byte-for-byte the old text.
+        gpu_request_directive = (
+            "--gpus-per-node=1" if is_trillium else f"--gres={gpu_default_gres}"
+        )
+        gpu_omission_word = "the GPU request" if is_trillium else "--gres"
+        gpu_fallback_phrase = (
+            "otherwise ask for the one quarter node shown above"
+            if is_trillium
+            else "otherwise use the GRES shown above"
+        )
+        # A GPU job that never reports what it used cannot be sized properly
+        # next time (#31). The sampler is a background process, so it costs the
+        # job nothing and stops with it.
+        gpu_sampler_note = (
+            "\n\nAlso start a GPU usage sampler before the driver and stop it "
+            "after: `nvidia-smi --query-gpu=utilization.gpu,memory.used "
+            "--format=csv -l 60 > gpu_usage.csv &` then, after the driver "
+            "finishes, `kill %1 2>/dev/null || true`. It costs nothing and "
+            "tells the user whether the next request can be a slice."
         )
         gpu_directive_block = (
             f"\n═══ GPU REQUIRED ═══\n\n"
             f"The driver script imports {', '.join(gpu_libs)}, which requires "
-            f"a GPU at runtime. You MUST emit `#SBATCH --gres={gpu_default_gres}` "
-            f"in the directive block. Omitting --gres routes the job to a CPU "
+            f"a GPU at runtime. You MUST emit `#SBATCH {gpu_request_directive}` "
+            f"in the directive block. Omitting {gpu_omission_word} routes the job to a CPU "
             f"node and the runtime will crash with 'CUDA driver not functional' "
             f"or equivalent. If the user's description specifies a GPU count or "
-            f"type, use that; otherwise use the GRES shown above."
-            f"{gpu_size_note}{grex_type_note}{drac_cuda_note}\n"
+            f"type, use that; {gpu_fallback_phrase}."
+            f"{gpu_size_note}{grex_type_note}{drac_cuda_note}{gpu_sampler_note}\n"
         )
     else:
         gpu_directive_block = ""
@@ -562,14 +721,21 @@ Match module versions to what is available on this cluster.
     # Same on Grex with SBEnv. Drop the line on both.
     module_purge_line = (
         "   - module purge\n"
-        if not (is_drac or is_grex)
+        if not (is_routed or is_grex)
         else ""
     )
 
     # Rule 2 (GPU GRES guidance for the general case — no detected GPU import).
     # Grex's submit filter behaviour means even the general rule should prefer
     # the type-less form there.
-    if is_grex:
+    if is_trillium:
+        gpu_rule_2 = (
+            "2. For GPU jobs, add:\n"
+            "   --gpus-per-node=1           one quarter node: 1 GPU, 24 cores, 188 GiB\n"
+            "   --gpus-per-node=4           a whole node, only when the job really uses 4\n"
+            "   Never --gres and never --gpus on Trillium: no other form is accepted."
+        )
+    elif is_grex:
         gpu_rule_2 = (
             "2. For GPU jobs, add:\n"
             "   --gres=gpu:<count>          e.g. gpu:1 — bare form is the safe default on Grex\n"
@@ -595,6 +761,9 @@ Match module versions to what is available on this cluster.
         if account
         else "(no --account directive — not required on this cluster)"
     )
+    # The account ceiling belongs with the routing hint when there is one, and
+    # in the walltime rule otherwise, so it is stated exactly once (#23).
+    account_ceiling_rule = "" if ceiling_shown_in_hint else account_ceiling_hint
 
     # Fieldnotes run manifest nudge (only when the user opted in). This asks the
     # generated script to write a params.json beside its outputs so a completed
@@ -635,7 +804,7 @@ User account: {account or "(none configured)"}
 {job_dir_note}
 {storage_note}
 SSH login: {profile.user}@{profile.host}
-{manifest_section}{script_section}{drac_scheduling_note}{gpu_directive_block}
+{manifest_section}{script_section}{drac_scheduling_note}{trillium_block}{gpu_directive_block}
 ═══ SCRIPT RULES ═══
 
 1. Always include these #SBATCH directives:
@@ -691,7 +860,9 @@ SSH login: {profile.user}@{profile.host}
 
 4. Be conservative with walltime: multiply the user's estimate by 1.3 and
    round up to the nearest hour, but never exceed the partition's time limit.
-
+   Size --cpus-per-task and --mem from the partition table above; never request
+   more than a node has.
+{account_ceiling_rule}
 5. If the user mentions GPU count or type, pick the GPU partition from the list
    above that matches. Use the exact --gres syntax shown for that partition.
 
@@ -730,6 +901,10 @@ def _build_env_setup_section(
 
     Returns a string ready for f-string interpolation. Non-empty strings
     always end with a newline so they slot cleanly before the invoke line.
+
+    ``is_drac`` covers both Alliance Canada types, ``drac`` and ``trillium``:
+    their compute nodes share the same no-internet policy, so they share this
+    branch (issue #29).
 
     On DRAC clusters the depot is pre-warmed on the login node by
     :func:`clusterpilot.jobs.preflight.warm_depot` before sbatch runs, so the
@@ -816,9 +991,23 @@ def _cluster_storage_note(profile: ClusterProfile, probe: ClusterProbe) -> str:
     Uses the probed $SCRATCH value to give accurate advice for any cluster.
     cluster_type = "drac" adds a hard policy warning on top of the probe result
     (DRAC home quota is ~50 GB — jobs writing there get quota-killed).
+    cluster_type = "trillium" is stricter still: $HOME and $PROJECT are
+    read-only from its compute nodes and $SLURM_TMPDIR is a RAM disk rather
+    than a local SSD (issue #29).
     All other cluster types are handled by probed $SCRATCH presence alone.
     """
     scratch = probe.scratch_env   # non-empty if $SCRATCH is set on the cluster
+
+    if profile.cluster_type == "trillium":
+        dest = scratch or "$SCRATCH"
+        return (
+            f"Storage: ALL job I/O must target $SCRATCH ({dest}). $HOME and "
+            "$PROJECT are READ-ONLY from Trillium compute nodes, so a job that "
+            "writes anywhere else fails the moment it starts. $SLURM_TMPDIR is "
+            "a RAM disk, not a local SSD: whatever it holds is taken out of the "
+            "node's memory, so use it only for small temporary files and copy "
+            f"results to {dest} before the job ends."
+        )
 
     if profile.cluster_type == "drac":
         # DRAC has a hard policy: $SCRATCH is mandatory regardless of size.
@@ -887,12 +1076,23 @@ def _one_gpu_of(gres: str) -> str:
 
 
 def _format_partitions(probe: ClusterProbe) -> str:
-    """Format partition table for the system prompt."""
+    """Format partition table for the system prompt.
+
+    Per-node cores and memory are shown when the probe reported them (#22), so
+    the model can size --cpus-per-task and --mem against a real node instead of
+    guessing. A partition cached before those fields were probed reports 0 for
+    both and is rendered exactly as it used to be.
+    """
     lines: list[str] = []
     for p in probe.partitions:
         gres = f"  GPUs: {p.gres}" if p.gres else "  (CPU only)"
         default = "  [DEFAULT]" if p.is_default else ""
+        specs = (
+            f"  cpus={p.cpus} mem={p.memory_mb // 1024}G"
+            if p.cpus or p.memory_mb
+            else ""
+        )
         lines.append(
-            f"  {p.name:<14} nodes={p.nodes:<4} max={p.max_time}{gres}{default}"
+            f"  {p.name:<14} nodes={p.nodes:<4} max={p.max_time}{gres}{specs}{default}"
         )
     return "\n".join(lines)
