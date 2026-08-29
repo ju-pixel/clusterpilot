@@ -11,6 +11,7 @@ from clusterpilot.cluster.slurm import (
     SlurmError,
     JobAccounting,
     _parse_accounting,
+    _parse_accounting_by_job,
     _parse_efficiency,
     _parse_tres,
     _worst_exit_code,
@@ -18,6 +19,7 @@ from clusterpilot.cluster.slurm import (
     find_array_logs,
     find_log,
     job_accounting,
+    job_accounting_many,
     job_efficiency,
     job_status,
     query_status,
@@ -632,3 +634,67 @@ class TestJobAccounting:
         with patch("clusterpilot.cluster.slurm.run_remote",
                    new=AsyncMock(side_effect=RuntimeError("boom"))):
             assert (await job_accounting("yak", "juliaf", "1")).is_empty
+
+
+class TestParseAccountingByJob:
+    def test_splits_one_sacct_output_into_one_record_per_job(self):
+        by_job = _parse_accounting_by_job(
+            "111|cpu=4,node=1|100|0:0\n"
+            "222|cpu=8,node=2|200|1:0\n"
+        )
+        assert set(by_job) == {"111", "222"}
+        assert by_job["111"].core_seconds == 400
+        assert by_job["222"].core_seconds == 1600
+        assert by_job["222"].exit_code == "1:0"
+
+    def test_array_tasks_group_under_their_master(self):
+        by_job = _parse_accounting_by_job(
+            "333_0|cpu=2,node=1|100|0:0\n"
+            "333_1|cpu=2,node=1|200|0:0\n"
+            "444|cpu=1,node=1|50|0:0\n"
+        )
+        assert set(by_job) == {"333", "444"}
+        assert by_job["333"].tasks == 2
+        assert by_job["333"].core_seconds == 600
+        assert by_job["333"].runtime_seconds == 200
+
+    def test_a_job_sacct_does_not_know_is_simply_absent(self):
+        assert "999" not in _parse_accounting_by_job("111|cpu=4|100|0:0\n")
+
+    def test_empty_output_gives_nothing(self):
+        assert _parse_accounting_by_job("") == {}
+
+
+class TestJobAccountingMany:
+    async def test_asks_about_every_job_in_one_call(self):
+        run = AsyncMock(return_value="111|cpu=4,node=1|100|0:0\n222|cpu=8|200|0:0\n")
+        with patch("clusterpilot.cluster.slurm.run_remote", new=run):
+            found = await job_accounting_many("yak", "juliaf", ["111", "222"])
+        assert run.await_count == 1
+        assert "sacct -j 111,222" in run.await_args.args[2]
+        assert set(found) == {"111", "222"}
+
+    async def test_a_long_list_is_split_into_chunks(self):
+        ids = [str(n) for n in range(120)]
+        run = AsyncMock(return_value="")
+        with patch("clusterpilot.cluster.slurm.run_remote", new=run):
+            await job_accounting_many("yak", "juliaf", ids)
+        assert run.await_count == 3, "50 per call"
+
+    async def test_one_failed_chunk_does_not_lose_the_others(self):
+        ids = [str(n) for n in range(60)]
+
+        async def _flaky(host, user, cmd):
+            if cmd.startswith("sacct -j 0,"):
+                raise SSHError("dropped")
+            return "50|cpu=4|100|0:0\n"
+
+        with patch("clusterpilot.cluster.slurm.run_remote", new=AsyncMock(side_effect=_flaky)):
+            found = await job_accounting_many("yak", "juliaf", ids)
+        assert set(found) == {"50"}
+
+    async def test_no_job_ids_makes_no_call(self):
+        run = AsyncMock(return_value="")
+        with patch("clusterpilot.cluster.slurm.run_remote", new=run):
+            assert await job_accounting_many("yak", "juliaf", []) == {}
+        run.assert_not_awaited()

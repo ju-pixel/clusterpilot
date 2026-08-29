@@ -286,7 +286,15 @@ the job root, so pointing it inside `src/` would flatten the package layout.
 clusterpilot                 # launch the TUI
 clusterpilot daemon run      # run the poll daemon in the foreground
 clusterpilot daemon install  # install systemd user service (Linux)
+clusterpilot backfill        # recover core-hours for older finished jobs
 ```
+
+`backfill` is a one-off. ClusterPilot records what the scheduler reserved when
+a job finishes, so jobs that completed under an older release have no
+core-hours against them. `backfill` asks `sacct` about those jobs again and
+fills in what it still remembers. Run it once, with `--dry-run` first if you
+want to see what it would recover; anything past your cluster's accounting
+retention is gone and is reported as such.
 
 ### TUI screens
 

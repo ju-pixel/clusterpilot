@@ -6,6 +6,7 @@ Usage
     clusterpilot init               # create starter ~/.config/clusterpilot/config.toml
     clusterpilot daemon run         # run poll daemon in foreground (no TUI)
     clusterpilot daemon install     # install systemd user service
+    clusterpilot backfill           # recover accounting for older finished jobs
 
 Set CLUSTERPILOT_HOME to run a second, fully separate profile: config, job
 database, probe cache and the systemd unit all move with it.
@@ -36,10 +37,31 @@ def main() -> None:
              "(the current one is kept as <unit>.bak)",
     )
 
+    backfill_p = sub.add_parser(
+        "backfill",
+        help="Ask sacct for the core-hours of jobs that finished before "
+             "ClusterPilot recorded them",
+    )
+    backfill_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Ask sacct and report what would be recovered, writing nothing",
+    )
+    backfill_p.add_argument(
+        "--limit", type=int, default=None,
+        help="Only consider the N most recent jobs",
+    )
+    backfill_p.add_argument(
+        "--cluster", default=None,
+        help="Only consider jobs on this cluster",
+    )
+
     args = parser.parse_args()
 
     if args.cmd == "init":
         _cmd_init()
+    elif args.cmd == "backfill":
+        _cmd_backfill(dry_run=args.dry_run, limit=args.limit, cluster=args.cluster)
     elif args.cmd == "daemon":
         if args.daemon_cmd == "run":
             _cmd_daemon_run()
@@ -88,6 +110,54 @@ def _cmd_daemon_run() -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         print("\nDaemon stopped.")
+
+
+def _cmd_backfill(
+    *,
+    dry_run: bool = False,
+    limit: int | None = None,
+    cluster: str | None = None,
+) -> None:
+    import asyncio
+    from clusterpilot.config import ConfigError, load_config
+    from clusterpilot.db import DB_PATH
+    from clusterpilot.jobs.backfill import backfill_accounting
+
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not DB_PATH.exists():
+        print(f"No job database at {DB_PATH}. Nothing to backfill.")
+        return
+
+    print("Asking sacct about finished jobs with no accounting recorded.")
+    print("You may be prompted to authenticate to each cluster.")
+    print()
+
+    report = asyncio.run(backfill_accounting(
+        config, DB_PATH, dry_run=dry_run, limit=limit, cluster_name=cluster,
+    ))
+
+    if report.nothing_to_do:
+        print("Every finished job already has accounting. Nothing to do.")
+        return
+
+    verb = "would recover" if dry_run else "recovered"
+    print(f"{report.considered} job(s) without accounting.")
+    print(f"  {verb}: {report.filled}")
+    if report.forgotten:
+        print(f"  no longer in sacct: {report.forgotten} "
+              f"(past the cluster's accounting retention)")
+    if report.synced:
+        print(f"  synced to the dashboard: {report.synced}")
+    for name, why in report.skipped.items():
+        print(f"  skipped {name}: {why}")
+    if dry_run:
+        print()
+        print("Dry run: nothing was written. Re-run without --dry-run to store it.")
 
 
 def _cmd_daemon_install(*, force: bool = False) -> None:

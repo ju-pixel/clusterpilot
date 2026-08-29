@@ -539,13 +539,39 @@ def _worst_exit_code(codes: Iterable[str]) -> str:
     return best
 
 
-def _parse_accounting(text: str) -> JobAccounting:
-    """Fold sacct's per-task lines into one JobAccounting.
+def _accounting_records(text: str) -> Iterable[tuple[str, dict[str, float], int, str]]:
+    """Read sacct's lines into (job id, TRES, elapsed seconds, exit code).
 
     Expects "JobID|AllocTRES|ElapsedRaw|ExitCode" per line, as written by
-    ``--parsable2``. Lines that cannot be read are skipped; a job whose tasks
-    are all still queued yields zero elapsed time and no totals, which is
-    correct rather than missing.
+    ``--parsable2``. Lines that cannot be read are skipped. The job id is
+    reduced to the array master, so every task of an array groups together.
+    """
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "|" not in line:
+            continue
+        fields = line.split("|")
+        if len(fields) < 4:
+            continue
+        try:
+            elapsed = int(float(fields[2].strip() or 0))
+        except ValueError:
+            continue
+        yield (
+            fields[0].strip().split("_")[0],
+            _parse_tres(fields[1]),
+            elapsed,
+            fields[3].strip(),
+        )
+
+
+def _fold_accounting(
+    records: Iterable[tuple[str, dict[str, float], int, str]],
+) -> JobAccounting:
+    """Fold sacct records for one job into a single JobAccounting.
+
+    A job whose tasks are all still queued yields zero elapsed time and no
+    totals, which is correct rather than missing.
     """
     cpus: int | None = None
     gpus: int | None = None
@@ -556,19 +582,7 @@ def _parse_accounting(text: str) -> JobAccounting:
     codes: list[str] = []
     tasks = 0
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or "|" not in line:
-            continue
-        fields = line.split("|")
-        if len(fields) < 4:
-            continue
-        tres = _parse_tres(fields[1])
-        try:
-            elapsed = int(float(fields[2].strip() or 0))
-        except ValueError:
-            continue
-
+    for _job_id, tres, elapsed, code in records:
         tasks += 1
         line_cpus = tres.get("cpu")
         line_gpus = _tres_gpus(tres)
@@ -587,8 +601,8 @@ def _parse_accounting(text: str) -> JobAccounting:
         longest = max(longest or 0, elapsed)
         core_seconds += (line_cpus or 0) * elapsed
         gpu_seconds += (line_gpus or 0) * elapsed
-        if fields[3].strip():
-            codes.append(fields[3])
+        if code:
+            codes.append(code)
 
     if not tasks:
         return JobAccounting()
@@ -603,6 +617,19 @@ def _parse_accounting(text: str) -> JobAccounting:
         exit_code=_worst_exit_code(codes),
         tasks=tasks,
     )
+
+
+def _parse_accounting(text: str) -> JobAccounting:
+    """Fold every line of a single job's sacct output into one record."""
+    return _fold_accounting(_accounting_records(text))
+
+
+def _parse_accounting_by_job(text: str) -> dict[str, JobAccounting]:
+    """Fold sacct output covering many jobs into one record per job."""
+    grouped: dict[str, list[tuple[str, dict[str, float], int, str]]] = {}
+    for record in _accounting_records(text):
+        grouped.setdefault(record[0], []).append(record)
+    return {job_id: _fold_accounting(rows) for job_id, rows in grouped.items()}
 
 
 async def job_accounting(host: str, user: str, job_id: str) -> JobAccounting:
@@ -625,3 +652,36 @@ async def job_accounting(host: str, user: str, job_id: str) -> JobAccounting:
     except Exception:
         return JobAccounting()
     return _parse_accounting(output)
+
+
+# sacct is asked about many jobs at once during a backfill. The list is
+# chunked so one command stays a sane length on any site's shell.
+_ACCOUNTING_BATCH = 50
+
+
+async def job_accounting_many(
+    host: str,
+    user: str,
+    job_ids: Iterable[str],
+) -> dict[str, JobAccounting]:
+    """Accounting for many finished jobs, in as few sacct calls as possible.
+
+    Best-effort like ``job_accounting``: a failed chunk contributes nothing
+    and does not stop the rest. Jobs sacct no longer knows about are simply
+    absent from the result, which is the normal fate of anything older than
+    the site's accounting retention.
+    """
+    ids = [j for j in job_ids if j]
+    found: dict[str, JobAccounting] = {}
+    for start in range(0, len(ids), _ACCOUNTING_BATCH):
+        chunk = ids[start:start + _ACCOUNTING_BATCH]
+        try:
+            output = await run_remote(
+                host, user,
+                f"sacct -j {','.join(chunk)} -n -X "
+                f"-o JobID,AllocTRES,ElapsedRaw,ExitCode --parsable2 2>/dev/null",
+            )
+        except Exception:
+            continue
+        found.update(_parse_accounting_by_job(output))
+    return found

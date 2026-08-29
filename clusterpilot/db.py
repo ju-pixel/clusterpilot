@@ -340,6 +340,42 @@ async def get_all_jobs(
     return [_row_to_record(r) for r in rows]
 
 
+async def get_jobs_missing_accounting(
+    db: "aiosqlite.Connection",
+    *,
+    limit: int | None = None,
+    cluster_name: str | None = None,
+) -> list[JobRecord]:
+    """Finished jobs that never got an accounting record, newest first.
+
+    ``runtime_seconds`` is the marker rather than ``core_seconds``: it is set
+    whenever sacct returned any record at all, while a job on a site that does
+    not report CPU counts legitimately has no core-seconds. Keying off
+    core-seconds would ask sacct about those jobs again on every backfill.
+
+    Newest first because a site's accounting retention is finite: the oldest
+    jobs are the ones sacct will have forgotten, so the useful work happens at
+    the start of the list.
+    """
+    from clusterpilot.cluster.slurm import TERMINAL_STATES
+    placeholders = ",".join("?" * len(TERMINAL_STATES))
+    sql = (
+        f"SELECT * FROM jobs WHERE runtime_seconds IS NULL "
+        f"AND status IN ({placeholders})"
+    )
+    params: list[object] = list(TERMINAL_STATES)
+    if cluster_name:
+        sql += " AND cluster_name = ?"
+        params.append(cluster_name)
+    sql += " ORDER BY submitted_at DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    async with db.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_record(r) for r in rows]
+
+
 async def get_total_usage(
     db: "aiosqlite.Connection",
 ) -> tuple[int, int]:
