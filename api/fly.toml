@@ -3,6 +3,15 @@ primary_region = "iad"
 
 [build]
 
+# Run pending migrations before the new version takes traffic, in a temporary
+# machine. Without this nothing applies the Alembic chain: the app's
+# create_all at startup makes missing tables but never adds a column to an
+# existing one, so a migration that alters a table would silently not happen
+# and every route touching that table would fail. A failing release_command
+# aborts the deploy, which is the behaviour we want.
+[deploy]
+  release_command = "alembic upgrade head"
+
 [http_service]
   internal_port = 8000
   force_https = true
