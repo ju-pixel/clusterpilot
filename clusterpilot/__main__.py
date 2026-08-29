@@ -18,9 +18,16 @@ import sys
 
 
 def main() -> None:
+    from clusterpilot import __version__
+
     parser = argparse.ArgumentParser(
         prog="clusterpilot",
         description="AI-assisted HPC workflow manager",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"clusterpilot {__version__}",
     )
     sub = parser.add_subparsers(dest="cmd")
 

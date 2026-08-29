@@ -3,6 +3,36 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## v0.7.0 (2026-08-29)
+
+### Added
+
+- ClusterPilot now records what the scheduler actually reserved for each
+  finished job: the CPU, GPU and node allocation, the reserved core-hours and
+  GPU-hours summed across every task of an array, the true runtime and the
+  exit code. It comes from one `sacct` call at the moment a job finishes, so
+  it costs nothing while the job is running. Hosted subscribers get all of it
+  on the dashboard, which until now knew less about a job than the terminal
+  did.
+- `clusterpilot backfill` recovers those figures for jobs that finished under
+  an earlier release. Accounting is written when a job ends and there is no
+  second chance later, so older jobs have none. `sacct` still remembers for as
+  long as your site keeps its accounting records, which makes this worth
+  running once, soon. `--dry-run` reports what it would recover without
+  changing any job; `--cluster` and `--limit` narrow it down. Jobs past your
+  cluster's retention are reported as such rather than treated as an error.
+- `clusterpilot --version` prints the installed version, which it should have
+  done from the start and is what a bug report wants first.
+
+### Changed
+
+- The daemon now sends notifications to the ntfy topic set on the dashboard,
+  preferring it over the one in `config.toml` when both exist, so changing the
+  topic on the web no longer leaves the daemon posting to the old one (#43).
+- Hosted tier: annual billing is available at $60 a year alongside $6 a month,
+  and group seat bundles can be bought yearly too, at $51 a seat. Both keep
+  the founding price for as long as the subscription lasts.
+
 ## v0.6.0 (2026-08-28)
 
 ### Added
