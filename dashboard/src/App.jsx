@@ -768,11 +768,44 @@ const NAV = [
 ];
 
 // Founding prices. Keep in step with the Stripe prices on clusterpilot-api,
-// the landing page card and README; the yearly one is two months free.
+// the landing page card and README; the yearly one is two months free. A
+// group seat is the same price less the permanent 15% group discount.
 const PLANS = {
-  month: { label: "Monthly", price: "$6 / month", note: null },
-  year:  { label: "Annual",  price: "$60 / year", note: "two months free" },
+  month: { label: "Monthly", price: "$6 / month", seat: "$5.10 / month", note: null },
+  year:  { label: "Annual",  price: "$60 / year", seat: "$51 / year",    note: "two months free" },
 };
+
+// Switch between the monthly and annual price. `field` picks the PLANS line
+// shown under the label: "price" for a researcher seat, "seat" for a group seat.
+function IntervalToggle({ value, onChange, field }) {
+  return (
+    <div role="radiogroup" aria-label="Billing interval" style={{ display: "flex", gap: 8 }}>
+      {Object.entries(PLANS).map(([key, plan]) => {
+        const on = key === value;
+        return (
+          <button
+            key={key}
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChange(key)}
+            style={{
+              flex: 1, padding: "10px 12px", textAlign: "left", cursor: "pointer",
+              background: on ? `${T.amber}14` : T.panel2,
+              border: `1.5px solid ${on ? T.amber : T.border2}`, borderRadius: 6,
+            }}
+          >
+            <div style={{ fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: on ? T.text : T.muted }}>
+              {plan.label}
+            </div>
+            <div style={{ fontFamily: T.mono, fontSize: 13, color: on ? T.amber : T.dim, marginTop: 2 }}>
+              {plan[field]}{plan.note ? `, ${plan.note}` : ""}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function SubscribeGate({ email, getToken }) {
   const api = makeApiClient(getToken);
@@ -781,6 +814,7 @@ function SubscribeGate({ email, getToken }) {
   const [loading, setLoading] = useState(false);
   const [piLoading, setPiLoading] = useState(false);
   const [piQty, setPiQty] = useState(3);
+  const [groupInterval, setGroupInterval] = useState("month");
   const [redeemMode, setRedeemMode] = useState(false);
   const [redeemCode, setRedeemCode] = useState("");
   const [redeemLoading, setRedeemLoading] = useState(false);
@@ -804,7 +838,7 @@ function SubscribeGate({ email, getToken }) {
     setPiLoading(true);
     setCheckoutError(null);
     try {
-      const { url } = await api.createPiCheckout(piQty);
+      const { url } = await api.createPiCheckout(piQty, groupInterval);
       window.location.href = url;
     } catch (err) {
       console.error("createPiCheckout failed:", err);
@@ -907,30 +941,8 @@ function SubscribeGate({ email, getToken }) {
             <p style={{ margin: "0 0 20px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
               14 days free, then {PLANS[billingInterval].price}. Founding price, locked for the first 50 subscribers. Cancel any time.
             </p>
-            <div role="radiogroup" aria-label="Billing interval" style={{ display: "flex", gap: 8, marginBottom: 24 }}>
-              {Object.entries(PLANS).map(([key, plan]) => {
-                const on = key === billingInterval;
-                return (
-                  <button
-                    key={key}
-                    role="radio"
-                    aria-checked={on}
-                    onClick={() => setBillingInterval(key)}
-                    style={{
-                      flex: 1, padding: "10px 12px", textAlign: "left", cursor: "pointer",
-                      background: on ? `${T.amber}14` : T.panel2,
-                      border: `1.5px solid ${on ? T.amber : T.border2}`, borderRadius: 6,
-                    }}
-                  >
-                    <div style={{ fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: on ? T.text : T.muted }}>
-                      {plan.label}
-                    </div>
-                    <div style={{ fontFamily: T.mono, fontSize: 13, color: on ? T.amber : T.dim, marginTop: 2 }}>
-                      {plan.price}{plan.note ? `, ${plan.note}` : ""}
-                    </div>
-                  </button>
-                );
-              })}
+            <div style={{ marginBottom: 24 }}>
+              <IntervalToggle value={billingInterval} onChange={setBillingInterval} field="price" />
             </div>
             <div style={{ marginBottom: 28 }}>
               {[
@@ -970,9 +982,12 @@ function SubscribeGate({ email, getToken }) {
             <h3 style={{ margin: "0 0 6px", fontFamily: T.sans, fontSize: 17, fontWeight: 600, color: T.text }}>
               Buying for your group?
             </h3>
-            <p style={{ margin: "0 0 18px", fontFamily: T.sans, fontSize: 15, color: T.dim }}>
-              15% off for 3 or more seats. You get one invite code per seat to share with your researchers.
+            <p style={{ margin: "0 0 14px", fontFamily: T.sans, fontSize: 15, color: T.dim }}>
+              15% off for 3 or more seats, monthly or yearly. You get one invite code per seat to share with your researchers.
             </p>
+            <div style={{ marginBottom: 12 }}>
+              <IntervalToggle value={groupInterval} onChange={setGroupInterval} field="seat" />
+            </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
               <label style={{ fontFamily: T.sans, fontSize: 15, color: T.muted, whiteSpace: "nowrap" }}>
                 Seats:
@@ -989,7 +1004,7 @@ function SubscribeGate({ email, getToken }) {
                 }}
               />
               <span style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>
-                × $5.10 / month
+                × {PLANS[groupInterval].seat}
               </span>
             </div>
             <button

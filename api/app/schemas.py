@@ -117,6 +117,7 @@ class SubscriptionOut(BaseModel):
 
 class PICheckoutRequest(BaseModel):
     quantity: int  # validated >= 3 in the route
+    interval: Literal["month", "year"] = "month"  # same prices as a researcher seat, less 15%
 
 
 class InviteCodeOut(BaseModel):

@@ -95,7 +95,9 @@ async def create_pi_checkout(
 ) -> dict:
     """Create a Stripe Checkout Session for a PI group bundle (min 3 seats, 15% off).
 
-    Bundles are monthly only until the lab tier review at 50 paying users.
+    The bundle takes the same monthly or yearly price as a researcher seat;
+    the 15% comes from the group coupon, which is permanent (duration
+    ``forever`` in Stripe) so yearly renewals keep it.
     """
     if body.quantity < 3:
         raise HTTPException(
@@ -114,7 +116,7 @@ async def create_pi_checkout(
 
     url = await create_checkout_session(
         customer_id=customer_id,
-        price_id=settings.stripe_price_id_monthly,
+        price_id=_price_id_for(body.interval),
         success_url="https://app.clusterpilot.sh?subscribed=1",
         cancel_url="https://app.clusterpilot.sh",
         is_pi_group=True,

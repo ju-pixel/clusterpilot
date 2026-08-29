@@ -573,7 +573,7 @@ function Pricing() {
               'Multi-machine sync – one view across all your clusters',
               'Priority support',
             ]}
-            groupNote={<>Research group? <strong style={{ color: T.amberText }}>15% off</strong> for 3 or more seats. Buy from the dashboard after signing in.</>}
+            groupNote={<>Research group? <strong style={{ color: T.amberText }}>15% off</strong> for 3 or more seats, monthly or yearly. Buy from the dashboard after signing in.</>}
             cta="Get started →"
             ctaHref="https://app.clusterpilot.sh"
             featured={false}

@@ -30,7 +30,7 @@ export function makeApiClient(getToken) {
     getBillingPortal:  ()           => req('POST', '/users/me/billing-portal'),
     getSubscription:   ()           => req('GET',  '/users/me/subscription'),
     createCheckout:    (interval)   => req('POST', '/users/me/checkout', { interval }),
-    createPiCheckout:  (quantity)   => req('POST', '/users/me/checkout-pi', { quantity }),
+    createPiCheckout:  (quantity, interval) => req('POST', '/users/me/checkout-pi', { quantity, interval }),
     getInvites:        ()           => req('GET',  '/invites'),
     redeemInvite:      (code)       => req('POST', '/invites/redeem', { code }),
   }
