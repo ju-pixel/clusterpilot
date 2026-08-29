@@ -209,205 +209,6 @@ function PipBlock() {
   )
 }
 
-// ─── TUI mock ─────────────────────────────────────────────────────────────────
-function TuiMock() {
-  const amber  = T.amber
-  const bg     = '#0c0a06'
-  const bg2    = '#111008'
-  const border = '#2a2415'
-  const white  = '#f0e8d0'
-  const dim    = '#7a6a50'
-  const green  = '#6ed86e'
-  const blue   = '#60a8d0'
-  const mono2  = "'JetBrains Mono', 'Fira Code', 'DM Mono', monospace"
-
-  const scriptLines = [
-    ['shebang', '#!/bin/bash'],
-    ['sbatch',  '#SBATCH --job-name=autocorr_ising_l6'],
-    ['sbatch',  '#SBATCH --account=def-stamps'],
-    ['sbatch',  '#SBATCH --partition=stamps'],
-    ['sbatch',  '#SBATCH --nodes=1'],
-    ['sbatch',  '#SBATCH --ntasks-per-node=1'],
-    ['sbatch',  '#SBATCH --cpus-per-task=4'],
-    ['sbatch',  '#SBATCH --mem=32G'],
-    ['sbatch',  '#SBATCH --time=0-00:30:00'],
-    ['sbatch',  '#SBATCH --gres=gpu:v100:1'],
-    ['sbatch',  '#SBATCH --output=%x-%j.out'],
-    ['blank',   ''],
-    ['module',  'module purge'],
-    ['module',  'module load julia/1.11.3'],
-    ['blank',   ''],
-    ['cmd',     'cd $SLURM_SUBMIT_DIR'],
-    ['blank',   ''],
-    ['cmd',     'julia --project=. -e \'import Pkg; Pkg.instantiate()\''],
-    ['cmd',     'julia --project=. scripts/run_autocorrelation.jl \\'],
-    ['arg',     '    --model ising --bimodal --N 216 --S 30 \\'],
-    ['arg',     '    --ladder data/feedback_ladder.jld2'],
-  ]
-
-  return (
-    <div style={{
-      background: bg, border: `1px solid ${border}`, borderRadius: 8,
-      overflow: 'hidden', fontFamily: mono2, fontSize: 13,
-      // Four layers, in order: a warm white 1px rim that separates the mock's
-      // #0c0a06 from the section's #1D1913; a softened black drop shadow for
-      // depth; then a TIGHT inner bloom and a WIDE outer bloom. The two blooms
-      // are what make the halo fan out instead of stopping at a hard edge, so
-      // adjust them as a pair. Rim opacity (0.32) is the "how visible" dial;
-      // the 190px outer radius is the "how far it fans" dial.
-      // NOTE: this used to be a lone `0 24px 64px rgba(0,0,0,0.6)`, which read as
-      // depth back when the page behind it was pure black. Against the warm
-      // charcoal it darkened the surroundings and pushed the mock INTO the page,
-      // which is why the mock looked sunken after the B.1 restyle. The black
-      // shadow is deliberately dialled back here so it does not eat the bloom.
-      boxShadow: '0 0 0 1px rgba(242,235,221,0.32), 0 20px 56px rgba(0,0,0,0.45), 0 0 50px rgba(242,235,221,0.11), 0 0 190px rgba(242,235,221,0.14)',
-    }}>
-      {/* Title bar */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 6,
-        padding: '8px 12px',
-        background: '#0a0805', borderBottom: `1px solid ${border}`,
-      }}>
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#e05050' }} />
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#c8a020' }} />
-        <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#4a8a4a' }} />
-        <span style={{ marginLeft: 8, color: dim, fontSize: 13 }}>clusterpilot</span>
-      </div>
-
-      {/* Top bar */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 12,
-        padding: '4px 10px', background: bg2, borderBottom: `1px solid ${border}`,
-        fontSize: 12,
-      }}>
-        <span style={{ color: amber, fontWeight: 600 }}>◆ CLUSTERPILOT</span>
-        <span style={{ marginLeft: 'auto', color: dim }}>API spend: </span>
-        <span style={{ color: amber }}>$0.0042</span>
-        <div style={{ display: 'flex', gap: 2, marginLeft: 8 }}>
-          {['F1 JOBS', 'F2 SUBMIT', 'F9 CONFIG'].map((t, i) => (
-            <span key={t} style={{
-              padding: '2px 8px',
-              background: i === 1 ? amber : 'transparent',
-              color: i === 1 ? bg : dim,
-              borderRadius: 2, fontSize: 12,
-            }}>{t}</span>
-          ))}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <div style={{ width: 6, height: 6, borderRadius: '50%', background: green }} />
-          <span style={{ color: dim }}>grex</span>
-        </div>
-      </div>
-
-      {/* Main panels */}
-      <div style={{ display: 'flex', height: 420 }}>
-        {/* Left: form + hints */}
-        <div style={{
-          flex: '0 0 42%', padding: '12px', borderRight: `1px solid ${border}`,
-          display: 'flex', flexDirection: 'column', gap: 7, overflow: 'hidden',
-        }}>
-          <div style={{ fontSize: 13, color: dim, letterSpacing: '0.1em' }}>DESCRIBE YOUR JOB</div>
-
-          <div>
-            <div style={{ fontSize: 13, color: dim, marginBottom: 3 }}>PARTITION</div>
-            <div style={{
-              background: bg2, border: `1px solid ${border}`,
-              padding: '4px 8px', borderRadius: 3, color: amber, fontSize: 12,
-            }}>stamps &nbsp;<span style={{ color: dim }}>▾</span></div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: 13, color: dim, marginBottom: 3 }}>PROJECT DIR</div>
-            <div style={{
-              background: bg2, border: `1px solid ${border}`,
-              padding: '4px 8px', borderRadius: 3, color: white, fontSize: 12,
-            }}>SpinGlassLab/</div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: 13, color: dim, marginBottom: 3 }}>DRIVER SCRIPT</div>
-            <div style={{
-              background: bg2, border: `1px solid ${amber}`,
-              padding: '4px 8px', borderRadius: 3, color: white, fontSize: 12,
-            }}>scripts/run_autocorrelation.jl</div>
-          </div>
-
-          <div style={{ flex: 1, minHeight: 0 }}>
-            <div style={{ fontSize: 13, color: dim, marginBottom: 3 }}>DESCRIBE YOUR JOB</div>
-            <div style={{
-              background: bg2, border: `1px solid ${border}`,
-              padding: '6px 8px', borderRadius: 3, color: dim, fontSize: 12,
-              lineHeight: 1.5, height: '100%', overflow: 'hidden',
-            }}>
-              Calculates autocorrelation for N=216 Ising spins on a 3D cubic
-              lattice. A few minutes per run.
-            </div>
-          </div>
-
-          {/* Contextual hint panel (shown when DRIVER SCRIPT field is focused) */}
-          <div style={{
-            background: '#0d1a10', border: `1px solid #1a3a20`,
-            borderRadius: 3, padding: '7px 9px', fontSize: 13,
-          }}>
-            <div style={{ color: green, marginBottom: 4, letterSpacing: '0.08em' }}>▸ HINT — DRIVER SCRIPT</div>
-            <div style={{ color: '#5a8a60', lineHeight: 1.5 }}>
-              Path relative to project root.<br />
-              For Julia packages, Project.toml and<br />
-              Manifest.toml are read automatically<br />
-              to wire up Pkg.instantiate().
-            </div>
-          </div>
-
-          <div style={{
-            background: amber, color: bg, padding: '5px 0',
-            textAlign: 'center', borderRadius: 3, fontSize: 12, fontWeight: 600,
-            cursor: 'pointer', flexShrink: 0,
-          }}>◎  GENERATE SCRIPT</div>
-        </div>
-
-        {/* Right: script output */}
-        <div style={{ flex: 1, padding: '12px', display: 'flex', flexDirection: 'column', gap: 6, overflow: 'hidden' }}>
-          <div style={{ fontSize: 13, color: dim, letterSpacing: '0.1em' }}>GENERATED SLURM SCRIPT</div>
-          <div style={{ flex: 1, overflow: 'hidden', fontSize: 12, lineHeight: 1.65 }}>
-            {scriptLines.map(([type, line], i) => (
-              <div key={i} style={{
-                color: type === 'shebang' ? dim
-                     : type === 'sbatch'  ? blue
-                     : type === 'module'  ? '#a0d0a0'
-                     : type === 'arg'     ? '#a08050'
-                     : type === 'blank'   ? 'transparent'
-                     : white,
-                whiteSpace: 'pre',
-              }}>{line || '\u00a0'}</div>
-            ))}
-          </div>
-          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-            {['⚡ UPLOAD + SUBMIT', '✎ EDIT', '↓ SAVE', '✕ CLEAR'].map((label, i) => (
-              <div key={label} style={{
-                background: i === 0 ? amber : bg2,
-                color: i === 0 ? bg : dim,
-                border: `1px solid ${i === 0 ? amber : border}`,
-                padding: '3px 8px', borderRadius: 3, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap',
-              }}>{label}</div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Status bar */}
-      <div style={{
-        display: 'flex', gap: 16, padding: '4px 10px',
-        background: bg2, borderTop: `1px solid ${border}`, fontSize: 13,
-      }}>
-        {[['F1', 'JOBS'], ['F2', 'SUBMIT'], ['F3', 'FILES'], ['F9', 'CONFIG'], ['Q', 'QUIT']].map(([k, l]) => (
-          <span key={k} style={{ color: dim }}>
-            <span style={{ color: amber }}>{k}</span> {l}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 // ─── hero ─────────────────────────────────────────────────────────────────────
 function Hero() {
@@ -457,7 +258,7 @@ function Hero() {
               border: `1px solid ${T.border}`, cursor: 'pointer',
             }}>PyPI page</button>
           </a>
-          <a href="https://youtu.be/Bw8MUUtNOss" target="_blank" rel="noreferrer">
+          <a href="#demo">
             <button style={{
               background: 'transparent', color: T.muted, fontFamily: mono,
               fontSize: F.btn, padding: '10px 20px', borderRadius: 6,
@@ -472,10 +273,29 @@ function Hero() {
 
 // ─── TUI showcase (full-width, below hero) ────────────────────────────────────
 function TuiShowcase() {
+  // A 95 second clip rendered headlessly from the real TUI with invented data
+  // (tests/demo_video.py in the repo), so it never drifts from the release.
   return (
-    <section style={{ background: T.panel, borderBottom: `1px solid ${T.vdim}` }}>
+    <section id="demo" style={{ background: T.panel, borderBottom: `1px solid ${T.vdim}` }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '56px 48px' }}>
-        <TuiMock />
+        <video
+          src="/demo/clusterpilot-demo.mp4"
+          poster="/demo/clusterpilot-demo-poster.jpg"
+          controls
+          muted
+          playsInline
+          preload="metadata"
+          aria-label="ClusterPilot demo: describe a job, generate and validate the script, submit it, and watch it run"
+          style={{
+            display: 'block', width: '100%', borderRadius: 10,
+            border: `1px solid ${T.border}`, background: T.bg,
+          }}
+        />
+        <p style={{
+          fontFamily: mono, fontSize: F.micro, color: T.dim, marginTop: 12, textAlign: 'center',
+        }}>
+          Describe the job, generate and check the script, submit, watch it run. 95 seconds, no sound.
+        </p>
       </div>
     </section>
   )
