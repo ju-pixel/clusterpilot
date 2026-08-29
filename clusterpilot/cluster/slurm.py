@@ -4,11 +4,14 @@ All functions require an active SSH ControlMaster socket.
 """
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from clusterpilot.ssh.connection import SSHError, run_remote
+
+log = logging.getLogger(__name__)
 
 _SUBMITTED_RE = re.compile(r"Submitted batch job (\d+)")
 
@@ -642,14 +645,23 @@ async def job_accounting(host: str, user: str, job_id: str) -> JobAccounting:
 
     Unlike ``seff`` this is asked about the array master and answers for every
     task at once, so the reserved core-hours it returns cover the whole array.
+
+    A failure is logged rather than swallowed in silence. sacct needs
+    slurmdbd, which DRAC login nodes frequently cannot reach (issue #47), and
+    without a log line the accounting simply never appears and nothing says
+    why.
     """
     try:
         output = await run_remote(
             host, user,
             f"sacct -j {job_id} -n -X -o JobID,AllocTRES,ElapsedRaw,ExitCode "
-            f"--parsable2 2>/dev/null",
+            f"--parsable2",
         )
-    except Exception:
+    except Exception as exc:
+        log.warning(
+            "No accounting for job %s on %s: %s",
+            job_id, host, _first_sacct_error(str(exc)),
+        )
         return JobAccounting()
     return _parse_accounting(output)
 
@@ -663,25 +675,47 @@ async def job_accounting_many(
     host: str,
     user: str,
     job_ids: Iterable[str],
-) -> dict[str, JobAccounting]:
+) -> tuple[dict[str, JobAccounting], str]:
     """Accounting for many finished jobs, in as few sacct calls as possible.
 
-    Best-effort like ``job_accounting``: a failed chunk contributes nothing
-    and does not stop the rest. Jobs sacct no longer knows about are simply
-    absent from the result, which is the normal fate of anything older than
-    the site's accounting retention.
+    Returns the records found and an error string, empty when every call
+    succeeded. The error matters: sacct needs slurmdbd, which DRAC login
+    nodes frequently cannot reach (issue #47), and a caller that cannot tell
+    a failed call from an empty answer will report a working cluster as
+    having forgotten the jobs (issue #46).
+
+    Note the deliberate absence of ``2>/dev/null`` here. The other sacct
+    callers suppress stderr because they have somewhere else to look; this
+    one does not, and the message is the only explanation anybody gets.
     """
     ids = [j for j in job_ids if j]
     found: dict[str, JobAccounting] = {}
+    error = ""
     for start in range(0, len(ids), _ACCOUNTING_BATCH):
         chunk = ids[start:start + _ACCOUNTING_BATCH]
         try:
             output = await run_remote(
                 host, user,
                 f"sacct -j {','.join(chunk)} -n -X "
-                f"-o JobID,AllocTRES,ElapsedRaw,ExitCode --parsable2 2>/dev/null",
+                f"-o JobID,AllocTRES,ElapsedRaw,ExitCode --parsable2",
             )
-        except Exception:
+        except Exception as exc:
+            if not error:
+                error = _first_sacct_error(str(exc))
             continue
         found.update(_parse_accounting_by_job(output))
-    return found
+    return found, error
+
+
+def _first_sacct_error(message: str) -> str:
+    """Pull the explanatory line out of an SSHError's multi-line message.
+
+    sacct prints one error per failed step and the last is usually the least
+    specific ("Problem talking to the database"), so the first "sacct: error:"
+    line is the one worth showing.
+    """
+    for line in message.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("sacct: error:"):
+            return stripped[len("sacct: error:"):].strip()
+    return message.strip().splitlines()[0] if message.strip() else "sacct failed"

@@ -88,7 +88,7 @@ def _patched(found: dict[str, JobAccounting], *, connected: bool = True):
         patch("clusterpilot.jobs.backfill.is_connected", return_value=connected),
         patch("clusterpilot.jobs.backfill.open_connection", MagicMock()),
         patch("clusterpilot.jobs.backfill.job_accounting_many",
-              new=AsyncMock(return_value=found)),
+              new=AsyncMock(return_value=(found, ""))),
         patch("clusterpilot.jobs.backfill.sync_job", new=AsyncMock(return_value=False)),
     )
 
@@ -162,7 +162,7 @@ class TestRecovery:
         report = await _run(db_path, _config("grex"), {})
 
         assert report.filled == 0
-        assert report.forgotten == 1
+        assert report.unknown_to_sacct == 1
         async with aiosqlite.connect(db_path) as db:
             job = await get_job(db, "12345", "grex")
         assert job.core_seconds is None
@@ -208,7 +208,7 @@ class TestClustersItCannotReach:
         with patch("clusterpilot.jobs.backfill.is_connected", return_value=False), \
              patch("clusterpilot.jobs.backfill.open_connection", side_effect=_open), \
              patch("clusterpilot.jobs.backfill.job_accounting_many",
-                   new=AsyncMock(return_value={"1": _ACCT})), \
+                   new=AsyncMock(return_value=({"1": _ACCT}, ""))), \
              patch("clusterpilot.jobs.backfill.sync_job", new=AsyncMock(return_value=False)):
             report = await backfill_accounting(_config("grex", "narval"), db_path)
 
@@ -223,7 +223,7 @@ class TestClustersItCannotReach:
         with patch("clusterpilot.jobs.backfill.is_connected", return_value=False), \
              patch("clusterpilot.jobs.backfill.open_connection", opener), \
              patch("clusterpilot.jobs.backfill.job_accounting_many",
-                   new=AsyncMock(return_value={})), \
+                   new=AsyncMock(return_value=({}, ""))), \
              patch("clusterpilot.jobs.backfill.sync_job", new=AsyncMock(return_value=False)):
             report = await backfill_accounting(_config("grex"), db_path, connect=False)
         opener.assert_not_called()
@@ -236,7 +236,7 @@ class TestCloudSync:
         pusher = AsyncMock(return_value=True)
         with patch("clusterpilot.jobs.backfill.is_connected", return_value=True), \
              patch("clusterpilot.jobs.backfill.job_accounting_many",
-                   new=AsyncMock(return_value={"12345": _ACCT})), \
+                   new=AsyncMock(return_value=({"12345": _ACCT}, ""))), \
              patch("clusterpilot.jobs.backfill.sync_job", new=pusher):
             report = await backfill_accounting(_config("grex", api_token="cp-abc"), db_path)
 
@@ -251,7 +251,7 @@ class TestCloudSync:
         pusher = AsyncMock(return_value=True)
         with patch("clusterpilot.jobs.backfill.is_connected", return_value=True), \
              patch("clusterpilot.jobs.backfill.job_accounting_many",
-                   new=AsyncMock(return_value={"12345": _ACCT})), \
+                   new=AsyncMock(return_value=({"12345": _ACCT}, ""))), \
              patch("clusterpilot.jobs.backfill.sync_job", new=pusher):
             await backfill_accounting(
                 _config("grex", api_token="cp-abc"), db_path, dry_run=True,
@@ -262,7 +262,7 @@ class TestCloudSync:
         await _seed(db_path, _make_job())
         with patch("clusterpilot.jobs.backfill.is_connected", return_value=True), \
              patch("clusterpilot.jobs.backfill.job_accounting_many",
-                   new=AsyncMock(return_value={"12345": _ACCT})), \
+                   new=AsyncMock(return_value=({"12345": _ACCT}, ""))), \
              patch("clusterpilot.jobs.backfill.sync_job",
                    new=AsyncMock(side_effect=OSError("no network"))):
             report = await backfill_accounting(_config("grex"), db_path)
@@ -271,3 +271,45 @@ class TestCloudSync:
         assert report.synced == 0
         async with aiosqlite.connect(db_path) as db:
             assert (await get_job(db, "12345", "grex")).core_seconds == 14400.0
+
+
+class TestAnUnreachableSacctIsNotAForgottenJob:
+    """Issue #46: DRAC login nodes often cannot reach slurmdbd (issue #47).
+
+    Reporting that as "past the accounting retention" invents a cause, and
+    on a two-day-old job it is plainly false.
+    """
+
+    _ERROR = "_open_persist_conn: failed to open persistent connection"
+
+    async def _run_with_failure(self, db_path):
+        with patch("clusterpilot.jobs.backfill.is_connected", return_value=True), \
+             patch("clusterpilot.jobs.backfill.job_accounting_many",
+                   new=AsyncMock(return_value=({}, self._ERROR))), \
+             patch("clusterpilot.jobs.backfill.sync_job", new=AsyncMock(return_value=False)):
+            return await backfill_accounting(_config("grex"), db_path)
+
+    async def test_counted_as_unreachable_not_as_unknown(self, db_path):
+        await _seed(db_path, _make_job())
+        report = await self._run_with_failure(db_path)
+        assert report.unreachable == 1
+        assert report.unknown_to_sacct == 0
+
+    async def test_the_reason_is_reported_per_cluster(self, db_path):
+        await _seed(db_path, _make_job())
+        report = await self._run_with_failure(db_path)
+        assert report.errors == {"grex": self._ERROR}
+
+    async def test_a_working_cluster_with_no_record_is_still_unknown(self, db_path):
+        # The other half of the distinction: sacct answered, and had nothing.
+        await _seed(db_path, _make_job())
+        report = await _run(db_path, _config("grex"), {})
+        assert report.unknown_to_sacct == 1
+        assert report.unreachable == 0
+        assert report.errors == {}
+
+    async def test_nothing_is_written_when_sacct_could_not_be_asked(self, db_path):
+        await _seed(db_path, _make_job())
+        await self._run_with_failure(db_path)
+        async with aiosqlite.connect(db_path) as db:
+            assert (await get_job(db, "12345", "grex")).core_seconds is None

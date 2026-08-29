@@ -37,9 +37,11 @@ class BackfillReport:
 
     considered: int = 0
     filled: int = 0
-    forgotten: int = 0            # in the local database, unknown to sacct
+    unknown_to_sacct: int = 0     # sacct answered, and had no record of these
+    unreachable: int = 0          # sacct could not be asked at all
     synced: int = 0
     skipped: dict[str, str] = field(default_factory=dict)   # cluster -> why
+    errors: dict[str, str] = field(default_factory=dict)    # cluster -> sacct said
 
     @property
     def nothing_to_do(self) -> bool:
@@ -98,10 +100,15 @@ async def backfill_accounting(
                 report.skipped[name] = str(exc)
                 continue
 
-        found = await job_accounting_many(
+        found, error = await job_accounting_many(
             profile.host, profile.user, [j.job_id for j in cluster_jobs],
         )
-        await _store(db_path, cluster_jobs, found, config, report, dry_run=dry_run)
+        if error:
+            report.errors[name] = error
+        await _store(
+            db_path, cluster_jobs, found, config, report,
+            dry_run=dry_run, sacct_failed=bool(error),
+        )
 
     return report
 
@@ -114,14 +121,24 @@ async def _store(
     report: BackfillReport,
     *,
     dry_run: bool,
+    sacct_failed: bool = False,
 ) -> None:
-    """Write what sacct returned and push it to the cloud, counting as we go."""
+    """Write what sacct returned and push it to the cloud, counting as we go.
+
+    ``sacct_failed`` separates the two reasons a job can come back empty. A
+    cluster whose sacct could not be reached has told us nothing about any of
+    its jobs, and saying they are past the retention window would be a
+    fabrication (issue #46).
+    """
     async with aiosqlite.connect(db_path) as db:
         await init_db(db)
         for job in jobs:
             acct = found.get(job.job_id)
             if acct is None or acct.is_empty:
-                report.forgotten += 1
+                if sacct_failed:
+                    report.unreachable += 1
+                else:
+                    report.unknown_to_sacct += 1
                 continue
 
             report.filled += 1

@@ -13,6 +13,7 @@ from clusterpilot.cluster.slurm import (
     _parse_accounting,
     _parse_accounting_by_job,
     _parse_efficiency,
+    _first_sacct_error,
     _parse_tres,
     _worst_exit_code,
     aggregate,
@@ -669,7 +670,8 @@ class TestJobAccountingMany:
     async def test_asks_about_every_job_in_one_call(self):
         run = AsyncMock(return_value="111|cpu=4,node=1|100|0:0\n222|cpu=8|200|0:0\n")
         with patch("clusterpilot.cluster.slurm.run_remote", new=run):
-            found = await job_accounting_many("yak", "juliaf", ["111", "222"])
+            found, error = await job_accounting_many("yak", "juliaf", ["111", "222"])
+        assert error == ""
         assert run.await_count == 1
         assert "sacct -j 111,222" in run.await_args.args[2]
         assert set(found) == {"111", "222"}
@@ -690,11 +692,49 @@ class TestJobAccountingMany:
             return "50|cpu=4|100|0:0\n"
 
         with patch("clusterpilot.cluster.slurm.run_remote", new=AsyncMock(side_effect=_flaky)):
-            found = await job_accounting_many("yak", "juliaf", ids)
+            found, error = await job_accounting_many("yak", "juliaf", ids)
         assert set(found) == {"50"}
+        assert error, "a failed chunk must be reported, not silently dropped"
 
     async def test_no_job_ids_makes_no_call(self):
         run = AsyncMock(return_value="")
         with patch("clusterpilot.cluster.slurm.run_remote", new=run):
-            assert await job_accounting_many("yak", "juliaf", []) == {}
+            assert await job_accounting_many("yak", "juliaf", []) == ({}, "")
         run.assert_not_awaited()
+
+
+class TestSacctErrorsAreKeptNotSwallowed:
+    """Issue #46: a failed sacct must never read as "sacct forgot the job"."""
+
+    _SLURMDBD_DOWN = SSHError(
+        "Remote command failed (exit 1): 'sacct ...'\n"
+        "sacct: error: _open_persist_conn: failed to open persistent connection "
+        "to host:nvl-slurmdb:6819: Connection refused\n"
+        "sacct: error: Problem talking to the database: Connection refused"
+    )
+
+    async def test_the_reason_survives(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(side_effect=self._SLURMDBD_DOWN)):
+            found, error = await job_accounting_many("narval", "juliaf", ["1"])
+        assert found == {}
+        assert "slurmdb" in error and "Connection refused" in error
+
+    async def test_the_first_error_line_is_the_specific_one(self):
+        # The last line sacct prints is the least informative of the three.
+        assert _first_sacct_error(str(self._SLURMDBD_DOWN)).startswith(
+            "_open_persist_conn"
+        )
+
+    async def test_stderr_is_not_discarded_on_the_remote_side(self):
+        # 2>/dev/null would throw away the only explanation anyone gets.
+        run = AsyncMock(return_value="")
+        with patch("clusterpilot.cluster.slurm.run_remote", new=run):
+            await job_accounting_many("narval", "juliaf", ["1"])
+        assert "2>/dev/null" not in run.await_args.args[2]
+
+    async def test_the_single_job_query_keeps_stderr_too(self):
+        run = AsyncMock(return_value="")
+        with patch("clusterpilot.cluster.slurm.run_remote", new=run):
+            await job_accounting("narval", "juliaf", "1")
+        assert "2>/dev/null" not in run.await_args.args[2]

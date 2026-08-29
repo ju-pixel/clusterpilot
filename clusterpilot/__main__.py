@@ -155,13 +155,18 @@ def _cmd_backfill(
     verb = "would recover" if dry_run else "recovered"
     print(f"{report.considered} job(s) without accounting.")
     print(f"  {verb}: {report.filled}")
-    if report.forgotten:
-        print(f"  no longer in sacct: {report.forgotten} "
-              f"(past the cluster's accounting retention)")
+    if report.unknown_to_sacct:
+        print(f"  sacct has no record of {report.unknown_to_sacct} "
+              f"(usually past the cluster's accounting retention)")
+    if report.unreachable:
+        print(f"  could not be looked up: {report.unreachable} "
+              f"(sacct could not be reached, so nothing is known about these)")
     if report.synced:
         print(f"  synced to the dashboard: {report.synced}")
     for name, why in report.skipped.items():
         print(f"  skipped {name}: {why}")
+    for name, err in report.errors.items():
+        print(f"  {name} sacct error: {err}")
     if dry_run:
         print()
         print("Dry run: no job was changed. Re-run without --dry-run to store it.")
