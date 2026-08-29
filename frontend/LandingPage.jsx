@@ -464,7 +464,7 @@ function Audience() {
 }
 
 // ─── pricing ──────────────────────────────────────────────────────────────────
-function PricingCard({ badge, title, price, priceSub, desc, features, cta, ctaHref, featured, groupNote }) {
+function PricingCard({ badge, title, price, priceSub, priceNote, desc, features, cta, ctaHref, featured, groupNote }) {
   const [btnHovered, setBtnHovered] = useState(false)
 
   return (
@@ -478,10 +478,13 @@ function PricingCard({ badge, title, price, priceSub, desc, features, cta, ctaHr
       <h3 style={{ fontFamily: sans, fontWeight: 700, fontSize: 24, color: T.text, marginBottom: 8 }}>
         {title}
       </h3>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: priceNote ? 6 : 16 }}>
         <span style={{ fontFamily: mono, fontSize: 40, fontWeight: 500, color: T.text }}>{price}</span>
         <span style={{ fontFamily: mono, fontSize: F.item, color: T.muted }}>{priceSub}</span>
       </div>
+      {priceNote && (
+        <p style={{ fontFamily: mono, fontSize: F.micro, color: T.muted, marginBottom: 16 }}>{priceNote}</p>
+      )}
       <p style={{ fontFamily: sans, fontSize: F.item, color: T.muted, lineHeight: 1.65, marginBottom: 24 }}>{desc}</p>
       <hr style={{ border: 'none', borderTop: `1px solid ${T.border}`, marginBottom: 24 }} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
@@ -561,7 +564,8 @@ function Pricing() {
             title="Hosted"
             price="$6"
             priceSub="/ month"
-            desc="Zero setup. Managed API key, web dashboard, and cloud sync across all your machines. For researchers who want it to just work. The first 50 subscribers keep this price for as long as they stay."
+            priceNote="or $60 / year, two months free"
+            desc="Zero setup. Managed API key, web dashboard, and cloud sync across all your machines. For researchers who want it to just work. The first 50 subscribers keep their price for as long as they stay."
             features={[
               'Everything in Self-hosted',
               'Managed API key – no Anthropic account needed',

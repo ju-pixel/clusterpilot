@@ -72,7 +72,7 @@ Edit it to add your cluster username and account, then run `clusterpilot` again.
 A hosted tier is available at [app.clusterpilot.sh](https://app.clusterpilot.sh)
 for researchers who want zero API key setup and a web dashboard.
 
-**$6/month, 14-day free trial; the first 50 subscribers keep that price for as long as they stay. The self-hosted version is always fully functional.**
+**$6/month or $60/year (two months free), 14-day free trial; the first 50 subscribers keep their price for as long as they stay. The self-hosted version is always fully functional.**
 
 ### What you get
 

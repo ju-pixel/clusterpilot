@@ -1,9 +1,12 @@
 """Stripe SDK wrappers."""
 
+from typing import Optional
+
 import stripe
 from fastapi import HTTPException, status
 
 from app.config import settings
+from app.schemas import SubscriptionOut
 
 stripe.api_key = settings.stripe_secret_key
 
@@ -48,6 +51,29 @@ async def create_customer_portal_session(customer_id: str, return_url: str) -> s
         return_url=return_url,
     )
     return session.url  # type: ignore[return-value]
+
+
+async def get_subscription_summary(customer_id: str) -> Optional[SubscriptionOut]:
+    """The customer's live subscription as the dashboard shows it, or None.
+
+    Stripe lists a customer's uncancelled subscriptions newest first, and a
+    ClusterPilot customer only ever holds one. It is read live rather than
+    stored so the price shown is the one Stripe will actually charge,
+    founding lock included.
+    """
+    subs = stripe.Subscription.list(customer=customer_id, limit=1)
+    if not subs.data:
+        return None
+    sub = subs.data[0]
+    item = sub["items"]["data"][0]
+    price = item["price"]
+    return SubscriptionOut(
+        interval=price["recurring"]["interval"],
+        amount=price["unit_amount"] or 0,
+        currency=price["currency"],
+        quantity=item.get("quantity") or 1,
+        status=sub["status"],
+    )
 
 
 async def get_or_create_customer(email: str, clerk_id: str) -> str:

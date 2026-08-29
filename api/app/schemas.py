@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -90,6 +90,27 @@ class NotifyPrefsOut(BaseModel):
     ntfy_topic: Optional[str]
 
     model_config = {"from_attributes": True}
+
+
+# ---------- Billing ----------
+
+class CheckoutRequest(BaseModel):
+    """Body of ``POST /users/me/checkout``.
+
+    ``interval`` picks the Stripe price: the founding monthly price or the
+    yearly one (two months free). The route takes the body as optional, so a
+    dashboard built before the annual option existed still gets monthly.
+    """
+    interval: Literal["month", "year"] = "month"
+
+
+class SubscriptionOut(BaseModel):
+    """The plan a subscriber is on, read live from Stripe for the Account page."""
+    interval: str    # "month" or "year"
+    amount: int      # per seat per interval, in minor units, before any discount
+    currency: str    # ISO code in lower case, as Stripe reports it
+    quantity: int    # seats: 1 for a researcher, 3 or more for a PI bundle
+    status: str      # Stripe's subscription status ("trialing", "active", ...)
 
 
 # ---------- PI seat bundles ----------

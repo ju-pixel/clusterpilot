@@ -508,11 +508,23 @@ function NotificationsPage() {
   );
 }
 
+// The plan as Stripe reports it: "$6 / month", "$60 / year", or for a PI
+// bundle "3 seats, billed monthly" (the seat price carries the group discount,
+// which the portal shows exactly).
+function describePlan({ amount, currency, interval, quantity }) {
+  if (quantity > 1) return `${quantity} seats, billed ${interval === "year" ? "yearly" : "monthly"}`;
+  const units = amount / 100;
+  const number = Number.isInteger(units) ? String(units) : units.toFixed(2);
+  const money = currency === "usd" ? `$${number}` : `${number} ${currency.toUpperCase()}`;
+  return `${money} / ${interval}`;
+}
+
 function AccountPage({ email, userInfo }) {
   const { getToken } = useAuth();
   const api = makeApiClient(getToken);
 
   const [keyInfo, setKeyInfo] = useState(undefined); // undefined = loading, null = no key
+  const [subscription, setSubscription] = useState(null); // null = none, or not loaded
   const [rotating, setRotating] = useState(false);
   const [newKey, setNewKey] = useState(null); // shown once after issue/rotate
   const [billingLoading, setBillingLoading] = useState(false);
@@ -530,6 +542,9 @@ function AccountPage({ email, userInfo }) {
     api.getInvites()
       .then(setInvites)
       .catch(() => setInvites([]));
+    api.getSubscription()
+      .then(setSubscription)
+      .catch(() => setSubscription(null));
   }, []);
 
   async function handleIssueOrRotate() {
@@ -642,7 +657,9 @@ function AccountPage({ email, userInfo }) {
           <div>
             <div style={{ fontFamily: T.sans, fontSize: 17, fontWeight: 600, color: T.text }}>
               Researcher{" "}
-              <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>$6 / month</span>
+              {subscription && (
+                <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>{describePlan(subscription)}</span>
+              )}
             </div>
             <div style={{ fontFamily: T.sans, fontSize: 15, color: T.dim, marginTop: 3 }}>
               {userInfo?.subscription_status === "trialing" ? "Free trial active"
@@ -750,9 +767,17 @@ const NAV = [
   { id: "account",       icon: "◈", label: "Account"       },
 ];
 
+// Founding prices. Keep in step with the Stripe prices on clusterpilot-api,
+// the landing page card and README; the yearly one is two months free.
+const PLANS = {
+  month: { label: "Monthly", price: "$6 / month", note: null },
+  year:  { label: "Annual",  price: "$60 / year", note: "two months free" },
+};
+
 function SubscribeGate({ email, getToken }) {
   const api = makeApiClient(getToken);
   const { signOut } = useClerk();
+  const [billingInterval, setBillingInterval] = useState("month");
   const [loading, setLoading] = useState(false);
   const [piLoading, setPiLoading] = useState(false);
   const [piQty, setPiQty] = useState(3);
@@ -766,7 +791,7 @@ function SubscribeGate({ email, getToken }) {
     setLoading(true);
     setCheckoutError(null);
     try {
-      const { url } = await api.createCheckout();
+      const { url } = await api.createCheckout(billingInterval);
       window.location.href = url;
     } catch (err) {
       console.error("createCheckout failed:", err);
@@ -879,9 +904,34 @@ function SubscribeGate({ email, getToken }) {
             <h2 style={{ margin: "0 0 8px", fontFamily: T.sans, fontSize: 22, fontWeight: 700, color: T.text }}>
               Start your free trial
             </h2>
-            <p style={{ margin: "0 0 28px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
-              14 days free, then $6 / month. Founding price, locked for the first 50 subscribers. Cancel any time.
+            <p style={{ margin: "0 0 20px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
+              14 days free, then {PLANS[billingInterval].price}. Founding price, locked for the first 50 subscribers. Cancel any time.
             </p>
+            <div role="radiogroup" aria-label="Billing interval" style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+              {Object.entries(PLANS).map(([key, plan]) => {
+                const on = key === billingInterval;
+                return (
+                  <button
+                    key={key}
+                    role="radio"
+                    aria-checked={on}
+                    onClick={() => setBillingInterval(key)}
+                    style={{
+                      flex: 1, padding: "10px 12px", textAlign: "left", cursor: "pointer",
+                      background: on ? `${T.amber}14` : T.panel2,
+                      border: `1.5px solid ${on ? T.amber : T.border2}`, borderRadius: 6,
+                    }}
+                  >
+                    <div style={{ fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: on ? T.text : T.muted }}>
+                      {plan.label}
+                    </div>
+                    <div style={{ fontFamily: T.mono, fontSize: 13, color: on ? T.amber : T.dim, marginTop: 2 }}>
+                      {plan.price}{plan.note ? `, ${plan.note}` : ""}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
             <div style={{ marginBottom: 28 }}>
               {[
                 "Managed API key — no Anthropic account needed",
