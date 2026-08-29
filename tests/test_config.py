@@ -233,3 +233,106 @@ class TestWriteDefaultConfig:
         path.write_text("existing content")
         write_default_config(path)
         assert path.read_text() == "existing content"
+
+
+# ── cluster_type validation and inference (#21) ───────────────────────────────
+
+class TestClusterTypeResolution:
+    """Issue #21: cluster_type was unvalidated, case-sensitive and silently generic."""
+
+    def _cluster(self, **kwargs) -> dict:
+        base = {"name": "narval", "host": "narval.alliancecan.ca"}
+        base.update(kwargs)
+        return {"clusters": [base]}
+
+    def test_an_explicit_value_is_kept(self):
+        cfg = _from_dict(self._cluster(cluster_type="drac"))
+        assert cfg.clusters[0].cluster_type == "drac"
+        assert cfg.clusters[0].inferred_cluster_type is False
+
+    def test_the_value_is_case_insensitive(self):
+        cfg = _from_dict(self._cluster(cluster_type="DRAC"))
+        assert cfg.clusters[0].cluster_type == "drac"
+
+    def test_an_unknown_value_is_refused(self):
+        with pytest.raises(ConfigError) as exc:
+            _from_dict(self._cluster(cluster_type="cedar"))
+        message = str(exc.value)
+        assert "narval" in message
+        for valid in ("drac", "grex", "generic"):
+            assert valid in message
+
+    def test_an_alliance_host_infers_drac(self):
+        cfg = _from_dict(self._cluster())
+        assert cfg.clusters[0].cluster_type == "drac"
+        assert cfg.clusters[0].inferred_cluster_type is True
+
+    def test_a_computecanada_host_infers_drac(self):
+        cfg = _from_dict(self._cluster(host="cedar.computecanada.ca"))
+        assert cfg.clusters[0].cluster_type == "drac"
+
+    def test_a_umanitoba_host_infers_grex(self):
+        cfg = _from_dict(self._cluster(host="yak.hpc.umanitoba.ca"))
+        assert cfg.clusters[0].cluster_type == "grex"
+
+    def test_an_unknown_host_infers_generic(self):
+        cfg = _from_dict(self._cluster(host="hpc.example.org"))
+        assert cfg.clusters[0].cluster_type == "generic"
+
+    def test_inference_warns_once_naming_the_value(self, caplog):
+        with caplog.at_level("WARNING", logger="clusterpilot.config"):
+            _from_dict(self._cluster())
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "drac" in warnings[0].getMessage()
+        assert "narval" in warnings[0].getMessage()
+
+    def test_the_starter_template_tells_the_user_to_set_it(self):
+        from clusterpilot.config import _DEFAULT_TOML
+        line = [ln for ln in _DEFAULT_TOML.splitlines() if "cluster_type" in ln][0]
+        assert "REQUIRED" in line
+
+
+# ── ntfy_server path handling (#26) ───────────────────────────────────────────
+
+class TestNtfyServerResolution:
+    """Issue #26: a server URL ending in the topic produced .../topic/topic."""
+
+    def _notify(self, server: str, topic: str = "my-topic") -> dict:
+        return {"notifications": {"ntfy_topic": topic, "ntfy_server": server}}
+
+    def test_a_plain_server_is_untouched(self):
+        cfg = _from_dict(self._notify("https://ntfy.sh"))
+        assert cfg.notifications.ntfy_server == "https://ntfy.sh"
+
+    def test_a_repeated_topic_is_stripped(self):
+        cfg = _from_dict(self._notify("https://ntfy.sh/my-topic"))
+        assert cfg.notifications.ntfy_server == "https://ntfy.sh"
+        assert cfg.notifications.resolved_url == "https://ntfy.sh/my-topic"
+
+    def test_stripping_the_topic_warns(self, caplog):
+        with caplog.at_level("WARNING", logger="clusterpilot.config"):
+            _from_dict(self._notify("https://ntfy.sh/my-topic"))
+        assert any("my-topic" in r.getMessage() for r in caplog.records)
+
+    def test_a_self_hosted_server_keeps_its_host(self):
+        cfg = _from_dict(self._notify("https://ntfy.lab.example/my-topic"))
+        assert cfg.notifications.ntfy_server == "https://ntfy.lab.example"
+
+    def test_any_other_path_is_refused(self):
+        with pytest.raises(ConfigError) as exc:
+            _from_dict(self._notify("https://ntfy.sh/some-other-topic"))
+        assert "ntfy_topic" in str(exc.value)
+
+    def test_a_trailing_slash_is_not_a_path(self):
+        cfg = _from_dict(self._notify("https://ntfy.sh/"))
+        assert cfg.notifications.ntfy_server == "https://ntfy.sh"
+
+    def test_the_resolved_url_matches_what_ntfy_posts_to(self):
+        cfg = _from_dict(self._notify("https://ntfy.sh"))
+        n = cfg.notifications
+        assert n.resolved_url == f"{n.ntfy_server.rstrip('/')}/{n.ntfy_topic}"
+
+    def test_no_topic_means_no_resolved_url(self):
+        cfg = _from_dict(self._notify("https://ntfy.sh", topic=""))
+        assert cfg.notifications.resolved_url == ""

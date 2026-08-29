@@ -132,7 +132,7 @@ HINT_DEFAULT = "Tab moves between fields.  F1 jobs  F2 submit  F3 files  F9 conf
 HINTS: dict[str, str] = {
     # F1 JOBS
     "job-list":           "Up and down pick a job. The bracketed letters act on the selected one.",
-    "btn-rsync":          "Download this job's results and logs to your machine.",
+    "btn-rsync":          "Download this job's results and logs into the RESULTS directory shown on the right.",
     "btn-kill":           "Cancel this job on the cluster with scancel. Asks first.",
     "btn-tail":           "Show the last 500 log lines, refreshing while the job runs.",
     "btn-log":            "Fetch the whole log for the selected job.",

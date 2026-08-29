@@ -31,6 +31,13 @@ def _render(app: "ClusterPilotApp") -> str:
         lines.append(_row("User",    profile.user))
         lines.append(_row("Account", profile.account))
         lines.append(_row("Scratch", profile.expand_scratch()))
+        # The cluster type drives every quirk in the generated script, so an
+        # inferred one is called out: it is a guess from the hostname, not a
+        # setting, and a wrong guess is worth catching here rather than at sbatch.
+        type_display = profile.cluster_type
+        if profile.inferred_cluster_type:
+            type_display = f"{type_display} [#e05050](inferred, set cluster_type)[/]"
+        lines.append(_row("Type", type_display))
         lines.append("\n")
 
     # Only values ClusterPilot actually uses belong here: the ControlPath is
@@ -44,6 +51,9 @@ def _render(app: "ClusterPilotApp") -> str:
     lines.append(_row("Backend",     n.backend))
     lines.append(_row("ntfy topic",  n.ntfy_topic or "[#7a6a50](not set)[/]"))
     lines.append(_row("ntfy server", n.ntfy_server))
+    # The URL a notification is actually POSTed to, so a doubled topic or a
+    # stray path is visible without reading the config file.
+    lines.append(_row("Notify URL", n.resolved_url or "[#7a6a50](no topic set)[/]"))
     lines.append("\n")
 
     lines.append("[bold #e8a020]AI SCRIPT GENERATION[/]\n")

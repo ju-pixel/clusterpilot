@@ -1,10 +1,10 @@
-"""Array-aware polling in the daemon (issues #1 and #27).
+"""Array-aware polling in the daemon (issues #1, #2 and #27).
 
 Drives PollDaemon._poll_job with query_status stubbed, so each test pins one
 contract about how a job array's aggregate state is acted upon: a squeue outage
 must not declare a half-finished array complete, a second RUNNING transition
-must not re-notify, and a mixed terminal array must download its results and
-then report the failure.
+must not re-notify, a mixed terminal array must download its results and then
+report the failure, and an array's per-task logs must be found at all.
 """
 from __future__ import annotations
 
@@ -41,9 +41,18 @@ def _make_daemon() -> PollDaemon:
     return PollDaemon(Config(defaults=Defaults()), db_path=":memory:")
 
 
-async def _poll(job: JobRecord, status: JobStatus) -> dict[str, MagicMock]:
+async def _poll(
+    job: JobRecord,
+    status: JobStatus,
+    array_logs: dict[str, str] | None = None,
+    tails: dict[str, str] | None = None,
+) -> dict[str, MagicMock]:
     """Run one _poll_job cycle with every remote call stubbed out."""
     daemon = _make_daemon()
+
+    async def _tail(host: str, user: str, path: str) -> str:
+        return (tails or {}).get(path, "")
+
     mocks = {
         "update_status": AsyncMock(),
         "download": AsyncMock(),
@@ -51,10 +60,12 @@ async def _poll(job: JobRecord, status: JobStatus) -> dict[str, MagicMock]:
         "notify_completed": AsyncMock(),
         "notify_failed": AsyncMock(),
         "find_log": AsyncMock(return_value="/home/juliaf/jobs/bench_run/out"),
-        "tail_log": AsyncMock(return_value=""),
+        "find_array_logs": AsyncMock(return_value=dict(array_logs or {})),
+        "tail_log": AsyncMock(side_effect=_tail),
         "log_completed_job": MagicMock(),
     }
-    with patch("clusterpilot.jobs.daemon.query_status",
+    with patch("clusterpilot.jobs.daemon.find_array_logs", new=mocks["find_array_logs"]), \
+         patch("clusterpilot.jobs.daemon.query_status",
                new=AsyncMock(return_value=status)), \
          patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
          patch("clusterpilot.jobs.daemon.download", new=mocks["download"]), \
@@ -168,3 +179,65 @@ class TestTerminalMixedArray:
         mocks = await _poll(_make_job(status="RUNNING"), status)
         mocks["download"].assert_not_called()
         mocks["notify_failed"].assert_awaited_once()
+
+
+class TestArrayLogDiscovery:
+    """Issue #2: array tasks write %x-%A-%a.out, which find_log never matched,
+    so log_path stayed NULL for every array job."""
+
+    _LOGS = {
+        "0": "/home/juliaf/jobs/bench_run/bench_run-12345-0.out",
+        "1": "/home/juliaf/jobs/bench_run/bench_run-12345-1.out",
+        "2": "/home/juliaf/jobs/bench_run/bench_run-12345-2.out",
+    }
+
+    async def test_running_array_stores_the_lowest_tasks_log(self):
+        status = JobStatus(state="RUNNING", counts={"RUNNING": 3}, source="squeue")
+        job = _make_job(status="PENDING", array_spec="0-2")
+        mocks = await _poll(job, status, array_logs=self._LOGS)
+        mocks["find_array_logs"].assert_awaited()
+        mocks["find_log"].assert_not_called()
+        assert job.log_path == self._LOGS["0"]
+        paths = [
+            call.kwargs.get("log_path")
+            for call in mocks["update_status"].await_args_list
+        ]
+        assert self._LOGS["0"] in paths
+
+    async def test_a_non_array_job_still_uses_find_log(self):
+        status = JobStatus(state="RUNNING", counts={"RUNNING": 1}, source="squeue")
+        job = _make_job(status="PENDING")
+        mocks = await _poll(job, status)
+        mocks["find_log"].assert_awaited_once()
+        assert job.log_path == "/home/juliaf/jobs/bench_run/out"
+
+    async def test_an_array_with_no_task_logs_falls_back_to_find_log(self):
+        status = JobStatus(state="RUNNING", counts={"RUNNING": 1}, source="squeue")
+        job = _make_job(status="PENDING", array_spec="0-2")
+        mocks = await _poll(job, status, array_logs={})
+        mocks["find_log"].assert_awaited_once()
+        assert job.log_path == "/home/juliaf/jobs/bench_run/out"
+
+    async def test_failure_excerpt_skips_tasks_whose_log_is_empty(self):
+        status = JobStatus(
+            state="FAILED", counts={"COMPLETED": 2, "FAILED": 1}, source="sacct",
+        )
+        job = _make_job(status="RUNNING", array_spec="0-2")
+        mocks = await _poll(
+            job, status,
+            array_logs=self._LOGS,
+            tails={self._LOGS["1"]: "ERROR: out of memory"},
+        )
+        mocks["notify_failed"].assert_awaited_once()
+        assert mocks["notify_failed"].await_args.args[2] == "ERROR: out of memory"
+
+    async def test_failure_excerpt_tries_at_most_three_tasks(self):
+        status = JobStatus(state="FAILED", counts={"FAILED": 9}, source="sacct")
+        many = {str(i): f"/home/juliaf/jobs/bench_run/bench_run-12345-{i}.out"
+                for i in range(9)}
+        job = _make_job(status="RUNNING", array_spec="0-8")
+        mocks = await _poll(job, status, array_logs=many, tails={})
+        tried = [call.args[2] for call in mocks["tail_log"].await_args_list]
+        assert [p for p in tried if p in many.values()] == [
+            many["0"], many["1"], many["2"],
+        ]

@@ -41,3 +41,35 @@ class TestQueueRowShowsTheFullJobId:
         # show a six-digit suffix that reads as a different job.
         assert "#4137812" in row
         assert "#137812 " not in row
+
+
+class TestResultsRowInTheDetailPane:
+    """Issues #15 and #16: nothing in the TUI said where results land."""
+
+    def _job(self, local_dir: str):
+        from clusterpilot.db import JobRecord
+        return JobRecord(
+            job_id="4137812", job_name="ising-sweep", cluster_name="narval",
+            host="h", user="u", account="a", partition="p", script_path="s",
+            working_dir="w", local_dir=local_dir, walltime="01:00:00",
+            status="COMPLETED",
+        )
+
+    def test_the_detail_pane_shows_the_results_directory(self):
+        from clusterpilot.tui.jobs import _format_meta
+        meta = _format_meta(self._job("/data/runs/clusterpilot_jobs/ising-sweep"))
+        assert "RESULTS" in meta
+        assert "/data/runs/clusterpilot_jobs/ising-sweep" in meta
+
+    def test_a_home_path_is_shown_with_a_tilde(self):
+        from pathlib import Path
+
+        from clusterpilot.tui.jobs import _format_meta
+        local = str(Path.home() / "clusterpilot_jobs" / "ising-sweep")
+        meta = _format_meta(self._job(local))
+        assert "~/clusterpilot_jobs/ising-sweep" in meta
+        assert str(Path.home()) not in meta
+
+    def test_the_rsync_hint_names_the_results_directory(self):
+        from clusterpilot.tui.app import HINTS
+        assert "RESULTS" in HINTS["btn-rsync"]

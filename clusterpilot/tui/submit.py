@@ -109,6 +109,91 @@ class PathSuggester(Suggester):
             return None
 
 
+class SubmitError(Exception):
+    """Raised when the form cannot be turned into a submittable job."""
+
+
+# Shown, and SUBMIT left disabled, when the model ran out of tokens mid-script.
+# The remedy is the one that actually shortens the output: a long list of
+# per-task parameters written into the script body is what usually pushes a
+# generation over the ceiling, and a parameter table takes it out again.
+_TRUNCATED_MESSAGE = (
+    "Generation hit the token ceiling and was cut short. The script is "
+    "incomplete and cannot be submitted. Shorten the description, or move the "
+    "per-task parameters out of the script body and into a parameter table "
+    "(the PARAM TABLE field) so the script only reads the row it needs."
+)
+
+
+# A job-name suffix ClusterPilot itself appends: "-MMDD-HHMM".
+_JOB_NAME_SUFFIX_RE = re.compile(r"-\d{4}-\d{4}$")
+
+
+def _strip_job_name_suffix(job_name: str) -> str:
+    """Remove a ClusterPilot "-MMDD-HHMM" suffix from a job name.
+
+    Re-submitting the same description used to append a fresh timestamp to a
+    name that already carried one, so a third run produced
+    ``bench-0827-1431-0828-0902``. Stripping first means the suffix is always
+    applied to the base name.
+    """
+    return _JOB_NAME_SUFFIX_RE.sub("", job_name)
+
+
+def _local_results_root(project_dir_str: str) -> Path:
+    """Directory that holds every job's local results.
+
+    PROJECT DIR when it is set, the home directory otherwise. Never the working
+    directory: results used to land wherever the TUI happened to be launched
+    from, so the same job scattered its output across the filesystem and RSYNC
+    could not find the previous run.
+    """
+    if project_dir_str:
+        return Path(project_dir_str).expanduser() / "clusterpilot_jobs"
+    return Path.home() / "clusterpilot_jobs"
+
+
+def _normalise_driver_rel(project_dir: Path, raw: str) -> str:
+    """Return the driver path as a project-relative posix path.
+
+    ``rsync`` include patterns are matched against paths relative to the
+    transfer root, so an absolute or ``./``-prefixed driver silently matched
+    nothing and the job ran without its own script.
+
+    Raises SubmitError when the path is absolute and outside PROJECT DIR:
+    that file cannot travel with the project, so there is no path to write.
+    """
+    value = raw.strip()
+    if not value:
+        return ""
+
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        return Path(value).as_posix()
+
+    root = project_dir.expanduser()
+    try:
+        return candidate.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        raise SubmitError(
+            f"DRIVER SCRIPT '{raw}' is outside PROJECT DIR ({root}). "
+            f"Give a path relative to PROJECT DIR, or point PROJECT DIR at the "
+            f"directory that contains the driver."
+        ) from None
+
+
+def _mkdir_command(remote_dirs: Iterable[str]) -> str:
+    """One ``mkdir -p`` for every remote directory, or "" when there are none.
+
+    One SSH round trip per extra file, each on the 30 s default timeout, is what
+    made a batch of extra files time out on a busy login node.
+    """
+    unique = sorted({d for d in remote_dirs if d})
+    if not unique:
+        return ""
+    return "mkdir -p " + " ".join(unique)
+
+
 def _julia_upload_includes(project_dir: Path, driver_rel: str) -> list[str] | None:
     """Allowlist of paths to upload for a Julia project, or None.
 
@@ -403,6 +488,10 @@ class SubmitView(Static):
         self._findings: list[Finding] = []
         self._last_usage = ApiUsage()
         self._last_script_env: ScriptEnvironment | None = None
+        # The job name as generated, without any "-MMDD-HHMM" uniqueness
+        # suffix. Every submit derives its name from this, so re-submitting
+        # cannot stack one suffix on top of another.
+        self._base_job_name: str = ""
         self._partition_availability: dict[str, PartitionAvailability] = {}
         # GPU types the probe reports, per partition name and across the whole
         # cluster. The probe lists MIG instances as extra rows for the same
@@ -669,17 +758,26 @@ class SubmitView(Static):
         if script_path_str:
             if project_dir_str:
                 # Package mode: driver path is relative to the project root.
-                # A leading slash would make Path() discard the project dir and
-                # break the upload, so normalise it to a relative path here.
-                if script_path_str.startswith("/"):
+                # Absolute and "./"-prefixed paths break the upload filter, so
+                # they are normalised here and rejected outright when they
+                # cannot be expressed relative to PROJECT DIR.
+                project_root_path = Path(project_dir_str).expanduser()
+                try:
+                    driver_script = _normalise_driver_rel(
+                        project_root_path, script_path_str
+                    )
+                except SubmitError as exc:
+                    self.app.notify(str(exc), severity="error", markup=False, timeout=15)
+                    self.query_one("#btn-generate", Button).disabled = False
+                    return
+                if driver_script != script_path_str:
                     self.app.notify(
-                        "Driver script must be relative to PROJECT DIR; "
-                        "removing the leading slash.",
+                        f"Driver script read as '{driver_script}', relative to "
+                        f"PROJECT DIR.",
                         severity="warning",
                     )
-                    script_path_str = script_path_str.lstrip("/")
-                driver_script = script_path_str
-                full_path = Path(project_dir_str).expanduser() / script_path_str
+                script_path_str = driver_script
+                full_path = project_root_path / script_path_str
             else:
                 # Single-file mode: treat as absolute/expandable path.
                 full_path = Path(script_path_str).expanduser()
@@ -819,6 +917,12 @@ class SubmitView(Static):
             self.query_one("#btn-generate", Button).disabled = False
             return
 
+        # Remember the base name this generation asked for, so a re-submit
+        # timestamps the base rather than an already-timestamped name.
+        self._base_job_name = _strip_job_name_suffix(
+            _extract(self._generated_script, "job-name", "")
+        )
+
         u = self._last_usage
         self.app.notify(
             f"Script generated — {u.input_tokens:,} in + {u.output_tokens:,} out "
@@ -831,9 +935,7 @@ class SubmitView(Static):
         # missing its tail. Refuse it outright: it must never reach sbatch.
         if self._last_usage.truncated:
             self.app.notify(
-                "Generation hit the token ceiling and was cut short. The script "
-                "is incomplete and cannot be submitted. Shorten the description, "
-                "or move per-task parameters into a parameter table.",
+                _TRUNCATED_MESSAGE,
                 severity="error", markup=False, timeout=20,
             )
             self.query_one("#btn-generate", Button).disabled = False
@@ -900,18 +1002,29 @@ class SubmitView(Static):
             self.app.notify("No cluster selected.", severity="error")
             return
 
-        job_name  = _extract(script, "job-name",  f"cpjob_{int(time.time())}")
+        # The script's own name wins (the user may have edited it), falling back
+        # to the name this generation started from. Either way an existing
+        # "-MMDD-HHMM" suffix is stripped before a new one can be added.
+        base_job_name = _strip_job_name_suffix(
+            _extract(script, "job-name", "")
+            or self._base_job_name
+            or f"cpjob_{int(time.time())}"
+        )
+        job_name  = base_job_name
         partition = _extract(script, "partition",  "skylake")
         walltime  = _extract(script, "time",       "01:00:00")
         account   = _extract(script, "account",    profile.account)
 
+        project_dir_str = self.query_one("#project-dir-input", Input).value.strip()
+        results_root = _local_results_root(project_dir_str)
+
         # Ensure unique job directory — append a short timestamp if a job
         # with this name already exists locally (repeat submissions with the
         # same description would otherwise overwrite the previous run's data).
-        local_job_dir = Path.cwd() / "clusterpilot_jobs" / job_name
+        local_job_dir = results_root / job_name
         if local_job_dir.exists():
             suffix = time.strftime("%m%d-%H%M")
-            job_name = f"{job_name}-{suffix}"
+            job_name = f"{base_job_name}-{suffix}"
             # Rewrite --job-name in the script so SLURM log names match.
             script = re.sub(
                 r"(#SBATCH\s+--job-name=)\S+",
@@ -927,7 +1040,7 @@ class SubmitView(Static):
         script = _sanitise_script(script, job_name, is_array=bool(array_spec))
         self._generated_script = script   # keep TUI display in sync
 
-        local_job_dir = Path.cwd() / "clusterpilot_jobs" / job_name
+        local_job_dir = results_root / job_name
         local_job_dir.mkdir(parents=True, exist_ok=True)
 
         script_name = f"{job_name}.sh"
@@ -943,7 +1056,6 @@ class SubmitView(Static):
             self.query_one("#btn-submit", Button).disabled = False
             return
 
-        project_dir_str = self.query_one("#project-dir-input", Input).value.strip()
         try:
             if project_dir_str:
                 # Package mode: rsync the project tree, then merge in the
@@ -956,8 +1068,35 @@ class SubmitView(Static):
                 # Julia-project allowlist: when a Project.toml is present, ship
                 # only the environment (Project/Manifest), the package source,
                 # and the driver — preserving layout — instead of the whole tree.
-                driver_rel = self.query_one("#script-path-input", Input).value.strip().lstrip("/")
+                try:
+                    driver_rel = _normalise_driver_rel(
+                        project_dir,
+                        self.query_one("#script-path-input", Input).value,
+                    )
+                except SubmitError as exc:
+                    self.app.notify(str(exc), severity="error", markup=False, timeout=15)
+                    self.query_one("#btn-submit", Button).disabled = False
+                    return
                 includes = _julia_upload_includes(project_dir, driver_rel)
+
+                # A Julia driver's include()d files are not imports, so the
+                # allowlist never saw them and the job died on its first
+                # include. Ship the ones that exist and say so for the rest.
+                env = self._last_script_env
+                if includes is not None and env is not None and env.included_files:
+                    missing: list[str] = []
+                    for rel_include in env.included_files:
+                        if (project_dir / rel_include).exists():
+                            if rel_include not in includes:
+                                includes.append(rel_include)
+                        else:
+                            missing.append(rel_include)
+                    if missing:
+                        self.app.notify(
+                            "Driver include()s files that do not exist locally, "
+                            "so they cannot be uploaded: " + ", ".join(missing),
+                            severity="warning", markup=False, timeout=12,
+                        )
 
                 await upload(
                     profile.host, profile.user,
@@ -976,8 +1115,12 @@ class SubmitView(Static):
                     )
 
                 # Extra files: upload individually, bypassing ignore rules.
+                # Every parent directory is created in ONE mkdir first: a
+                # round trip per file on the default 30 s timeout is what made
+                # a batch of extra files fail on a busy login node.
                 extra_raw = self.query_one("#extra-files-input", Input).value.strip()
                 if extra_raw:
+                    planned: list[tuple[Path, str]] = []
                     for entry in (e.strip() for e in extra_raw.split(",") if e.strip()):
                         local_file, rel, warning = _resolve_extra_file(entry, project_dir)
                         if warning:
@@ -993,10 +1136,14 @@ class SubmitView(Static):
                             remote_dir if str(rel.parent) in (".", "")
                             else f"{remote_dir}/{rel.parent}"
                         )
+                        planned.append((local_file, remote_file_dir))
+
+                    mkdir_cmd = _mkdir_command(d for _, d in planned)
+                    if mkdir_cmd:
                         await run_remote(
-                            profile.host, profile.user,
-                            f"mkdir -p {remote_file_dir}",
+                            profile.host, profile.user, mkdir_cmd, timeout=120.0,
                         )
+                    for local_file, remote_file_dir in planned:
                         await upload_file(
                             profile.host, profile.user,
                             local_file,

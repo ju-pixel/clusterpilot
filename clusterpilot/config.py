@@ -7,9 +7,12 @@ API key precedence: config file → ANTHROPIC_API_KEY env var.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 try:
     import tomllib
@@ -38,7 +41,11 @@ host = "yak.hpc.umanitoba.ca"
 user = ""          # your Grex username
 account = ""       # your SLURM account, e.g. def-stamps (leave blank if not required)
 scratch = "$HOME/clusterpilot_jobs"
-cluster_type = "grex"   # "drac", "grex", or "generic" (any other SLURM cluster)
+cluster_type = "grex"   # REQUIRED, set it per cluster: "drac" (Alliance/DRAC),
+                        # "grex" (UofM Grex), or "generic" (any other SLURM
+                        # cluster). Copying this stanza for a different cluster
+                        # means changing this line too: the wrong value silently
+                        # generates scripts the scheduler rejects.
 
 [notifications]
 backend = "ntfy"
@@ -65,6 +72,8 @@ class ClusterProfile:
     account: str
     scratch: str        # may contain $HOME — call expand_scratch() to resolve
     cluster_type: str = "generic"   # "drac", "grex", or "generic"
+    inferred_cluster_type: bool = False   # True when cluster_type was guessed
+                                          # from the host, not read from config
 
     def expand_scratch(self) -> str:
         """Return scratch path suitable for use in remote commands.
@@ -85,6 +94,17 @@ class NotificationConfig:
     backend: str = "ntfy"
     ntfy_topic: str = ""
     ntfy_server: str = "https://ntfy.sh"
+
+    @property
+    def resolved_url(self) -> str:
+        """The URL a notification is actually POSTed to.
+
+        Mirrors what ``notify.ntfy.send`` builds, so the F9 view and the
+        transport can never disagree about where a notification goes.
+        """
+        if not self.ntfy_topic:
+            return ""
+        return f"{self.ntfy_server.rstrip('/')}/{self.ntfy_topic}"
 
 
 @dataclass
@@ -259,6 +279,86 @@ def write_default_config(path: Path = CONFIG_PATH) -> None:
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
 
+VALID_CLUSTER_TYPES: frozenset[str] = frozenset({"drac", "grex", "generic"})
+
+# Host suffixes that identify a cluster type when cluster_type is absent.
+_HOST_SUFFIX_TYPES: tuple[tuple[str, str], ...] = (
+    (".alliancecan.ca", "drac"),
+    (".computecanada.ca", "drac"),
+    (".umanitoba.ca", "grex"),
+)
+
+
+def infer_cluster_type(host: str) -> str:
+    """Guess a cluster type from its hostname, defaulting to "generic"."""
+    hostname = host.strip().lower().rstrip(".")
+    for suffix, cluster_type in _HOST_SUFFIX_TYPES:
+        if hostname.endswith(suffix):
+            return cluster_type
+    return "generic"
+
+
+def _resolve_cluster_type(raw: dict) -> tuple[str, bool]:
+    """Return (cluster_type, inferred) for one ``[[clusters]]`` stanza.
+
+    An explicit value is lower-cased and validated; an unknown one is a
+    ConfigError rather than a silent fall back to "generic", because the wrong
+    quirk set produces a script sbatch rejects or, worse, one that runs on the
+    wrong hardware. An absent key is inferred from the host and warned about.
+    """
+    name = str(raw.get("name", "<unnamed>"))
+    if "cluster_type" in raw:
+        value = str(raw["cluster_type"]).strip().lower()
+        if value not in VALID_CLUSTER_TYPES:
+            valid = ", ".join(sorted(VALID_CLUSTER_TYPES))
+            raise ConfigError(
+                f"Cluster '{name}': unknown cluster_type "
+                f"'{raw['cluster_type']}'. Valid values are: {valid}."
+            )
+        return value, False
+
+    inferred = infer_cluster_type(str(raw.get("host", "")))
+    log.warning(
+        "Cluster '%s' has no cluster_type; inferred '%s' from the host. "
+        "Set cluster_type explicitly in config.toml (one of: %s).",
+        name, inferred, ", ".join(sorted(VALID_CLUSTER_TYPES)),
+    )
+    return inferred, True
+
+
+def _resolve_ntfy_server(server: str, topic: str) -> tuple[str, str]:
+    """Return (server, warning) for an ntfy server URL.
+
+    ``notify.ntfy.send`` appends the topic to the server, so a server URL that
+    already carries the topic would POST to ``.../topic/topic``. A path equal to
+    the topic is stripped with a warning; any other path is a ConfigError,
+    because there is no way to tell a mistyped topic from a URL prefix ntfy
+    itself would reject.
+    """
+    raw = server.strip().rstrip("/")
+    if not raw:
+        return "https://ntfy.sh", ""
+
+    scheme, separator, rest = raw.partition("://")
+    if not separator:
+        scheme, rest = "", raw
+    host, _, path = rest.partition("/")
+    path = path.strip("/")
+    if not path:
+        return raw, ""
+
+    base = f"{scheme}://{host}" if scheme else host
+    if topic and path == topic:
+        return base, (
+            f"ntfy_server '{raw}' already ends in the topic '{topic}'; "
+            f"using '{base}' so the topic is not repeated in the URL."
+        )
+    raise ConfigError(
+        f"ntfy_server '{raw}' must be a server URL with no path, e.g. "
+        f"'https://ntfy.sh'. The topic belongs in ntfy_topic."
+    )
+
+
 def _from_dict(data: dict) -> Config:
     raw_defaults = data.get("defaults", {})
     defaults = Defaults(
@@ -271,23 +371,32 @@ def _from_dict(data: dict) -> Config:
         download_excludes=raw_defaults.get("download_excludes", list(_DEFAULT_DOWNLOAD_EXCLUDES)),
     )
 
-    clusters = [
-        ClusterProfile(
-            name=c["name"],
-            host=c["host"],
-            user=c.get("user", ""),
-            account=c.get("account", ""),
-            scratch=c.get("scratch", "$HOME/clusterpilot_jobs"),
-            cluster_type=c.get("cluster_type", "generic"),
+    clusters: list[ClusterProfile] = []
+    for c in data.get("clusters", []):
+        cluster_type, inferred = _resolve_cluster_type(c)
+        clusters.append(
+            ClusterProfile(
+                name=c["name"],
+                host=c["host"],
+                user=c.get("user", ""),
+                account=c.get("account", ""),
+                scratch=c.get("scratch", "$HOME/clusterpilot_jobs"),
+                cluster_type=cluster_type,
+                inferred_cluster_type=inferred,
+            )
         )
-        for c in data.get("clusters", [])
-    ]
 
     raw_notify = data.get("notifications", {})
+    ntfy_topic = raw_notify.get("ntfy_topic", "")
+    ntfy_server, server_warning = _resolve_ntfy_server(
+        raw_notify.get("ntfy_server", "https://ntfy.sh"), ntfy_topic,
+    )
+    if server_warning:
+        log.warning("%s", server_warning)
     notifications = NotificationConfig(
         backend=raw_notify.get("backend", "ntfy"),
-        ntfy_topic=raw_notify.get("ntfy_topic", ""),
-        ntfy_server=raw_notify.get("ntfy_server", "https://ntfy.sh"),
+        ntfy_topic=ntfy_topic,
+        ntfy_server=ntfy_server,
     )
 
     raw_hosted = data.get("hosted", {})

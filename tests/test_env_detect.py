@@ -219,3 +219,63 @@ class TestScriptEnvironment:
         assert env.has_manifest is True
         assert env.third_party_imports == ["CUDA"]
         assert env.driver_extension == ".jl"
+
+
+# ── Julia include() discovery (#7) ────────────────────────────────────────────
+
+class TestJuliaIncludes:
+    """Issue #7: include()d repo files were never added to the upload set."""
+
+    def test_literal_include_resolves_against_the_driver_directory(self):
+        env = analyze_script(
+            'include("helpers.jl")\nusing CUDA\n',
+            "scripts/run.jl",
+            None,
+        )
+        assert env.included_files == ["scripts/helpers.jl"]
+
+    def test_joinpath_with_dir_macro_is_understood(self):
+        env = analyze_script(
+            'include(joinpath(@__DIR__, "..", "src", "model.jl"))\n',
+            "scripts/run.jl",
+            None,
+        )
+        assert env.included_files == ["src/model.jl"]
+
+    def test_a_relative_parent_path_is_normalised(self):
+        env = analyze_script(
+            'include("../lib/util.jl")\n',
+            "scripts/run.jl",
+            None,
+        )
+        assert env.included_files == ["lib/util.jl"]
+
+    def test_a_driver_at_the_project_root_keeps_its_paths(self):
+        env = analyze_script('include("src/model.jl")\n', "run.jl", None)
+        assert env.included_files == ["src/model.jl"]
+
+    def test_duplicates_are_collapsed(self):
+        env = analyze_script(
+            'include("a.jl")\ninclude("a.jl")\n', "run.jl", None,
+        )
+        assert env.included_files == ["a.jl"]
+
+    def test_commented_out_includes_are_ignored(self):
+        env = analyze_script('# include("dead.jl")\ninclude("live.jl")\n', "run.jl", None)
+        assert env.included_files == ["live.jl"]
+
+    def test_computed_includes_are_left_alone(self):
+        env = analyze_script(
+            'f = "model.jl"\ninclude(f)\ninclude(joinpath(dir, name))\n',
+            "run.jl",
+            None,
+        )
+        assert env.included_files == []
+
+    def test_paths_escaping_the_project_are_dropped(self):
+        env = analyze_script('include("../../outside.jl")\n', "run.jl", None)
+        assert env.included_files == []
+
+    def test_python_drivers_have_no_included_files(self):
+        env = analyze_script("import numpy\n", "run.py", None)
+        assert env.included_files == []

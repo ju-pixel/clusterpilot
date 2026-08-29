@@ -5,6 +5,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiosqlite
@@ -75,6 +76,18 @@ def _format_list_item(job: JobRecord) -> str:
     )
 
 
+def _display_path(path: str) -> str:
+    """A local path with the home directory shortened to ``~``."""
+    if not path:
+        return "(not recorded)"
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    if path.startswith(home + "/"):
+        return "~" + path[len(home):]
+    return path
+
+
 def _format_meta(job: JobRecord) -> str:
     # Per-job API cost (if usage was recorded).
     if job.input_tokens or job.output_tokens:
@@ -98,6 +111,10 @@ def _format_meta(job: JobRecord) -> str:
         ("SYNCED",    "[#6ed86e]yes[/]" if job.synced else "[#7a6a50]no[/]"),
         ("CLEANED",   "[#6ed86e]yes[/]" if job.remote_cleaned else "[#7a6a50]no[/]"),
         ("AI COST",   cost_str),
+        # Where RSYNC puts this job's results. Without it the destination was
+        # invisible in the TUI, and it is not always the directory the user
+        # launched from.
+        ("RESULTS",   f"[#7a6a50]{_display_path(job.local_dir)}[/]"),
     ]
     if job.array_spec:
         rows.insert(4, ("ARRAY", f"[#e8a020]{job.array_spec}[/]"))

@@ -24,6 +24,7 @@ import aiosqlite
 from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
     JobStatus,
+    find_array_logs,
     find_log,
     query_status,
     tail_log,
@@ -208,10 +209,7 @@ class PollDaemon:
                 await self._sync(job, new_status)
                 return
             # Find the log file path while we're here.
-            log_path = await find_log(
-                profile.host, profile.user,
-                job.job_name, job.job_id, job.working_dir,
-            )
+            log_path = await self._find_log_path(profile, job)
             await update_status(
                 db, job.job_id, job.cluster_name, new_status,
                 started_at=now,
@@ -330,13 +328,65 @@ class PollDaemon:
         job.synced = synced
         await self._notify_failed(profile, job, status)
 
-    async def _notify_failed(
+    async def _array_task_logs(
         self,
         profile: ClusterProfile,
         job: JobRecord,
-        status: str,
-    ) -> None:
-        log_tail = ""
+    ) -> dict[str, str]:
+        """Per-task logs for an array job, ordered by task index. {} otherwise."""
+        if not job.array_spec:
+            return {}
+        try:
+            return await find_array_logs(
+                profile.host, profile.user,
+                job.job_name, job.job_id, job.working_dir,
+            )
+        except SSHError:
+            return {}
+
+    async def _find_log_path(
+        self,
+        profile: ClusterProfile,
+        job: JobRecord,
+    ) -> str | None:
+        """Locate this job's stdout log, array-aware.
+
+        An array's tasks write ``%x-%A-%a.out``, which none of ``find_log``'s
+        patterns match, so an array job's log_path stayed NULL and TAIL, LOG and
+        the failure excerpt all had nothing to work with. The lowest task's log
+        stands in for the job.
+        """
+        tasks = await self._array_task_logs(profile, job)
+        if tasks:
+            return next(iter(tasks.values()))
+        try:
+            return await find_log(
+                profile.host, profile.user,
+                job.job_name, job.job_id, job.working_dir,
+            )
+        except SSHError:
+            return None
+
+    async def _failure_excerpt(
+        self,
+        profile: ClusterProfile,
+        job: JobRecord,
+    ) -> str:
+        """Log tail for a failure notification, array-aware.
+
+        For an array, task 0 is often the one that completed cleanly and wrote
+        nothing useful, so the first task with a non-empty tail is used instead.
+        Three tasks is enough to find one without turning a notification into a
+        long series of SSH round trips.
+        """
+        for path in list((await self._array_task_logs(profile, job)).values())[:3]:
+            try:
+                tail = await tail_log(profile.host, profile.user, path)
+            except SSHError:
+                continue
+            if tail.strip():
+                return tail
+
         log_path = job.log_path
         if not log_path:
             # Job may have run briefly without the daemon catching the RUNNING
@@ -347,12 +397,21 @@ class PollDaemon:
                     job.job_name, job.job_id, job.working_dir,
                 )
             except SSHError:
-                pass
-        if log_path:
-            try:
-                log_tail = await tail_log(profile.host, profile.user, log_path)
-            except SSHError:
-                pass
+                return ""
+        if not log_path:
+            return ""
+        try:
+            return await tail_log(profile.host, profile.user, log_path)
+        except SSHError:
+            return ""
+
+    async def _notify_failed(
+        self,
+        profile: ClusterProfile,
+        job: JobRecord,
+        status: str,
+    ) -> None:
+        log_tail = await self._failure_excerpt(profile, job)
         try:
             await notify_failed(self.config.notifications, job, log_tail)
         except Exception:

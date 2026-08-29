@@ -5,9 +5,10 @@ Used to generate appropriate environment setup instructions in the AI prompt.
 """
 from __future__ import annotations
 
+import posixpath
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 @dataclass
@@ -20,6 +21,13 @@ class ScriptEnvironment:
     driver_extension: str            # ".jl", ".py", ".sh", or ""
     manifest_name: str = ""          # "Project.toml", "pyproject.toml",
                                      # "requirements.txt", or "" when no manifest
+    included_files: list[str] = field(default_factory=list)
+    """Files a Julia driver ``include()``s, as project-relative posix paths.
+
+    Only literal paths are resolved (see ``_julia_includes``); the upload
+    allowlist would otherwise drop them and the job would fail at the first
+    include. Empty for every other language.
+    """
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -47,9 +55,11 @@ def analyze_script(
     has_manifest = bool(manifest_content and manifest_content.strip())
 
     third_party: list[str] = []
+    included: list[str] = []
     if script_content:
         if language == "julia":
             third_party = _julia_third_party(script_content)
+            included = _julia_includes(script_content, driver_script)
         elif language == "python":
             third_party = _python_third_party(script_content)
         # shell / unknown: no package analysis needed
@@ -60,6 +70,7 @@ def analyze_script(
         third_party_imports=third_party,
         driver_extension=ext,
         manifest_name=manifest_name if has_manifest else "",
+        included_files=included,
     )
 
 
@@ -106,6 +117,55 @@ _JULIA_IMPORT_RE = re.compile(
     r"^\s*(?:using|import)\s+(.+?)(?:\s*#.*)?$",
     re.MULTILINE,
 )
+
+
+# Matches:  include("src/model.jl")
+_JULIA_INCLUDE_RE = re.compile(r'include\s*\(\s*"([^"]+)"\s*\)')
+
+# Matches:  include(joinpath(@__DIR__, "..", "src", "model.jl"))
+# @__DIR__ is the driver's own directory, which is the same base the plain
+# string form resolves against, so both forms share one resolution path.
+_JULIA_INCLUDE_JOINPATH_RE = re.compile(
+    r'include\s*\(\s*joinpath\s*\(\s*@__DIR__\s*((?:,\s*"[^"]+"\s*)+)\)\s*\)'
+)
+
+_JULIA_QUOTED_RE = re.compile(r'"([^"]+)"')
+
+
+def _julia_includes(content: str, driver_script: str | None) -> list[str]:
+    """Return the files a Julia driver ``include()``s, project-relative.
+
+    Only two literal forms are recognised: ``include("a/b.jl")`` and
+    ``include(joinpath(@__DIR__, "a", "b.jl"))``. Anything built from variables
+    or interpolation is deliberately left alone: guessing at an arbitrary
+    expression would ship the wrong file and hide the real one.
+
+    Paths resolve against the driver's own directory (which is what Julia does
+    and what ``@__DIR__`` means) and come back in the driver path's own frame of
+    reference, i.e. project-relative when *driver_script* is.
+    """
+    base = PurePosixPath(driver_script).parent if driver_script else PurePosixPath("")
+
+    raw_paths: list[str] = []
+    for line in content.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        raw_paths += _JULIA_INCLUDE_RE.findall(line)
+        for group in _JULIA_INCLUDE_JOINPATH_RE.findall(line):
+            parts = _JULIA_QUOTED_RE.findall(group)
+            if parts:
+                raw_paths.append(posixpath.join(*parts))
+
+    resolved: list[str] = []
+    for raw in raw_paths:
+        if raw.startswith("/"):
+            continue   # an absolute include cannot travel with the project
+        joined = posixpath.normpath(posixpath.join(str(base), raw))
+        if joined.startswith(".."):
+            continue   # outside the project tree; nothing to upload
+        if joined not in resolved:
+            resolved.append(joined)
+    return resolved
 
 
 def _julia_third_party(content: str) -> list[str]:
