@@ -42,7 +42,11 @@ from clusterpilot.db import (
     update_status,
 )
 from clusterpilot.jobs.fieldnotes import log_completed_job
-from clusterpilot.jobs.sync import sync_job
+from clusterpilot.jobs.sync import (
+    NotificationPreferences,
+    fetch_notification_preferences,
+    sync_job,
+)
 from clusterpilot.notify.ntfy import (
     notify_completed,
     notify_eta,
@@ -91,6 +95,10 @@ class PollDaemon:
         # token was configured after the job had already changed state), rather
         # than only syncing on a live edge.
         self._synced: dict[str, str] = {}
+        # Per-event switches read from the user's hosted account at
+        # reconcile. None means the cloud has no opinion (self-hosted, or
+        # the fetch failed) and local config alone decides.
+        self._cloud_prefs: NotificationPreferences | None = None
 
     # ── Run modes ─────────────────────────────────────────────────────────────
 
@@ -236,17 +244,24 @@ class PollDaemon:
             job.started_at = now
             job.log_path = log_path
             try:
-                await notify_started(self.config.notifications, job)
+                if self._should_notify("started"):
+                    await notify_started(self.config.notifications, job)
             except Exception:
                 log.warning("Failed to send start notification for %s", job.job_id, exc_info=True)
             await self._sync(job, new_status)
 
         elif new_status in TERMINAL_STATES:
+            # Asked for once, here, because seff only has an answer after the
+            # job leaves the queue and the answer never changes afterwards.
+            # Fetched before the notifications so they can carry it.
+            efficiency = await self._job_efficiency(profile, job)
             await update_status(
                 db, job.job_id, job.cluster_name, new_status,
                 finished_at=now,
+                efficiency=efficiency or None,
             )
             job.finished_at = now
+            job.efficiency = efficiency
 
             if new_status == "COMPLETED":
                 await self._sync_and_notify_completed(db, profile, job, new_status)
@@ -302,7 +317,8 @@ class PollDaemon:
         )
         job.synced = synced
         try:
-            await notify_completed(self.config.notifications, job)
+            if self._should_notify("completed"):
+                await notify_completed(self.config.notifications, job)
         except Exception:
             log.warning("Failed to send completion notification for %s", job.job_id, exc_info=True)
 
@@ -452,7 +468,8 @@ class PollDaemon:
     ) -> None:
         log_tail = await self._failure_excerpt(profile, job)
         try:
-            await notify_failed(self.config.notifications, job, log_tail)
+            if self._should_notify("failed"):
+                await notify_failed(self.config.notifications, job, log_tail)
         except Exception:
             log.warning("Failed to send failure notification for %s", job.job_id, exc_info=True)
         await self._sync(job, status, log_tail=log_tail or None)
@@ -478,9 +495,10 @@ class PollDaemon:
         if remaining_min < _LOW_TIME_THRESHOLD and key not in self._low_warned:
             self._low_warned.add(key)
             try:
-                await notify_low_time(
-                    self.config.notifications, job, int(remaining_min),
-                )
+                if self._should_notify("low_time"):
+                    await notify_low_time(
+                        self.config.notifications, job, int(remaining_min),
+                    )
             except Exception:
                 log.warning("Failed low-time notification for %s", job.job_id, exc_info=True)
             return
@@ -490,11 +508,23 @@ class PollDaemon:
         if now - last >= _ETA_INTERVAL and key not in self._low_warned:
             self._last_eta[key] = now
             try:
-                await notify_eta(
-                    self.config.notifications, job, int(remaining_min),
-                )
+                if self._should_notify("eta"):
+                    await notify_eta(
+                        self.config.notifications, job, int(remaining_min),
+                    )
             except Exception:
                 log.warning("Failed ETA notification for %s", job.job_id, exc_info=True)
+
+    def _should_notify(self, event: str) -> bool:
+        """Whether the hosted account allows this event to be notified.
+
+        True when there are no cloud preferences, so a self-hosted install (or
+        an unreachable dashboard) is governed by local config alone. Events the
+        dashboard does not offer a switch for are always allowed.
+        """
+        if self._cloud_prefs is None:
+            return True
+        return bool(getattr(self._cloud_prefs, event, True))
 
     # ── Hosted sync ───────────────────────────────────────────────────────────
 
@@ -537,6 +567,12 @@ class PollDaemon:
         """
         if not self.config.hosted.api_token:
             return
+
+        # Which events the user has switched on in the dashboard. Best effort:
+        # a failure leaves the previous answer (or None) in place.
+        prefs = await fetch_notification_preferences(self.config.hosted)
+        if prefs is not None:
+            self._cloud_prefs = prefs
 
         async with aiosqlite.connect(self.db_path) as db:
             await init_db(db)

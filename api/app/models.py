@@ -16,6 +16,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+# Subscription statuses that count as "paying" for gating purposes. Stripe
+# writes its own literal into User.subscription_status, so a user inside the
+# 14-day trial is stored as "trialing", not "active". Anything that gates on a
+# live subscription must use this set rather than comparing against "active".
+SUBSCRIBED_STATUSES: frozenset[str] = frozenset({"active", "trialing"})
+
 
 class InviteCode(Base):
     __tablename__ = "invite_codes"

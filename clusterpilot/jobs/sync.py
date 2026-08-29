@@ -3,12 +3,14 @@
 This module is a best-effort fire-and-forget layer. Any error is logged and
 swallowed — sync failures must never block the daemon or affect local state.
 
-The endpoint is unauthenticated per-user (authenticated via bearer token):
-    POST {api_url}/jobs   →  JobUpsert payload
+The endpoints are per-user, authenticated by the hosted bearer token:
+    POST {api_url}/jobs                        JobUpsert payload
+    GET  {api_url}/notify/preferences/daemon   which events the user wants
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -21,6 +23,64 @@ from clusterpilot.db import JobRecord
 log = logging.getLogger(__name__)
 
 _TIMEOUT = 10.0  # seconds
+
+
+@dataclass(frozen=True)
+class NotificationPreferences:
+    """Per-event notification switches held in the user's cloud account.
+
+    Mirrors the booleans stored by the dashboard's Notifications page. Only
+    events the dashboard actually offers appear here; anything else the daemon
+    sends (the periodic ETA, for instance) stays under local config control.
+    """
+
+    started: bool = True
+    completed: bool = True
+    failed: bool = True
+    low_time: bool = True
+
+
+async def fetch_notification_preferences(
+    hosted: HostedConfig,
+) -> NotificationPreferences | None:
+    """Read the user's cloud notification preferences.
+
+    Returns None when there is no hosted token, when the request fails, or when
+    the response is not the expected shape. None means "no opinion from the
+    cloud", and the caller falls back to local config alone: a dashboard that
+    cannot be reached must never silence a notification.
+    """
+    if not hosted.api_token:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(
+                f"{hosted.api_url.rstrip('/')}/notify/preferences/daemon",
+                headers={"Authorization": f"Bearer {hosted.api_token}"},
+            )
+        if resp.status_code >= 400:
+            log.warning(
+                "Notification preference fetch returned HTTP %d: %s",
+                resp.status_code, resp.text[:200],
+            )
+            return None
+        data = resp.json()
+    except Exception:
+        log.warning("Notification preference fetch failed, using local config",
+                    exc_info=True)
+        return None
+
+    if not isinstance(data, dict):
+        log.warning("Notification preferences had an unexpected shape, using local config")
+        return None
+
+    return NotificationPreferences(
+        started=bool(data.get("notify_on_start", True)),
+        completed=bool(data.get("notify_on_complete", True)),
+        failed=bool(data.get("notify_on_fail", True)),
+        low_time=bool(data.get("notify_on_walltime_warn", True)),
+    )
 
 
 def _ts(unix: Optional[float]) -> Optional[str]:

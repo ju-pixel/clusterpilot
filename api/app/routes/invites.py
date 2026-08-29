@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
-from app.models import InviteCode, User
+from app.models import SUBSCRIBED_STATUSES, InviteCode, User
 from app.schemas import InviteCodeOut, RedeemRequest
 
 router = APIRouter(prefix="/invites", tags=["invites"])
@@ -33,7 +33,7 @@ async def redeem_invite(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Redeem an invite code. Activates the current user under the PI's subscription."""
-    if current_user.subscription_status in ("active", "trialing"):
+    if current_user.subscription_status in SUBSCRIBED_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Your account is already active.",

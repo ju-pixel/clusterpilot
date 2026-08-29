@@ -424,7 +424,9 @@ function NotificationsPage() {
         Notifications
       </h2>
       <p style={{ margin: "0 0 28px", fontFamily: T.sans, fontSize: 16, color: T.dim }}>
-        ClusterPilot sends notifications via ntfy.sh or any compatible webhook.
+        These settings control which events your local ClusterPilot daemon sends,
+        via ntfy.sh or any compatible webhook. The daemon reads them when it starts,
+        so restart it to pick up a change straight away. Nothing is sent from here.
       </p>
 
       {/* ntfy topic */}
@@ -467,7 +469,7 @@ function NotificationsPage() {
       {/* event toggles */}
       <div>
         <div style={{ fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: T.muted, marginBottom: 12 }}>
-          Send a notification when
+          The daemon sends a notification when
         </div>
         {TOGGLES.map(item => {
           const on = prefs ? prefs[item.key] : false;
