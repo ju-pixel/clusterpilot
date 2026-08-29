@@ -309,9 +309,14 @@ class TestDracOfflineJuliaEnv:
             script_env=self._julia_manifest_env(),
         )
         assert "JULIA_PKG_OFFLINE=true" in prompt
-        # The instantiate call must still be there — idempotent against warm depot,
-        # and keeps the script portable to non-DRAC clusters.
-        assert "Pkg.instantiate()" in prompt
+        # The instantiate command must be gone (#10): preflight already ran it
+        # on the login node and the compute node has no internet, so an
+        # in-script call can only stall on the registry update or fail. Only
+        # the prohibition may name Pkg.instantiate(), never an instruction to
+        # emit it.
+        assert "julia --project=. -e 'import Pkg; Pkg.instantiate()'" not in prompt
+        assert "Do NOT run Pkg.instantiate() or Pkg.add()" in prompt
+        assert "instantiated on the login node" in prompt
 
     def test_grex_julia_env_has_no_offline_flag(self, grex_probe, grex_profile):
         prompt = _build_system_prompt(
@@ -334,7 +339,26 @@ class TestDracOfflineJuliaEnv:
             script_env=env,
         )
         assert "JULIA_PKG_OFFLINE=true" in prompt
+        # Inferred imports take the same no-Pkg path on DRAC (#10).
+        assert 'Pkg.add(["CUDA", "Flux"])' not in prompt
+        assert "Pkg.instantiate()'" not in prompt
+        assert "Do NOT run Pkg.instantiate() or Pkg.add()" in prompt
+        assert "instantiated on the login node" in prompt
+
+    def test_grex_julia_inferred_imports_keep_pkg_add(self, grex_probe, grex_profile):
+        """Only DRAC drops the Pkg calls: Grex compute nodes have internet."""
+        from clusterpilot.jobs.env_detect import ScriptEnvironment
+        env = ScriptEnvironment(
+            language="julia",
+            has_manifest=False,
+            third_party_imports=["CUDA", "Flux"],
+            driver_extension=".jl",
+        )
+        prompt = _build_system_prompt(
+            grex_probe, grex_profile, partition="stamps", script_env=env,
+        )
         assert 'Pkg.add(["CUDA", "Flux"])' in prompt
+        assert "Pkg.instantiate()" in prompt
 
 
 class TestGpuDirectiveBlock:
@@ -744,3 +768,45 @@ class TestModulePurgeOmittedOnStickyEnvironments:
         """grex_profile defaults to cluster_type='generic' — defensive purge stays."""
         prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
         assert "- module purge" in prompt
+
+
+class TestNoStdbufRule:
+    """#12: the model reaches for `stdbuf -oL` to unbuffer job output. On
+    Alliance clusters the libstdbuf.so it preloads breaks CUDA's ptxas
+    ("GLIBC_ABI_DT_RELR not found"), and it does nothing for Julia in the first
+    place. The prohibition is a generic rule, so it must reach every cluster
+    type, not just DRAC.
+    """
+
+    def _grex_typed_profile(self):
+        return ClusterProfile(
+            name="grex",
+            host="yak.hpc.umanitoba.ca",
+            user="juliaf",
+            account="def-stamps",
+            scratch="$HOME/clusterpilot_jobs",
+            cluster_type="grex",
+        )
+
+    def test_drac_prompt_forbids_stdbuf(self, narval_probe, narval_profile):
+        prompt = _build_system_prompt(
+            narval_probe, narval_profile, partition="gpubase_bynode_b3"
+        )
+        assert "Never wrap the driver in `stdbuf` or set LD_PRELOAD" in prompt
+        # The reason wraps across two prompt lines, so match the token itself.
+        assert "GLIBC_ABI_DT_RELR" in prompt
+
+    def test_grex_prompt_forbids_stdbuf(self, grex_probe):
+        prompt = _build_system_prompt(
+            grex_probe, self._grex_typed_profile(), partition="stamps"
+        )
+        assert "Never wrap the driver in `stdbuf` or set LD_PRELOAD" in prompt
+
+    def test_generic_prompt_forbids_stdbuf(self, grex_probe, grex_profile):
+        """grex_profile defaults to cluster_type='generic'."""
+        prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
+        assert "Never wrap the driver in `stdbuf` or set LD_PRELOAD" in prompt
+
+    def test_python_alternative_is_named(self, grex_probe, grex_profile):
+        prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
+        assert "for Python use `python -u`" in prompt

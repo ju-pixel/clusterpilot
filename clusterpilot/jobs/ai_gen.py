@@ -666,6 +666,10 @@ SSH login: {profile.user}@{profile.host}
 {module_purge_line}   - module load <required modules>
    - (no cd needed — the CWD is already the job directory)
 {env_setup}   - {invoke_line}
+   - Never wrap the driver in `stdbuf` or set LD_PRELOAD. On Alliance clusters
+     the preloaded libstdbuf.so breaks CUDA's ptxas ("GLIBC_ABI_DT_RELR not
+     found"). Julia does not use C stdio, so stdbuf does nothing for it anyway;
+     for Python use `python -u`.
 
    CRITICAL — PATHS IN THE SCRIPT BODY:
    The CWD is already the job directory (set by the submission harness).
@@ -730,8 +734,10 @@ def _build_env_setup_section(
     On DRAC clusters the depot is pre-warmed on the login node by
     :func:`clusterpilot.jobs.preflight.warm_depot` before sbatch runs, so the
     compute-node script must set ``JULIA_PKG_OFFLINE=true`` to skip the
-    registry-update network call. The ``Pkg.instantiate()`` line is kept for
-    idempotency (no-op against a warm offline depot).
+    registry-update network call, and must not call ``Pkg.instantiate()`` or
+    ``Pkg.add()`` at all: the work is already done and the compute node has no
+    internet, so an in-script call can only hang or fail. Grex and generic
+    clusters keep the instantiate line.
     """
     if env is None:
         return ""
@@ -744,6 +750,19 @@ def _build_env_setup_section(
     )
 
     if env.language == "julia":
+        if is_drac:
+            # DRAC compute nodes have no internet, and ClusterPilot's preflight
+            # has already instantiated the depot on the login node
+            # (preflight.warm_depot). An in-script Pkg call can only stall on
+            # the registry update or fail outright, so suppress it entirely,
+            # exactly as the Python branch below suppresses pip install.
+            return (
+                f"{julia_offline_prefix}"
+                "   - # Do NOT run Pkg.instantiate() or Pkg.add() in this script. The\n"
+                "     # package depot was instantiated on the login node before\n"
+                "     # submission (DRAC compute nodes have no internet). Just run\n"
+                "     # the driver: julia --project=. <driver>\n"
+            )
         if env.has_manifest:
             # Pinned environment — instantiate exactly what the manifest specifies.
             return (

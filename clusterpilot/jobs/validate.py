@@ -33,6 +33,7 @@ Checks implemented, by slug:
 ``gpu-size``                a GPU request that does not name the picked size
 ``walltime-over-partition`` ``--time`` exceeds the probed partition limit
 ``driver-not-uploaded``     the script runs a file the upload set omits
+``stdbuf``                  the script wraps a command in stdbuf or LD_PRELOAD
 ``truncated``               the generation looks cut off part way through
 """
 from __future__ import annotations
@@ -148,6 +149,7 @@ def validate_script(
     findings.extend(_check_gpu_size(script, intent))
     findings.extend(_check_walltime(script, intent, partitions))
     findings.extend(_check_driver_uploaded(script, intent))
+    findings.extend(_check_stdbuf(script))
     findings.extend(_check_truncated(script))
     return findings
 
@@ -799,6 +801,61 @@ def _check_driver_uploaded(script: str, intent: SubmitIntent) -> list[Finding]:
             line=line,
         )
     ]
+
+
+# ── Check: stdbuf and LD_PRELOAD ──────────────────────────────────────────────
+
+# ``stdbuf`` used as a command word, and any assignment to LD_PRELOAD. Both
+# reach the job through the same mechanism: stdbuf works by preloading
+# libstdbuf.so, so the two are one problem.
+_STDBUF_RE = re.compile(r"(?<![\w./-])stdbuf(?=\s)")
+_LD_PRELOAD_RE = re.compile(r"(?<![\w])LD_PRELOAD\s*=")
+
+
+def _code_portion(line: str) -> str:
+    """The runnable part of *line*, with any trailing comment removed.
+
+    A ``#`` only opens a comment at the start of a word, which is the same
+    rule the truncation check uses. Cutting inside a quoted string can only
+    make a check quieter, never noisier, which is the right way to fail here.
+    """
+    for index, char in enumerate(line):
+        if char != "#":
+            continue
+        if index == 0 or line[index - 1].isspace():
+            return line[:index]
+    return line
+
+
+def _check_stdbuf(script: str) -> list[Finding]:
+    """Report a command wrapped in ``stdbuf``, or a preset ``LD_PRELOAD``.
+
+    ``stdbuf`` buys nothing here and costs a great deal: it works by preloading
+    libstdbuf.so, and on Alliance clusters that preload breaks CUDA's ptxas
+    with "GLIBC_ABI_DT_RELR not found", so a GPU job dies at its first kernel
+    compilation. Julia does not use C stdio, so the wrapper does nothing for it
+    in any case, and Python has ``python -u``.
+    """
+    findings: list[Finding] = []
+    for number, line in enumerate(script.splitlines(), start=1):
+        code = _code_portion(line)
+        if not (_STDBUF_RE.search(code) or _LD_PRELOAD_RE.search(code)):
+            continue
+        findings.append(
+            Finding(
+                check="stdbuf",
+                severity=Severity.BLOCKING,
+                message=(
+                    f"'{_quote(line)}' wraps a command in stdbuf or presets LD_PRELOAD. "
+                    "The preloaded libstdbuf.so breaks CUDA's ptxas on Alliance "
+                    "clusters (\"GLIBC_ABI_DT_RELR not found\"). Drop it: Julia does "
+                    "not use C stdio, so stdbuf does nothing for it anyway, and for "
+                    "Python use `python -u` instead."
+                ),
+                line=number,
+            )
+        )
+    return findings
 
 
 # ── Check: truncated generation ───────────────────────────────────────────────

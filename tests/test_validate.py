@@ -637,6 +637,56 @@ class TestDriverUploaded:
         assert validate._check_driver_uploaded(script, intent)[0].check == "driver-not-uploaded"
 
 
+# ── stdbuf and LD_PRELOAD ─────────────────────────────────────────────────────
+
+class TestStdbuf:
+    def test_clean_script_gives_no_finding(self):
+        assert validate._check_stdbuf(CLEAN_SCRIPT) == []
+
+    def test_wrapped_driver_blocks(self):
+        script = (
+            "#!/bin/bash\n"
+            "module load julia/1.11.3\n"
+            "stdbuf -oL -eL julia --project=. run.jl\n"
+        )
+        findings = validate._check_stdbuf(script)
+        assert len(findings) == 1
+        assert findings[0].check == "stdbuf"
+        assert findings[0].severity is Severity.BLOCKING
+        assert findings[0].line == 3
+        assert "GLIBC_ABI_DT_RELR not found" in findings[0].message
+        assert "python -u" in findings[0].message
+
+    def test_ld_preload_blocks(self):
+        script = "#!/bin/bash\nexport LD_PRELOAD=/x.so\njulia --project=. run.jl\n"
+        findings = validate._check_stdbuf(script)
+        assert len(findings) == 1
+        assert findings[0].check == "stdbuf"
+        assert findings[0].line == 2
+
+    def test_one_finding_per_offending_line(self):
+        script = "#!/bin/bash\nLD_PRELOAD=/x.so stdbuf -oL python -u run.py\n"
+        assert len(validate._check_stdbuf(script)) == 1
+
+    def test_a_mention_in_a_comment_is_ignored(self):
+        script = (
+            "#!/bin/bash\n"
+            "# do not use stdbuf here, and never set LD_PRELOAD=/x.so\n"
+            "julia --project=. run.jl   # stdbuf would break ptxas\n"
+        )
+        assert validate._check_stdbuf(script) == []
+
+    def test_a_word_ending_in_stdbuf_is_not_a_command(self):
+        script = "#!/bin/bash\n./my-stdbuf-wrapper.sh run.jl\ncp libstdbuf.so out/\n"
+        assert validate._check_stdbuf(script) == []
+
+    def test_surfaces_through_validate_script(self, no_bash):
+        script = "#!/bin/bash\nstdbuf -oL julia --project=. run.jl\n"
+        findings = validate_script(script, intent=SubmitIntent())
+        assert [f.check for f in findings] == ["stdbuf"]
+        assert blocking(findings) is True
+
+
 # ── truncation ────────────────────────────────────────────────────────────────
 
 class TestTruncated:
