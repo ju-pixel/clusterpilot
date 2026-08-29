@@ -3,6 +3,61 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## v0.6.0 (2026-08-28)
+
+### Added
+
+- Trillium (SciNet) as a fourth cluster type. It shares the Alliance
+  scheduling and scratch rules and adds its own: quarter-node GPU requests
+  with `--gpus-per-node`, no `--mem`, a 24 hour cap, and every write under
+  scratch because home is read-only on compute nodes. A hostname containing
+  `trillium` is recognised automatically (#29).
+- The default model is now `claude-sonnet-5`, a generation newer and a third
+  cheaper than Sonnet 4.6. A HARDER JOB switch on the submit screen generates
+  one script with `claude-opus-5`. The 4.6 names keep working.
+- Hosted tier: the script streams into the pane again instead of appearing
+  all at once (#41), and the config screen shows the month's generation
+  allowance. Hosted generations are metered at 150 a month, 15 of them on
+  Opus 5, with Sonnet 5 as the fallback; the TUI says when a fallback
+  happened.
+- Generated scripts now see cores and memory per partition and the
+  account's walltime ceiling, and the validator refuses requests above
+  them (#22, #23). Every GPU job samples `nvidia-smi` into `gpu_usage.csv`
+  so the next request can be sized (#31).
+- Finished jobs show a `seff` efficiency summary on the jobs screen and in
+  notifications (#31).
+- `CLUSTERPILOT_HOME` relocates the config, job database, probe cache and
+  systemd unit together, and `daemon install` will not overwrite a unit
+  that points at a different Python unless forced (#24).
+- Julia drivers' `include()` files are found and uploaded with the driver
+  (#7). Array jobs get their per-task logs, so failure notifications carry
+  an excerpt (#2).
+
+### Changed
+
+- Credential precedence for generation is now the config file key, then the
+  hosted token, then the environment variable, so an exported
+  `ANTHROPIC_API_KEY` no longer silently bypasses a paid subscription; F9
+  shows which one is in use (#25).
+- Results are synced under PROJECT DIR (or `~/clusterpilot_jobs`) rather than
+  wherever the TUI was launched, and the jobs screen shows where (#15, #16).
+- `cluster_type` is validated at config load; an absent key is inferred from
+  the hostname with a warning instead of silently becoming generic (#21).
+
+### Fixed
+
+- Generated scripts never wrap the driver in `stdbuf`, which broke CUDA on
+  Alliance clusters (#12), and DRAC scripts no longer run `Pkg.instantiate()`
+  on internet-less compute nodes (#10).
+- Uploads with many extra files no longer trip the SSH timeout (#13); job
+  names no longer stack a timestamp on every retry (#14); absolute or `./`
+  driver paths are normalised and a driver outside the project is refused
+  (#6); an `ntfy_server` that already ends in the topic is corrected (#26);
+  a truncated generation now tells you to move parameters into a table
+  (#20).
+- Hosted tier: trialing subscribers can use the managed key (#4), and the
+  dashboard's notification switches are honoured by the daemon (#5).
+
 ## v0.5.0 (2026-08-28)
 
 ### Added
