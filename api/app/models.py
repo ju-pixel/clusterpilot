@@ -6,6 +6,7 @@ from typing import List, Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -120,6 +121,20 @@ class Job(Base):
     log_tail: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Last N lines of SLURM log
     walltime_requested: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # HH:MM:SS string
     walltime_consumed: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # What the local TUI already knew and the dashboard could not show.
+    account: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    array_spec: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # "0-9", "1-100%5"
+    status_detail: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # "5R/27PD"
+    efficiency: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # seff summary
+    exit_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # "<exit>:<signal>"
+    # Accounting from sacct. NULL means the cluster did not report it, which
+    # is not zero: a usage report must skip these rows rather than add them up.
+    alloc_cpus: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    alloc_gpus: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    alloc_nodes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    runtime_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    core_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    gpu_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # Placeholder for Track F: populated when the user links a Fieldnotes run.
     fieldnotes_run_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 

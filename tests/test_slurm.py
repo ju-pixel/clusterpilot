@@ -9,10 +9,15 @@ from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
     JobStatus,
     SlurmError,
+    JobAccounting,
+    _parse_accounting,
     _parse_efficiency,
+    _parse_tres,
+    _worst_exit_code,
     aggregate,
     find_array_logs,
     find_log,
+    job_accounting,
     job_efficiency,
     job_status,
     query_status,
@@ -483,3 +488,147 @@ class TestJobEfficiency:
         with patch("clusterpilot.cluster.slurm.run_remote",
                    new=AsyncMock(side_effect=RuntimeError("boom"))):
             assert await job_efficiency("yak", "juliaf", "1") == ""
+
+
+# ── Accounting (sacct) ────────────────────────────────────────────────────────
+
+# One finished single-task job: 4 CPUs, 1 GPU, 1 node, 3600 s, exited cleanly.
+_SACCT_SINGLE = "8271604|billing=4,cpu=4,gres/gpu=1,mem=16G,node=1|3600|0:0\n"
+
+# A three-task array where every task ran for a different length of time, and
+# the middle one was killed by the out-of-memory killer.
+_SACCT_ARRAY = (
+    "8271604_0|billing=2,cpu=2,mem=8G,node=1|100|0:0\n"
+    "8271604_1|billing=2,cpu=2,mem=8G,node=1|200|0:9\n"
+    "8271604_2|billing=2,cpu=2,mem=8G,node=1|300|1:0\n"
+)
+
+
+class TestParseTres:
+    def test_reads_the_resources_it_is_asked_about(self):
+        parsed = _parse_tres("billing=4,cpu=4,gres/gpu=1,mem=16G,node=1")
+        assert parsed["cpu"] == 4
+        assert parsed["gres/gpu"] == 1
+        assert parsed["node"] == 1
+
+    def test_a_unit_suffix_does_not_stop_the_numeric_prefix_being_read(self):
+        assert _parse_tres("mem=16G")["mem"] == 16
+
+    def test_an_entry_without_an_equals_sign_is_skipped(self):
+        assert _parse_tres("cpu=4,nonsense,node=1") == {"cpu": 4.0, "node": 1.0}
+
+    def test_an_empty_string_yields_nothing(self):
+        assert _parse_tres("") == {}
+
+
+class TestWorstExitCode:
+    def test_a_signal_outranks_a_clean_exit(self):
+        assert _worst_exit_code(["0:0", "0:9"]) == "0:9"
+
+    def test_a_non_zero_exit_beats_a_clean_one(self):
+        assert _worst_exit_code(["0:0", "1:0"]) == "1:0"
+
+    def test_a_signal_outranks_an_exit_code(self):
+        assert _worst_exit_code(["137:0", "0:9"]) == "0:9"
+
+    def test_a_single_clean_code_is_still_reported(self):
+        assert _worst_exit_code(["0:0"]) == "0:0"
+
+    def test_unparseable_codes_are_skipped(self):
+        assert _worst_exit_code(["nonsense", "1:0"]) == "1:0"
+
+    def test_nothing_at_all_gives_an_empty_string(self):
+        assert _worst_exit_code([]) == ""
+
+
+class TestParseAccounting:
+    def test_a_single_task_job(self):
+        acct = _parse_accounting(_SACCT_SINGLE)
+        assert acct.cpus == 4
+        assert acct.gpus == 1
+        assert acct.nodes == 1
+        assert acct.runtime_seconds == 3600
+        assert acct.core_seconds == 4 * 3600
+        assert acct.gpu_seconds == 1 * 3600
+        assert acct.exit_code == "0:0"
+        assert acct.tasks == 1
+
+    def test_an_array_sums_reserved_time_over_every_task(self):
+        acct = _parse_accounting(_SACCT_ARRAY)
+        assert acct.tasks == 3
+        # Per-task allocation, not the array total.
+        assert acct.cpus == 2
+        # Wall duration is the longest task, not the sum.
+        assert acct.runtime_seconds == 300
+        # Reserved CPU time is the sum: 2 x (100 + 200 + 300).
+        assert acct.core_seconds == 1200
+
+    def test_an_array_reports_the_worst_task_exit_code(self):
+        assert _parse_accounting(_SACCT_ARRAY).exit_code == "0:9"
+
+    def test_a_job_with_no_gpu_reports_none_rather_than_zero(self):
+        acct = _parse_accounting(_SACCT_ARRAY)
+        assert acct.gpus is None
+        assert acct.gpu_seconds is None
+
+    def test_a_typed_gres_key_is_counted(self):
+        acct = _parse_accounting("1|cpu=8,gres/gpu:a100=2,node=1|60|0:0\n")
+        assert acct.gpus == 2
+        assert acct.gpu_seconds == 120
+
+    def test_the_plain_gres_key_wins_over_the_typed_one(self):
+        # sacct prints both forms on some sites; summing them double-counts.
+        acct = _parse_accounting("1|cpu=8,gres/gpu=2,gres/gpu:a100=2|60|0:0\n")
+        assert acct.gpus == 2
+
+    def test_a_task_with_no_allocation_does_not_lose_the_others(self):
+        # sacct leaves AllocTRES empty for a task that never started.
+        acct = _parse_accounting(
+            "1_0||0|0:0\n"
+            "1_1|cpu=4,node=1|100|0:0\n"
+        )
+        assert acct.tasks == 2
+        assert acct.cpus == 4
+        assert acct.core_seconds == 400
+
+    def test_a_job_that_never_ran_reports_no_core_time(self):
+        acct = _parse_accounting("1||0|0:0\n")
+        assert acct.core_seconds is None
+        assert acct.runtime_seconds == 0
+
+    def test_malformed_lines_are_skipped(self):
+        acct = _parse_accounting(
+            "not a record\n"
+            "1|cpu=4|notanumber|0:0\n"
+            "2|cpu=4,node=1|50|0:0\n"
+        )
+        assert acct.tasks == 1
+        assert acct.core_seconds == 200
+
+    def test_empty_output_is_empty(self):
+        acct = _parse_accounting("")
+        assert acct.is_empty
+        assert acct == JobAccounting()
+
+
+class TestJobAccounting:
+    async def test_asks_sacct_about_the_array_master(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(return_value=_SACCT_SINGLE)) as run:
+            acct = await job_accounting("yak", "juliaf", "8271604")
+        assert acct.cpus == 4
+        cmd = run.await_args.args[2]
+        assert "sacct -j 8271604" in cmd
+        assert "AllocTRES" in cmd and "ElapsedRaw" in cmd and "ExitCode" in cmd
+        # -X keeps it to the summary record, without the per-step rows.
+        assert " -X " in cmd
+
+    async def test_an_ssh_failure_is_swallowed(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(side_effect=SSHError("no socket"))):
+            assert (await job_accounting("yak", "juliaf", "1")).is_empty
+
+    async def test_any_other_failure_is_swallowed(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(side_effect=RuntimeError("boom"))):
+            assert (await job_accounting("yak", "juliaf", "1")).is_empty

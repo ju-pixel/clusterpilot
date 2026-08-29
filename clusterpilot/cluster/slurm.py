@@ -437,3 +437,191 @@ async def job_efficiency(host: str, user: str, job_id: str) -> str:
     except Exception:
         return ""
     return _parse_efficiency(output)
+
+
+# ── Job accounting (sacct) ────────────────────────────────────────────────────
+
+# AllocTRES is a comma-separated list of what the scheduler reserved, e.g.
+#   billing=4,cpu=4,gres/gpu=1,mem=16G,node=1
+# The GPU key is "gres/gpu" on every site seen so far, and typed requests
+# append the model as a second key ("gres/gpu:a100=2"), so both forms count.
+_TRES_GPU_KEYS = ("gres/gpu",)
+
+
+@dataclass(frozen=True)
+class JobAccounting:
+    """What SLURM reserved for a job, and for how long.
+
+    Per-task fields (``cpus``, ``gpus``, ``nodes``) describe one array task,
+    because every task of an array is allocated identically. The ``_seconds``
+    totals are summed over every task, so a 100-task array reports the whole
+    array's reserved time. For a single-task job the two agree.
+
+    Every field is optional: sacct is answering about a job that may still be
+    queued, and a site may not record a given resource at all. ``None`` means
+    "not reported", which is not the same as zero and must not be rendered as
+    one.
+    """
+
+    cpus: int | None = None
+    gpus: int | None = None
+    nodes: int | None = None
+    runtime_seconds: int | None = None   # longest task, so the job's wall duration
+    core_seconds: float | None = None    # sum of cpus x elapsed over all tasks
+    gpu_seconds: float | None = None     # sum of gpus x elapsed over all tasks
+    exit_code: str = ""                  # worst task's "<code>:<signal>", e.g. "137:0"
+    tasks: int = 0                       # accounting records summed
+
+    @property
+    def is_empty(self) -> bool:
+        """True when sacct told us nothing worth storing."""
+        return self.tasks == 0
+
+
+def _parse_tres(raw: str) -> dict[str, float]:
+    """Parse an AllocTRES string into a key -> number mapping.
+
+    Unparseable entries are skipped rather than raising: this is one field of
+    one line of a best-effort accounting query, and a site that formats it
+    unusually must not cost us the rest of the record.
+    """
+    parsed: dict[str, float] = {}
+    for entry in raw.split(","):
+        key, sep, value = entry.strip().partition("=")
+        if not sep:
+            continue
+        # Memory carries a unit suffix ("16G"); the numeric prefix is enough
+        # for the resources we count, and mem is not one of them.
+        match = re.match(r"^([\d.]+)", value.strip())
+        if not match:
+            continue
+        try:
+            parsed[key.strip().lower()] = float(match.group(1))
+        except ValueError:
+            continue
+    return parsed
+
+
+def _tres_gpus(tres: dict[str, float]) -> float | None:
+    """GPU count from a parsed AllocTRES, or None when none was reserved.
+
+    Handles both the untyped ``gres/gpu`` key and the typed ``gres/gpu:a100``
+    form some sites emit alongside it. The typed keys are ignored when the
+    plain one is present, because sacct reports both and summing them would
+    double-count.
+    """
+    for key in _TRES_GPU_KEYS:
+        if key in tres:
+            return tres[key]
+    typed = [v for k, v in tres.items() if k.startswith("gres/gpu:")]
+    return sum(typed) if typed else None
+
+
+def _worst_exit_code(codes: Iterable[str]) -> str:
+    """Pick the exit code that best explains the job: the highest non-zero.
+
+    sacct prints "<exit>:<signal>". A task killed by a signal reports exit 0
+    with a non-zero signal, so both halves are compared and a signal outranks
+    an exit code of the same value: being killed is more explanatory than
+    exiting.
+    """
+    best = ""
+    best_rank = (-1, -1)
+    for code in codes:
+        exit_part, _, signal_part = code.strip().partition(":")
+        try:
+            rank = (int(signal_part or 0), int(exit_part or 0))
+        except ValueError:
+            continue
+        if rank > best_rank:
+            best_rank = rank
+            best = code.strip()
+    return best
+
+
+def _parse_accounting(text: str) -> JobAccounting:
+    """Fold sacct's per-task lines into one JobAccounting.
+
+    Expects "JobID|AllocTRES|ElapsedRaw|ExitCode" per line, as written by
+    ``--parsable2``. Lines that cannot be read are skipped; a job whose tasks
+    are all still queued yields zero elapsed time and no totals, which is
+    correct rather than missing.
+    """
+    cpus: int | None = None
+    gpus: int | None = None
+    nodes: int | None = None
+    longest: int | None = None
+    core_seconds = 0.0
+    gpu_seconds = 0.0
+    codes: list[str] = []
+    tasks = 0
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "|" not in line:
+            continue
+        fields = line.split("|")
+        if len(fields) < 4:
+            continue
+        tres = _parse_tres(fields[1])
+        try:
+            elapsed = int(float(fields[2].strip() or 0))
+        except ValueError:
+            continue
+
+        tasks += 1
+        line_cpus = tres.get("cpu")
+        line_gpus = _tres_gpus(tres)
+        line_nodes = tres.get("node")
+
+        # Per-task figures: take the largest seen. They are identical across
+        # the tasks of an array, so this only matters when one line is missing
+        # its TRES, which sacct does for a task that never started.
+        if line_cpus is not None:
+            cpus = max(cpus or 0, int(line_cpus))
+        if line_gpus is not None:
+            gpus = max(gpus or 0, int(line_gpus))
+        if line_nodes is not None:
+            nodes = max(nodes or 0, int(line_nodes))
+
+        longest = max(longest or 0, elapsed)
+        core_seconds += (line_cpus or 0) * elapsed
+        gpu_seconds += (line_gpus or 0) * elapsed
+        if fields[3].strip():
+            codes.append(fields[3])
+
+    if not tasks:
+        return JobAccounting()
+
+    return JobAccounting(
+        cpus=cpus,
+        gpus=gpus,
+        nodes=nodes,
+        runtime_seconds=longest,
+        core_seconds=core_seconds if cpus is not None else None,
+        gpu_seconds=gpu_seconds if gpus is not None else None,
+        exit_code=_worst_exit_code(codes),
+        tasks=tasks,
+    )
+
+
+async def job_accounting(host: str, user: str, job_id: str) -> JobAccounting:
+    """What SLURM reserved for a finished job, empty when unavailable.
+
+    Best-effort by design and never raises, for the same reasons as
+    ``job_efficiency``: sacct needs the accounting database, which some sites
+    do not run and DRAC login nodes intermittently cannot reach. An empty
+    result is not a problem worth interrupting a notification for.
+
+    Unlike ``seff`` this is asked about the array master and answers for every
+    task at once, so the reserved core-hours it returns cover the whole array.
+    """
+    try:
+        output = await run_remote(
+            host, user,
+            f"sacct -j {job_id} -n -X -o JobID,AllocTRES,ElapsedRaw,ExitCode "
+            f"--parsable2 2>/dev/null",
+        )
+    except Exception:
+        return JobAccounting()
+    return _parse_accounting(output)

@@ -6,6 +6,7 @@ import time
 import aiosqlite
 import pytest
 
+from clusterpilot.cluster.slurm import JobAccounting
 from clusterpilot.db import (
     JobRecord,
     get_active_jobs,
@@ -13,6 +14,7 @@ from clusterpilot.db import (
     get_job,
     init_db,
     insert_job,
+    update_accounting,
     update_status,
 )
 
@@ -372,3 +374,116 @@ class TestEfficiency:
             await update_status(conn, "9", "grex", "COMPLETED", efficiency="CPU 40%")
             migrated = await get_job(conn, "9", "grex")
             assert migrated.efficiency == "CPU 40%"
+
+
+class TestAccounting:
+    """Reserved CPU and GPU time, stored once a job finishes."""
+
+    _ACCT = JobAccounting(
+        cpus=4, gpus=1, nodes=1,
+        runtime_seconds=3600, core_seconds=14400.0, gpu_seconds=3600.0,
+        exit_code="0:0", tasks=1,
+    )
+
+    async def test_defaults_to_unknown_rather_than_zero(self, db):
+        await insert_job(db, _make_job())
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.alloc_cpus is None
+        assert fetched.core_seconds is None
+        assert fetched.gpu_seconds is None
+        assert fetched.exit_code == ""
+
+    async def test_round_trips(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_accounting(db, "12345", "grex", self._ACCT)
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.alloc_cpus == 4
+        assert fetched.alloc_gpus == 1
+        assert fetched.alloc_nodes == 1
+        assert fetched.runtime_seconds == 3600
+        assert fetched.core_seconds == 14400.0
+        assert fetched.gpu_seconds == 3600.0
+        assert fetched.exit_code == "0:0"
+
+    async def test_an_empty_record_does_not_overwrite_a_good_one(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_accounting(db, "12345", "grex", self._ACCT)
+        await update_accounting(db, "12345", "grex", JobAccounting())
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.core_seconds == 14400.0
+
+    async def test_a_cluster_without_gpus_stores_null_not_zero(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_accounting(db, "12345", "grex", JobAccounting(
+            cpus=8, runtime_seconds=60, core_seconds=480.0, exit_code="0:0", tasks=1,
+        ))
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.alloc_gpus is None
+        assert fetched.gpu_seconds is None
+
+    async def test_carried_by_the_history_load(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_accounting(db, "12345", "grex", self._ACCT)
+        assert [j.core_seconds for j in await get_all_jobs(db)] == [14400.0]
+
+    async def test_a_database_written_before_the_columns_existed_loads(self):
+        """The row reads as unknown, and migrating makes it writable."""
+        async with aiosqlite.connect(":memory:") as conn:
+            conn.row_factory = aiosqlite.Row
+            # The schema as it stood in 0.6.0, through efficiency.
+            await conn.execute(
+                """
+                CREATE TABLE jobs (
+                    row_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id        TEXT NOT NULL,
+                    job_name      TEXT NOT NULL,
+                    cluster_name  TEXT NOT NULL,
+                    host          TEXT NOT NULL,
+                    user          TEXT NOT NULL,
+                    account       TEXT NOT NULL,
+                    partition     TEXT NOT NULL,
+                    script_path   TEXT NOT NULL,
+                    working_dir   TEXT NOT NULL,
+                    local_dir     TEXT NOT NULL,
+                    status        TEXT NOT NULL DEFAULT 'PENDING',
+                    submitted_at  REAL NOT NULL,
+                    started_at    REAL,
+                    finished_at   REAL,
+                    walltime      TEXT NOT NULL,
+                    log_path      TEXT,
+                    synced         INTEGER NOT NULL DEFAULT 0,
+                    input_tokens   INTEGER NOT NULL DEFAULT 0,
+                    output_tokens  INTEGER NOT NULL DEFAULT 0,
+                    model_used     TEXT NOT NULL DEFAULT '',
+                    remote_cleaned INTEGER NOT NULL DEFAULT 0,
+                    array_spec     TEXT NOT NULL DEFAULT '',
+                    status_detail  TEXT NOT NULL DEFAULT '',
+                    efficiency     TEXT NOT NULL DEFAULT '',
+                    UNIQUE(job_id, cluster_name)
+                )
+                """
+            )
+            await conn.execute(
+                "INSERT INTO jobs (job_id, job_name, cluster_name, host, user, "
+                "account, partition, script_path, working_dir, local_dir, "
+                "status, submitted_at, walltime) "
+                "VALUES ('9', 'old', 'grex', 'h', 'u', 'a', 'p', 's', 'w', 'l', "
+                "'COMPLETED', 1000.0, '01:00:00')"
+            )
+            await conn.commit()
+
+            fetched = await get_job(conn, "9", "grex")
+            assert fetched is not None
+            assert fetched.core_seconds is None
+            assert fetched.exit_code == ""
+
+            await init_db(conn)
+            await update_accounting(conn, "9", "grex", JobAccounting(
+                cpus=2, runtime_seconds=10, core_seconds=20.0, exit_code="1:0", tasks=1,
+            ))
+            migrated = await get_job(conn, "9", "grex")
+            assert migrated.core_seconds == 20.0
+            assert migrated.exit_code == "1:0"
+            # The columns that came before are untouched by the migration.
+            assert migrated.status_detail == ""
+            assert migrated.efficiency == ""

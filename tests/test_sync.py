@@ -75,3 +75,51 @@ class TestSyncJobReturn:
                 _make_job(), "COMPLETED", HostedConfig(api_token="cp-abc")
             )
         assert result is False
+
+
+class TestSyncPayloadAccounting:
+    """The dashboard can only show what the daemon actually sends."""
+
+    async def _payload(self, job: JobRecord) -> dict:
+        client = _mock_http_client(200)
+        with patch("clusterpilot.jobs.sync.httpx.AsyncClient", return_value=client):
+            await sync_job(job, "COMPLETED", HostedConfig(api_token="cp-abc"))
+        return client.post.await_args.kwargs["json"]
+
+    async def test_carries_what_the_tui_already_knew(self):
+        payload = await self._payload(_make_job(
+            account="def-stamps",
+            array_spec="0-99",
+            status_detail="5R/27PD",
+            efficiency="CPU 12%, mem 6% of 16 GB",
+        ))
+        assert payload["account"] == "def-stamps"
+        assert payload["array_spec"] == "0-99"
+        assert payload["status_detail"] == "5R/27PD"
+        assert payload["efficiency"] == "CPU 12%, mem 6% of 16 GB"
+
+    async def test_carries_the_accounting_numbers(self):
+        payload = await self._payload(_make_job(
+            alloc_cpus=4, alloc_gpus=1, alloc_nodes=1,
+            runtime_seconds=3600, core_seconds=14400.0, gpu_seconds=3600.0,
+            exit_code="0:0",
+        ))
+        assert payload["alloc_cpus"] == 4
+        assert payload["alloc_gpus"] == 1
+        assert payload["alloc_nodes"] == 1
+        assert payload["runtime_seconds"] == 3600
+        assert payload["core_seconds"] == 14400.0
+        assert payload["gpu_seconds"] == 3600.0
+        assert payload["exit_code"] == "0:0"
+
+    async def test_unknown_accounting_travels_as_null_not_zero(self):
+        # A report that reads a missing figure as zero under-counts silently.
+        payload = await self._payload(_make_job())
+        for field in ("alloc_cpus", "alloc_gpus", "alloc_nodes",
+                      "runtime_seconds", "core_seconds", "gpu_seconds"):
+            assert payload[field] is None, field
+
+    async def test_empty_strings_travel_as_null(self):
+        payload = await self._payload(_make_job(account="", array_spec=""))
+        assert payload["account"] is None
+        assert payload["array_spec"] is None

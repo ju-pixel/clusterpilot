@@ -41,6 +41,19 @@ class JobUpsert(BaseModel):
     submitted_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+    # Sent since 0.7.0. Older clients omit them and the row keeps its NULLs,
+    # so the API and the client can be deployed in either order.
+    account: Optional[str] = None
+    array_spec: Optional[str] = None
+    status_detail: Optional[str] = None
+    efficiency: Optional[str] = None
+    exit_code: Optional[str] = None
+    alloc_cpus: Optional[int] = None
+    alloc_gpus: Optional[int] = None
+    alloc_nodes: Optional[int] = None
+    runtime_seconds: Optional[int] = None
+    core_seconds: Optional[float] = None
+    gpu_seconds: Optional[float] = None
 
 
 class JobOut(BaseModel):
@@ -55,6 +68,18 @@ class JobOut(BaseModel):
     walltime_requested: Optional[str]
     walltime_consumed: Optional[str]
     fieldnotes_run_id: Optional[str]
+    account: Optional[str]
+    array_spec: Optional[str]
+    status_detail: Optional[str]
+    efficiency: Optional[str]
+    exit_code: Optional[str]
+    alloc_cpus: Optional[int]
+    alloc_gpus: Optional[int]
+    alloc_nodes: Optional[int]
+    runtime_seconds: Optional[int]
+    core_seconds: Optional[float]
+    gpu_seconds: Optional[float]
+
     submitted_at: Optional[datetime]
     started_at: Optional[datetime]
     finished_at: Optional[datetime]

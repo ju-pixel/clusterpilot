@@ -26,6 +26,8 @@ from clusterpilot import paths
 if TYPE_CHECKING:
     import aiosqlite
 
+    from clusterpilot.cluster.slurm import JobAccounting
+
 # Resolved once at import. Set CLUSTERPILOT_HOME to relocate this, the config
 # file, the probe cache and the systemd unit together (see paths.py).
 DB_PATH = paths.db_path()
@@ -57,6 +59,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     array_spec      TEXT    NOT NULL DEFAULT '',  -- e.g. "0-9" or "1-100%5"; empty for non-array jobs
     status_detail   TEXT    NOT NULL DEFAULT '',  -- per-task breakdown, e.g. "5R/27PD"
     efficiency      TEXT    NOT NULL DEFAULT '',  -- seff summary, e.g. "CPU 12%, mem 6% of 16 GB"
+    -- What sacct says the scheduler reserved. NULL means "not reported",
+    -- which is not zero: a usage report must skip these rows, not add them up.
+    alloc_cpus      INTEGER,           -- CPUs per array task
+    alloc_gpus      INTEGER,           -- GPUs per array task
+    alloc_nodes     INTEGER,           -- nodes per array task
+    runtime_seconds INTEGER,           -- longest task, so the job's wall duration
+    core_seconds    REAL,              -- sum of cpus x elapsed over every task
+    gpu_seconds     REAL,              -- sum of gpus x elapsed over every task
+    exit_code       TEXT    NOT NULL DEFAULT '',  -- worst task's "<exit>:<signal>"
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -94,6 +105,15 @@ class JobRecord:
     array_spec: str = ""
     status_detail: str = ""   # per-task breakdown for arrays, e.g. "5R/27PD"
     efficiency: str = ""      # seff summary, e.g. "CPU 12%, mem 6% of 16 GB"
+    # Accounting, from sacct once the job is finished. None means sacct did
+    # not report it, which a usage report must treat as unknown, not zero.
+    alloc_cpus: int | None = None
+    alloc_gpus: int | None = None
+    alloc_nodes: int | None = None
+    runtime_seconds: int | None = None
+    core_seconds: float | None = None
+    gpu_seconds: float | None = None
+    exit_code: str = ""
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -132,6 +152,13 @@ async def init_db(db: "aiosqlite.Connection") -> None:
         ("array_spec",     "TEXT NOT NULL DEFAULT ''"),
         ("status_detail",  "TEXT NOT NULL DEFAULT ''"),
         ("efficiency",     "TEXT NOT NULL DEFAULT ''"),
+        ("alloc_cpus",      "INTEGER"),
+        ("alloc_gpus",      "INTEGER"),
+        ("alloc_nodes",     "INTEGER"),
+        ("runtime_seconds", "INTEGER"),
+        ("core_seconds",    "REAL"),
+        ("gpu_seconds",     "REAL"),
+        ("exit_code",      "TEXT NOT NULL DEFAULT ''"),
     ):
         try:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -207,6 +234,40 @@ async def update_status(
     await db.execute(
         f"UPDATE jobs SET {', '.join(sets)} WHERE job_id = ? AND cluster_name = ?",
         params,
+    )
+    await db.commit()
+
+
+async def update_accounting(
+    db: "aiosqlite.Connection",
+    job_id: str,
+    cluster_name: str,
+    acct: "JobAccounting",
+) -> None:
+    """Store what sacct reported the scheduler reserved for a finished job.
+
+    A separate writer rather than seven more keyword arguments on
+    ``update_status``: these fields are written once, together, from one
+    source, and only when a job reaches a terminal state.
+
+    An empty accounting record is a no-op, so a site without an accounting
+    database never overwrites a good row with nulls.
+    """
+    if acct.is_empty:
+        return
+    await db.execute(
+        """
+        UPDATE jobs SET
+            alloc_cpus = ?, alloc_gpus = ?, alloc_nodes = ?,
+            runtime_seconds = ?, core_seconds = ?, gpu_seconds = ?,
+            exit_code = ?
+        WHERE job_id = ? AND cluster_name = ?
+        """,
+        (
+            acct.cpus, acct.gpus, acct.nodes,
+            acct.runtime_seconds, acct.core_seconds, acct.gpu_seconds,
+            acct.exit_code, job_id, cluster_name,
+        ),
     )
     await db.commit()
 
@@ -310,6 +371,9 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         efficiency = row["efficiency"]
     except (IndexError, KeyError, TypeError):
         efficiency = values[24] if len(values) > 24 else ""
+    # Accounting columns, added later still again. Absent on a row written
+    # before this release, which reads as None rather than zero.
+    acct = values[25:32] + (None,) * max(0, 32 - len(values))
     return JobRecord(
         row_id=row_id,
         job_id=job_id,
@@ -336,4 +400,11 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         array_spec=array_spec or "",
         status_detail=status_detail or "",
         efficiency=efficiency or "",
+        alloc_cpus=acct[0],
+        alloc_gpus=acct[1],
+        alloc_nodes=acct[2],
+        runtime_seconds=acct[3],
+        core_seconds=acct[4],
+        gpu_seconds=acct[5],
+        exit_code=acct[6] or "",
     )

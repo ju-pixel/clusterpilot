@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from clusterpilot.cluster.slurm import JobStatus
+from clusterpilot.cluster.slurm import JobAccounting, JobStatus
 from clusterpilot.config import ClusterProfile, Config, Defaults
 from clusterpilot.db import JobRecord
 from clusterpilot.jobs.daemon import PollDaemon
@@ -63,11 +63,16 @@ async def _poll(
         "find_array_logs": AsyncMock(return_value=dict(array_logs or {})),
         "tail_log": AsyncMock(side_effect=_tail),
         "log_completed_job": MagicMock(),
-        # seff runs at every terminal transition; never let a test reach SSH.
+        # seff and sacct both run at every terminal transition; never let a
+        # test reach SSH.
         "job_efficiency": AsyncMock(return_value=""),
+        "job_accounting": AsyncMock(return_value=JobAccounting()),
+        "update_accounting": AsyncMock(),
     }
     with patch("clusterpilot.jobs.daemon.find_array_logs", new=mocks["find_array_logs"]), \
          patch("clusterpilot.jobs.daemon.job_efficiency", new=mocks["job_efficiency"]), \
+         patch("clusterpilot.jobs.daemon.job_accounting", new=mocks["job_accounting"]), \
+         patch("clusterpilot.jobs.daemon.update_accounting", new=mocks["update_accounting"]), \
          patch("clusterpilot.jobs.daemon.query_status",
                new=AsyncMock(return_value=status)), \
          patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
@@ -264,6 +269,8 @@ class TestEfficiencyAtTerminalTransition:
             "tail_log": AsyncMock(return_value=""),
             "log_completed_job": MagicMock(),
             "job_efficiency": AsyncMock(return_value="CPU 12%, mem 6% of 16 GB"),
+            "job_accounting": AsyncMock(return_value=JobAccounting()),
+            "update_accounting": AsyncMock(),
         }
         with patch("clusterpilot.jobs.daemon.query_status",
                    new=AsyncMock(return_value=status)), \
@@ -276,6 +283,8 @@ class TestEfficiencyAtTerminalTransition:
              patch("clusterpilot.jobs.daemon.tail_log", new=mocks["tail_log"]), \
              patch("clusterpilot.jobs.daemon.log_completed_job", new=mocks["log_completed_job"]), \
              patch("clusterpilot.jobs.daemon.job_efficiency", new=mocks["job_efficiency"]), \
+             patch("clusterpilot.jobs.daemon.job_accounting", new=mocks["job_accounting"]), \
+             patch("clusterpilot.jobs.daemon.update_accounting", new=mocks["update_accounting"]), \
              patch.object(daemon, "_sync", new=AsyncMock()):
             await daemon._poll_job(MagicMock(), _PROFILE, job)
 
@@ -310,3 +319,104 @@ class TestEfficiencyAtTerminalTransition:
             call.kwargs.get("efficiency") is None
             for call in mocks["update_status"].await_args_list
         )
+
+
+class TestAccountingAtTerminalTransition:
+    """sacct is asked once, when the job finishes, and the answer is kept."""
+
+    _ACCT = JobAccounting(
+        cpus=4, gpus=1, nodes=1,
+        runtime_seconds=3600, core_seconds=14400.0, gpu_seconds=3600.0,
+        exit_code="0:0", tasks=1,
+    )
+
+    async def _poll_terminal(self, acct: JobAccounting, **job_kwargs):
+        status = JobStatus(state="COMPLETED", counts={"COMPLETED": 1}, source="sacct")
+        job = _make_job(status="RUNNING", started_at=1.0, **job_kwargs)
+        daemon = _make_daemon()
+        mocks = {
+            "update_status": AsyncMock(),
+            "update_accounting": AsyncMock(),
+            "download": AsyncMock(),
+            "notify_completed": AsyncMock(),
+            "notify_failed": AsyncMock(),
+            "find_array_logs": AsyncMock(return_value={}),
+            "find_log": AsyncMock(return_value=None),
+            "tail_log": AsyncMock(return_value=""),
+            "log_completed_job": MagicMock(),
+            "job_efficiency": AsyncMock(return_value=""),
+            "job_accounting": AsyncMock(return_value=acct),
+        }
+        with patch("clusterpilot.jobs.daemon.query_status",
+                   new=AsyncMock(return_value=status)), \
+             patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
+             patch("clusterpilot.jobs.daemon.update_accounting", new=mocks["update_accounting"]), \
+             patch("clusterpilot.jobs.daemon.download", new=mocks["download"]), \
+             patch("clusterpilot.jobs.daemon.notify_completed", new=mocks["notify_completed"]), \
+             patch("clusterpilot.jobs.daemon.notify_failed", new=mocks["notify_failed"]), \
+             patch("clusterpilot.jobs.daemon.find_array_logs", new=mocks["find_array_logs"]), \
+             patch("clusterpilot.jobs.daemon.find_log", new=mocks["find_log"]), \
+             patch("clusterpilot.jobs.daemon.tail_log", new=mocks["tail_log"]), \
+             patch("clusterpilot.jobs.daemon.log_completed_job", new=mocks["log_completed_job"]), \
+             patch("clusterpilot.jobs.daemon.job_efficiency", new=mocks["job_efficiency"]), \
+             patch("clusterpilot.jobs.daemon.job_accounting", new=mocks["job_accounting"]), \
+             patch.object(daemon, "_sync", new=AsyncMock()):
+            await daemon._poll_job(MagicMock(), _PROFILE, job)
+        return job, mocks
+
+    async def test_asked_once_about_the_array_master(self):
+        # sacct answers for every task from the master id, unlike seff.
+        _, mocks = await self._poll_terminal(self._ACCT, array_spec="0-9")
+        mocks["job_accounting"].assert_awaited_once()
+        assert mocks["job_accounting"].await_args.args[2] == "12345"
+
+    async def test_persisted(self):
+        _, mocks = await self._poll_terminal(self._ACCT)
+        mocks["update_accounting"].assert_awaited_once()
+        assert mocks["update_accounting"].await_args.args[3] == self._ACCT
+
+    async def test_set_on_the_record_before_the_sync_that_follows(self):
+        job, _ = await self._poll_terminal(self._ACCT)
+        assert job.alloc_cpus == 4
+        assert job.alloc_gpus == 1
+        assert job.core_seconds == 14400.0
+        assert job.gpu_seconds == 3600.0
+        assert job.runtime_seconds == 3600
+        assert job.exit_code == "0:0"
+
+    async def test_a_cluster_without_accounting_leaves_the_record_unknown(self):
+        job, mocks = await self._poll_terminal(JobAccounting())
+        assert job.alloc_cpus is None
+        assert job.core_seconds is None
+        assert job.exit_code == ""
+        # Still called: the writer itself decides an empty record is a no-op.
+        mocks["update_accounting"].assert_awaited_once()
+
+    async def test_a_sacct_failure_does_not_stop_the_completion_path(self):
+        status = JobStatus(state="COMPLETED", counts={"COMPLETED": 1}, source="sacct")
+        job = _make_job(status="RUNNING", started_at=1.0)
+        daemon = _make_daemon()
+        completed = AsyncMock()
+        with patch("clusterpilot.jobs.daemon.query_status",
+                   new=AsyncMock(return_value=status)), \
+             patch("clusterpilot.jobs.daemon.update_status", new=AsyncMock()), \
+             patch("clusterpilot.jobs.daemon.update_accounting", new=AsyncMock()), \
+             patch("clusterpilot.jobs.daemon.job_efficiency", new=AsyncMock(return_value="")), \
+             patch("clusterpilot.jobs.daemon.job_accounting",
+                   new=AsyncMock(side_effect=RuntimeError("slurmdbd unreachable"))), \
+             patch("clusterpilot.jobs.daemon.find_array_logs", new=AsyncMock(return_value={})), \
+             patch.object(daemon, "_sync_and_notify_completed", new=completed):
+            await daemon._poll_job(MagicMock(), _PROFILE, job)
+        completed.assert_awaited_once()
+        assert job.core_seconds is None
+
+    async def test_an_empty_answer_does_not_blank_what_is_already_held(self):
+        # Belt and braces: the writer skips an empty record, so the in-memory
+        # record must not be cleared either.
+        job, _ = await self._poll_terminal(
+            JobAccounting(),
+            alloc_cpus=8, core_seconds=999.0, exit_code="1:0",
+        )
+        assert job.alloc_cpus == 8
+        assert job.core_seconds == 999.0
+        assert job.exit_code == "1:0"

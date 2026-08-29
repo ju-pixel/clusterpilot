@@ -218,6 +218,20 @@ async def sync_job(
         "submitted_at": _ts(job.submitted_at),
         "started_at": _ts(job.started_at),
         "finished_at": _ts(job.finished_at),
+        # What the TUI already knows and the dashboard could not show.
+        "account": job.account or None,
+        "array_spec": job.array_spec or None,
+        "status_detail": job.status_detail or None,
+        "efficiency": job.efficiency or None,
+        "exit_code": job.exit_code or None,
+        # Accounting. None means sacct did not report it, and the API stores
+        # that as NULL: a usage report has to skip the row, not add a zero.
+        "alloc_cpus": job.alloc_cpus,
+        "alloc_gpus": job.alloc_gpus,
+        "alloc_nodes": job.alloc_nodes,
+        "runtime_seconds": job.runtime_seconds,
+        "core_seconds": job.core_seconds,
+        "gpu_seconds": job.gpu_seconds,
     }
     if log_tail:
         payload["log_tail"] = log_tail

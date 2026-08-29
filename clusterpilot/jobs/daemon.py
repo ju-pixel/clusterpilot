@@ -25,9 +25,11 @@ import aiosqlite
 from clusterpilot import paths
 from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
+    JobAccounting,
     JobStatus,
     find_array_logs,
     find_log,
+    job_accounting,
     job_efficiency,
     query_status,
     tail_log,
@@ -39,6 +41,7 @@ from clusterpilot.db import (
     get_active_jobs,
     get_all_jobs,
     init_db,
+    update_accounting,
     update_status,
 )
 from clusterpilot.jobs.fieldnotes import log_completed_job
@@ -255,13 +258,25 @@ class PollDaemon:
             # job leaves the queue and the answer never changes afterwards.
             # Fetched before the notifications so they can carry it.
             efficiency = await self._job_efficiency(profile, job)
+            acct = await self._job_accounting(profile, job)
             await update_status(
                 db, job.job_id, job.cluster_name, new_status,
                 finished_at=now,
                 efficiency=efficiency or None,
             )
+            await update_accounting(db, job.job_id, job.cluster_name, acct)
             job.finished_at = now
             job.efficiency = efficiency
+            if not acct.is_empty:
+                # Same rule as update_accounting: a cluster that told us
+                # nothing must not blank what we already hold.
+                job.alloc_cpus = acct.cpus
+                job.alloc_gpus = acct.gpus
+                job.alloc_nodes = acct.nodes
+                job.runtime_seconds = acct.runtime_seconds
+                job.core_seconds = acct.core_seconds
+                job.gpu_seconds = acct.gpu_seconds
+                job.exit_code = acct.exit_code
 
             if new_status == "COMPLETED":
                 await self._sync_and_notify_completed(db, profile, job, new_status)
@@ -382,6 +397,22 @@ class PollDaemon:
         except Exception:
             log.debug("seff failed for job %s, continuing", job.job_id, exc_info=True)
             return ""
+
+    async def _job_accounting(
+        self,
+        profile: ClusterProfile,
+        job: JobRecord,
+    ) -> JobAccounting:
+        """What the scheduler reserved for a finished job, empty when unknown.
+
+        Unlike seff, sacct answers for the whole array from the master job id,
+        so there is no per-task probing to do here.
+        """
+        try:
+            return await job_accounting(profile.host, profile.user, job.job_id)
+        except Exception:
+            log.debug("sacct accounting failed for job %s, continuing", job.job_id, exc_info=True)
+            return JobAccounting()
 
     async def _array_task_logs(
         self,
