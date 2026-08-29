@@ -331,6 +331,19 @@ async def capture(db_path: Path) -> list[Path]:
                 await pilot.pause()
             written.append(save(app, "tui-submit"))
 
+            # Second F2 capture for the changelog: the pickers in view, with a
+            # MIG slice chosen in GPU SIZE. The description scrolls off below.
+            from textual.widgets import Select, Static
+            submit_view.query_one("#gpu-size-select", Select).value = "a100_3g.20gb"
+            slice_script = DEMO_SCRIPT.replace("--gres=gpu:a100:1", "--gres=gpu:a100_3g.20gb:1")
+            submit_view._generated_script = slice_script
+            submit_view.query_one("#script-display", Static).update(_format_script(slice_script))
+            submit_view.query_one("#describe-panel").scroll_home(animate=False)
+            submit_view.query_one("#gpu-size-select").focus()
+            for _ in range(2):
+                await pilot.pause()
+            written.append(save(app, "tui-submit-gpu-size"))
+
             await pilot.press("f9")
             await pilot.pause()
             written.append(save(app, "tui-config"))

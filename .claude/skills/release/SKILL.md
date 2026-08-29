@@ -129,6 +129,18 @@ exits 0.
 - Local machines: `pip install -U clusterpilot` on the workstation picks up
   the release. For testing unreleased changes locally, use
   `pip install -e .` in the repo instead of cutting a release.
+- Featurebase changelog (clusterpilot.featurebase.app/changelog, linked from
+  the website's Support page and carrying an RSS feed): post the release as
+  an update, rewritten for a researcher rather than copied from git. Title
+  `vX.Y.Z: <three or four words on what it buys the user>`, category New (or
+  Fixed for a patch), body of three to five bold lead-in paragraphs ending
+  with the GitHub release link, a TUI screenshot from `tests/screenshots.py`
+  as the featured image, email notification OFF, and the date set to the
+  release date (Featurebase stamps the UTC day, which is often tomorrow; the
+  picker refuses the "today" cell until another day has been clicked first).
+  Drafts go in `tasks/featurebase-changelog-drafts.md` for review before
+  posting. Posting needs Julia signed in to Featurebase in a Chrome the
+  session can drive; the MacBook's is the practical one.
 - Report back: version, PyPI URL, GitHub release URL, plus one plain
   sentence per notable change that Julia can paste into the newsletter or a
   changelog post (the release doubles as content).
