@@ -61,8 +61,11 @@ async def backfill_accounting(
     round-trips rather than one per job. A cluster that cannot be reached is
     recorded in the report and skipped; it never aborts the others.
 
-    With ``dry_run`` nothing is written and nothing is synced, but sacct is
-    still asked, so the report says exactly what a real run would recover.
+    With ``dry_run`` no job data is written and nothing is synced, but sacct
+    is still asked, so the report says exactly what a real run would recover.
+    The database is still opened and ``init_db`` still runs, so a dry run on a
+    database from an older release does add the accounting columns. That is
+    the same migration opening the TUI performs, not a change to any job.
     """
     report = BackfillReport()
 

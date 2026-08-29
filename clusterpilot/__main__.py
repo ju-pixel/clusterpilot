@@ -157,7 +157,7 @@ def _cmd_backfill(
         print(f"  skipped {name}: {why}")
     if dry_run:
         print()
-        print("Dry run: nothing was written. Re-run without --dry-run to store it.")
+        print("Dry run: no job was changed. Re-run without --dry-run to store it.")
 
 
 def _cmd_daemon_install(*, force: bool = False) -> None:
