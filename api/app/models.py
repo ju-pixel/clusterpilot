@@ -74,6 +74,33 @@ class User(Base):
     )
 
 
+class GenerationUsage(Base):
+    """Hosted AI generations counted per user per calendar month (UTC).
+
+    One row per user per month, created on the first successful generation of
+    that month and incremented thereafter. ``total`` counts every successful
+    generation, ``opus`` only those actually served by an Opus model, so a
+    request that fell back to Sonnet raises ``total`` alone. A month with no
+    generations has no row at all; absence reads as zero.
+    """
+
+    __tablename__ = "generation_usage"
+    __table_args__ = (
+        UniqueConstraint("user_id", "month", name="uq_generation_usage_user_month"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    month: Mapped[str] = mapped_column(String(7), nullable=False)  # "YYYY-MM"
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    opus: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (

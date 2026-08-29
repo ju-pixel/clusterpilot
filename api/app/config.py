@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     # Anthropic master key (used by the proxy endpoint)
     anthropic_api_key: str  # ANTHROPIC_API_KEY env var
 
+    # Hosted generation allowance, counted per user per calendar month (UTC).
+    # Opus is chosen per job on F2; once the Opus allowance is spent the proxy
+    # substitutes fallback_model and says so, and once the total cap is reached
+    # it refuses with 429. Nothing fails silently.
+    opus_monthly_allowance: int = 15    # OPUS_MONTHLY_ALLOWANCE
+    total_monthly_cap: int = 150        # TOTAL_MONTHLY_CAP
+    fallback_model: str = "claude-sonnet-5"  # FALLBACK_MODEL
+
     # App
     environment: str = "development"
     cors_origins: list[str] = ["http://localhost:5173", "https://clusterpilot.sh", "https://app.clusterpilot.sh"]

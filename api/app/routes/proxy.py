@@ -36,8 +36,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import get_session_factory
 from app.deps import get_db
 from app.models import SUBSCRIBED_STATUSES, User
+from app.services import allowance
 from app.services.keys import verify_key
 
 router = APIRouter(prefix="/proxy", tags=["proxy"])
@@ -122,6 +124,32 @@ async def proxy_messages(
     return StreamingResponse(stream_anthropic(), media_type="text/event-stream")
 
 
+@router.get("/allowance")
+async def proxy_allowance(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """This month's generation counts and limits for the calling user.
+
+    Same cp-token auth and subscription gate as the generation routes. F9
+    reads it best-effort at mount to show the "Allowance" row, so it must stay
+    cheap: one indexed lookup, no upstream call.
+    """
+    user = await _authorised_user(request, db)
+
+    month = allowance.current_month()
+    usage = await allowance.get_usage(db, user.id, month)
+    return JSONResponse({
+        "month": month,
+        "opus_used": usage.opus,
+        "opus_limit": settings.opus_monthly_allowance,
+        "total_used": usage.total,
+        "total_limit": settings.total_monthly_cap,
+        "fallback_model": settings.fallback_model,
+        "resets_on": allowance.resets_on(month),
+    })
+
+
 @router.post("/generate")
 async def proxy_generate(
     request: Request,
@@ -130,12 +158,18 @@ async def proxy_generate(
     """Non-streaming generation endpoint for clients that cannot consume SSE.
 
     Accepts the same payload as /v1/messages (minus stream flag).
-    Returns {"text": "<full script>", "input_tokens": N, "output_tokens": N}.
+    Returns {"text": "<full script>", "input_tokens": N, "output_tokens": N}
+    plus the allowance fields "model_used", "fallback", "remaining_opus" and
+    "remaining_total".
     """
-    await _authorised_user(request, db)
+    user = await _authorised_user(request, db)
 
     payload = await request.json()
     payload["stream"] = False  # force non-streaming
+
+    # Applies the monthly cap (429) and swaps in the fallback model when the
+    # Opus allowance is spent, before a single token is bought.
+    prepared = await allowance.check_and_prepare(db, user, payload)
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         resp = await client.post(
@@ -160,10 +194,19 @@ async def proxy_generate(
         if block.get("type") == "text"
     )
     usage = data.get("usage", {})
+
+    # Counted only now: a non-200 above never reaches this line.
+    counts = await allowance.record_success(db, user.id, prepared.model_used)
+    remaining_opus, remaining_total = allowance.remaining(counts)
+
     return JSONResponse({
         "text": text,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
+        "model_used": prepared.model_used,
+        "fallback": prepared.fallback,
+        "remaining_opus": remaining_opus,
+        "remaining_total": remaining_total,
     })
 
 
@@ -184,19 +227,28 @@ async def proxy_generate_stream(
 
         {"text": "..."}                       for every text delta
         {"done": true, "stop_reason": "...",
-         "input_tokens": N, "output_tokens": N}   once, last
+         "input_tokens": N, "output_tokens": N,
+         "model_used": "...", "fallback": false,
+         "remaining_opus": N, "remaining_total": N}   once, last
 
     On an upstream failure a single {"error": "..."} line is emitted and the
     stream ends. Errors cannot be raised as HTTP status codes once the response
     has begun, so the client must treat an error line as a failed generation.
+    A generation that ends that way is not counted against the allowance.
 
     Deliberately not text/event-stream: Fly.io buffers that media type, which
     is what stopped the hosted tier streaming in the first place.
     """
-    await _authorised_user(request, db)
+    user = await _authorised_user(request, db)
 
     payload = await request.json()
     payload["stream"] = True
+
+    # Applies the monthly cap (429) and swaps in the fallback model when the
+    # Opus allowance is spent. Must happen here, in the handler body: once the
+    # streaming response has begun no status code can be raised.
+    prepared = await allowance.check_and_prepare(db, user, payload)
+    user_id = user.id
 
     async def ndjson_stream():
         input_tokens = 0
@@ -257,11 +309,25 @@ async def proxy_generate_stream(
             yield _ndjson({"error": f"Upstream request failed: {type(exc).__name__}"})
             return
 
+        # Only a stream that reached this line was a successful generation;
+        # every error path above returns without counting anything.
+        #
+        # A fresh session, not the request-scoped one: a dependency with yield
+        # is torn down when the handler returns, which is before this generator
+        # runs, so the injected session cannot be relied on here.
+        async with get_session_factory()() as session:
+            counts = await allowance.record_success(session, user_id, prepared.model_used)
+        remaining_opus, remaining_total = allowance.remaining(counts)
+
         yield _ndjson({
             "done": True,
             "stop_reason": stop_reason,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "model_used": prepared.model_used,
+            "fallback": prepared.fallback,
+            "remaining_opus": remaining_opus,
+            "remaining_total": remaining_total,
         })
 
     return StreamingResponse(

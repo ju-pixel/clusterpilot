@@ -56,6 +56,11 @@ def _patch_lookup(user: SimpleNamespace):
     return patch("app.routes.proxy._get_user_by_cp_token", _async_return(user))
 
 
+def _patch_sessions(factory):
+    """Point the stream generator's own session factory at the test database."""
+    return patch("app.routes.proxy.get_session_factory", lambda: factory)
+
+
 class _FakeStreamResponse:
     """Minimal stand-in for an httpx streaming response."""
 
@@ -158,72 +163,74 @@ class TestSubscriptionGate:
 
 
 class TestGenerateStream:
-    async def test_yields_ndjson_deltas_then_a_done_record(self):
-        with _patch_lookup(_user("trialing")), _FakeAnthropic(
+    async def test_yields_ndjson_deltas_then_a_done_record(self, db, db_factory):
+        with _patch_lookup(_user("trialing")), _patch_sessions(db_factory), _FakeAnthropic(
             _FakeStreamResponse(200, _STREAM_LINES)
         ):
-            response = await proxy_generate_stream(_request(), db=object())
+            response = await proxy_generate_stream(_request(), db=db)
             records = await _collect(response)
 
         assert records == [
             {"text": "#!/bin/bash\n"},
             {"text": "#SBATCH --time=01:00:00\n"},
             {"done": True, "stop_reason": "end_turn",
-             "input_tokens": 1200, "output_tokens": 480},
+             "input_tokens": 1200, "output_tokens": 480,
+             "model_used": "claude-sonnet-4-6", "fallback": False,
+             "remaining_opus": 15, "remaining_total": 149},
         ]
 
-    async def test_response_is_unbuffered_ndjson(self):
-        with _patch_lookup(_user("active")), _FakeAnthropic(
+    async def test_response_is_unbuffered_ndjson(self, db, db_factory):
+        with _patch_lookup(_user("active")), _patch_sessions(db_factory), _FakeAnthropic(
             _FakeStreamResponse(200, _STREAM_LINES)
         ):
-            response = await proxy_generate_stream(_request(), db=object())
+            response = await proxy_generate_stream(_request(), db=db)
 
         # Not text/event-stream: Fly.io buffers that, which is issue #41.
         assert response.media_type == "application/x-ndjson"
         assert response.headers["x-accel-buffering"] == "no"
         assert response.headers["cache-control"] == "no-cache"
 
-    async def test_forces_streaming_on_the_upstream_payload(self):
+    async def test_forces_streaming_on_the_upstream_payload(self, db, db_factory):
         request = _request({"model": "claude-sonnet-4-6", "stream": False})
-        with _patch_lookup(_user("active")), _FakeAnthropic(
+        with _patch_lookup(_user("active")), _patch_sessions(db_factory), _FakeAnthropic(
             _FakeStreamResponse(200, _STREAM_LINES)
         ) as upstream:
-            response = await proxy_generate_stream(request, db=object())
+            response = await proxy_generate_stream(request, db=db)
             await _collect(response)
             assert upstream.sent_payload["stream"] is True
 
-    async def test_upstream_error_becomes_a_single_error_record(self):
-        with _patch_lookup(_user("active")), _FakeAnthropic(
+    async def test_upstream_error_becomes_a_single_error_record(self, db, db_factory):
+        with _patch_lookup(_user("active")), _patch_sessions(db_factory), _FakeAnthropic(
             _FakeStreamResponse(529, [], body=b"overloaded_error")
         ):
-            response = await proxy_generate_stream(_request(), db=object())
+            response = await proxy_generate_stream(_request(), db=db)
             records = await _collect(response)
 
         assert len(records) == 1
         assert "529" in records[0]["error"]
         assert "done" not in records[0]
 
-    async def test_error_event_mid_stream_ends_the_stream(self):
+    async def test_error_event_mid_stream_ends_the_stream(self, db, db_factory):
         lines = [
             _sse({"type": "content_block_delta",
                   "delta": {"type": "text_delta", "text": "partial"}}),
             _sse({"type": "error", "error": {"type": "overloaded_error"}}),
         ]
-        with _patch_lookup(_user("active")), _FakeAnthropic(
+        with _patch_lookup(_user("active")), _patch_sessions(db_factory), _FakeAnthropic(
             _FakeStreamResponse(200, lines)
         ):
-            response = await proxy_generate_stream(_request(), db=object())
+            response = await proxy_generate_stream(_request(), db=db)
             records = await _collect(response)
 
         assert records[0] == {"text": "partial"}
         assert "overloaded_error" in records[1]["error"]
         assert len(records) == 2
 
-    async def test_gate_runs_before_any_upstream_call(self):
-        with _patch_lookup(_user("free")), _FakeAnthropic(
+    async def test_gate_runs_before_any_upstream_call(self, db, db_factory):
+        with _patch_lookup(_user("free")), _patch_sessions(db_factory), _FakeAnthropic(
             _FakeStreamResponse(200, _STREAM_LINES)
         ) as upstream:
             with pytest.raises(HTTPException) as excinfo:
-                await proxy_generate_stream(_request(), db=object())
+                await proxy_generate_stream(_request(), db=db)
             assert excinfo.value.status_code == 402
             assert upstream.was_called is False
