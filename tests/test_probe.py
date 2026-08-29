@@ -422,3 +422,92 @@ class TestProbeResilience:
         assert probe.julia_versions == []
         assert probe.python_versions == []
         assert probe.scratch_env == ""
+
+
+# ── Cores and memory per node (issue #22) ─────────────────────────────────────
+
+class TestParseSinfoResources:
+    def test_cpus_and_memory_are_read(self):
+        output = "stamps 21-00:00:00 gpu:v100:4(S:0-1) 3 32 192000"
+        p = _parse_sinfo(output)[0]
+        assert p.cpus == 32
+        assert p.memory_mb == 192000
+
+    def test_an_open_ended_range_takes_the_smallest_node(self):
+        # sinfo reports a heterogeneous partition as "32+" or "128000+".
+        output = "cpubase 7-00:00:00 (null) 40 32+ 128000+"
+        p = _parse_sinfo(output)[0]
+        assert p.cpus == 32
+        assert p.memory_mb == 128000
+
+    def test_a_hyphenated_range_takes_the_smallest_node(self):
+        output = "mixed 7-00:00:00 (null) 12 16-32 64000-128000"
+        p = _parse_sinfo(output)[0]
+        assert p.cpus == 16
+        assert p.memory_mb == 64000
+
+    def test_an_unreadable_field_is_zero_not_an_error(self):
+        output = "odd 7-00:00:00 (null) 1 N/A N/A"
+        p = _parse_sinfo(output)[0]
+        assert p.cpus == 0
+        assert p.memory_mb == 0
+
+    def test_a_four_field_line_still_parses(self):
+        # The old format, still readable so nothing breaks mid-upgrade.
+        output = "skylake* 7-00:00:00 (null) 10"
+        p = _parse_sinfo(output)[0]
+        assert p.name == "skylake"
+        assert (p.cpus, p.memory_mb) == (0, 0)
+
+
+class TestCacheBackwardsCompatibility:
+    def test_a_cache_without_cores_or_memory_still_loads(self, tmp_path):
+        stale = {
+            "cluster_name": "grex",
+            "probed_at": time.time(),
+            "partitions": [{
+                "name": "stamps", "max_time": "21-00:00:00",
+                "gres": "gpu:v100:4", "nodes": 3, "is_default": False,
+            }],
+            "julia_versions": [], "accounts": [], "account_max_wall": {},
+        }
+        path = tmp_path / "grex" / "probe.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(stale))
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
+            probe = load_cache("grex")
+        assert probe is not None
+        assert probe.partitions[0].cpus == 0
+        assert probe.partitions[0].memory_mb == 0
+
+    def test_cores_and_memory_survive_a_cache_round_trip(self, tmp_path):
+        probe = ClusterProbe(
+            cluster_name="grex",
+            probed_at=time.time(),
+            partitions=[PartitionInfo(
+                "stamps", "21-00:00:00", "gpu:v100:4", 3,
+                is_default=False, cpus=32, memory_mb=192000,
+            )],
+            julia_versions=[], accounts=[], account_max_wall={},
+        )
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
+            save_cache(probe)
+            loaded = load_cache("grex")
+        assert loaded is not None
+        assert (loaded.partitions[0].cpus, loaded.partitions[0].memory_mb) == (32, 192000)
+
+
+class TestSinfoCommand:
+    async def test_the_probe_asks_for_cores_and_memory(self, tmp_path):
+        seen: list[str] = []
+
+        async def _run(host: str, user: str, cmd: str) -> str:
+            seen.append(cmd)
+            return "" if cmd.startswith("sinfo") else ""
+
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path), \
+             patch("clusterpilot.cluster.probe.run_remote", side_effect=_run):
+            await probe_cluster("grex", "yak", "juliaf", force=True)
+
+        sinfo = next(c for c in seen if c.startswith("sinfo"))
+        assert sinfo == "sinfo -o '%P %l %G %D %c %m' --noheader"

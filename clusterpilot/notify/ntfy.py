@@ -72,6 +72,10 @@ async def notify_completed(cfg: NotificationConfig, job: JobRecord) -> None:
     )
     if job.status_detail:
         body = f"{body}\nTasks: {job.status_detail}"
+    if job.efficiency:
+        # How much of the reservation the job actually used, so the next
+        # request can be sized from evidence rather than from habit.
+        body = f"{body}\nEfficiency: {job.efficiency}"
     await send(
         cfg.ntfy_topic,
         body,
@@ -91,6 +95,8 @@ async def notify_failed(
     if job.status_detail:
         # Tells a mixed array apart from a wholesale failure at a glance.
         body = f"{body}\nTasks: {job.status_detail}"
+    if job.efficiency:
+        body = f"{body}\nEfficiency: {job.efficiency}"
     if log_tail:
         # Keep the notification body short; include only the last few lines.
         excerpt = "\n".join(log_tail.splitlines()[-6:])

@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from clusterpilot import paths
 from clusterpilot.ssh.connection import SSHError, run_remote
 
-_CACHE_ROOT = Path.home() / ".cache" / "clusterpilot"
+# Resolved once at import. Set CLUSTERPILOT_HOME to relocate this, the config
+# file, the job database and the systemd unit together (see paths.py).
+_CACHE_ROOT = paths.cache_root()
 _CACHE_TTL = 24 * 3600   # seconds
 
 
@@ -28,6 +32,8 @@ class PartitionInfo:
     gres: str        # e.g. "gpu:v100:4" or "" for CPU-only
     nodes: int
     is_default: bool
+    cpus: int = 0        # CPUs per node; 0 when the probe did not report it
+    memory_mb: int = 0   # memory per node in MB; 0 when not reported
 
 
 @dataclass
@@ -125,7 +131,7 @@ async def _fetch_all(host: str, user: str) -> tuple[str, str, str, str, str]:
     login node cannot reach ``slurmdbd``, or where the ``module`` system is
     unavailable). A failure of ``sinfo`` itself still raises.
     """
-    sinfo_task = run_remote(host, user, "sinfo -o '%P %l %G %D' --noheader")
+    sinfo_task = run_remote(host, user, "sinfo -o '%P %l %G %D %c %m' --noheader")
     julia_task = run_remote(host, user, "module avail julia 2>&1")
     python_task = run_remote(host, user, "module avail python 2>&1")
     sacctmgr_task = run_remote(
@@ -163,10 +169,29 @@ async def _fetch_all(host: str, user: str) -> tuple[str, str, str, str, str]:
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
-def _parse_sinfo(output: str) -> list[PartitionInfo]:
-    """Parse `sinfo -o '%P %l %G %D' --noheader` output.
+_LEADING_INT_RE = re.compile(r"^(\d+)")
 
-    Example line: "stamps 21-00:00:00 gpu:v100:4(S:0-1) 3"
+
+def _leading_int(text: str) -> int:
+    """First integer in a sinfo field, 0 when there is none.
+
+    ``%c`` and ``%m`` are per-node figures, and a heterogeneous partition
+    reports them as a range or an open-ended value: "32+", "16-32", "128000+".
+    The smallest node is the one every task has to fit on, so the leading
+    integer is the honest reading of all three forms.
+    """
+    match = _LEADING_INT_RE.match(text.strip())
+    return int(match.group(1)) if match else 0
+
+
+def _parse_sinfo(output: str) -> list[PartitionInfo]:
+    """Parse `sinfo -o '%P %l %G %D %c %m' --noheader` output.
+
+    Example line: "stamps 21-00:00:00 gpu:v100:4(S:0-1) 3 32 192000"
+
+    Lines with only the first four fields are still read, so a probe cached
+    before cores and memory were requested keeps working; the two missing
+    figures come back as 0, which every caller treats as "not known".
     """
     partitions = []
     for line in output.splitlines():
@@ -182,12 +207,16 @@ def _parse_sinfo(output: str) -> list[PartitionInfo]:
             nodes = int(nodes_str)
         except ValueError:
             nodes = 0
+        cpus = _leading_int(parts[4]) if len(parts) >= 6 else 0
+        memory_mb = _leading_int(parts[5]) if len(parts) >= 6 else 0
         partitions.append(PartitionInfo(
             name=name,
             max_time=max_time,
             gres=gres,
             nodes=nodes,
             is_default=is_default,
+            cpus=cpus,
+            memory_mb=memory_mb,
         ))
     return partitions
 
@@ -338,11 +367,28 @@ def _cache_path(cluster_name: str) -> Path:
     return _CACHE_ROOT / cluster_name / "probe.json"
 
 
+def _partition_from_dict(raw: dict) -> PartitionInfo:
+    """Rebuild one PartitionInfo from cached JSON, tolerating an older shape.
+
+    A cache written before cores and memory were probed has neither key, so
+    both default to 0 rather than making the whole cache unreadable.
+    """
+    return PartitionInfo(
+        name=raw["name"],
+        max_time=raw["max_time"],
+        gres=raw["gres"],
+        nodes=raw["nodes"],
+        is_default=raw["is_default"],
+        cpus=int(raw.get("cpus") or 0),
+        memory_mb=int(raw.get("memory_mb") or 0),
+    )
+
+
 def _from_dict(data: dict) -> ClusterProbe:
     return ClusterProbe(
         cluster_name=data["cluster_name"],
         probed_at=data["probed_at"],
-        partitions=[PartitionInfo(**p) for p in data["partitions"]],
+        partitions=[_partition_from_dict(p) for p in data["partitions"]],
         julia_versions=data["julia_versions"],
         python_versions=data.get("python_versions", []),   # backwards-compat
         accounts=data["accounts"],

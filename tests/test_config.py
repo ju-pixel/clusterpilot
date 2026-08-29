@@ -336,3 +336,70 @@ class TestNtfyServerResolution:
     def test_no_topic_means_no_resolved_url(self):
         cfg = _from_dict(self._notify("https://ntfy.sh", topic=""))
         assert cfg.notifications.resolved_url == ""
+
+
+# ── Which credential pays for a generation (issue #25) ────────────────────────
+
+class TestGenerationSource:
+    def _config(self, *, api_key: str = "", token: str = "",
+                provider: str = "anthropic") -> Config:
+        from clusterpilot.config import HostedConfig
+        return Config(
+            defaults=Defaults(provider=provider, api_key=api_key),
+            hosted=HostedConfig(api_token=token),
+        )
+
+    def test_a_config_key_wins_over_the_hosted_token(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+        cfg = self._config(api_key="sk-ant-config", token="cp-token")
+        assert cfg.generation_source == "own key (config)"
+        assert cfg.api_key == "sk-ant-config"
+
+    def test_the_hosted_token_wins_over_an_exported_key(self, monkeypatch):
+        # The whole of issue #25: an exported key used to silently take
+        # generation off the paid proxy without anything saying so.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+        assert self._config(token="cp-token").generation_source == "hosted proxy"
+
+    def test_the_env_var_is_used_when_nothing_else_is_set(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg = self._config()
+        assert cfg.generation_source == "own key (ANTHROPIC_API_KEY)"
+        assert cfg.api_key == "sk-ant-env"
+
+    def test_the_openai_env_var_is_named_for_the_openai_provider(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        cfg = self._config(provider="openai")
+        assert cfg.env_var_name == "OPENAI_API_KEY"
+        assert cfg.generation_source == "own key (OPENAI_API_KEY)"
+
+    def test_a_hosted_token_does_not_cover_a_non_anthropic_provider(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        cfg = self._config(token="cp-token", provider="openai")
+        assert cfg.generation_source == "none"
+
+    def test_nothing_configured_is_none(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert self._config().generation_source == "none"
+
+
+class TestProfilePaths:
+    """Issue #24: CLUSTERPILOT_HOME relocates the config file too."""
+
+    def test_config_path_follows_the_override(self, monkeypatch, tmp_path):
+        import importlib
+
+        from clusterpilot import config as config_module
+        monkeypatch.setenv("CLUSTERPILOT_HOME", str(tmp_path))
+        reloaded = importlib.reload(config_module)
+        try:
+            assert reloaded.CONFIG_PATH == (
+                tmp_path / ".config" / "clusterpilot" / "config.toml"
+            )
+        finally:
+            monkeypatch.delenv("CLUSTERPILOT_HOME", raising=False)
+            importlib.reload(config_module)

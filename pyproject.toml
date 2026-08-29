@@ -65,4 +65,5 @@ target-version = "py39"
 select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]   # api/tests has its own venv and pytest.ini
 asyncio_mode = "auto"

@@ -116,6 +116,9 @@ def _format_meta(job: JobRecord) -> str:
         # launched from.
         ("RESULTS",   f"[#7a6a50]{_display_path(job.local_dir)}[/]"),
     ]
+    # Only present once seff has answered, which is after the job is terminal.
+    if job.efficiency:
+        rows.append(("EFFICIENCY", f"[#7a6a50]{job.efficiency}[/]"))
     if job.array_spec:
         rows.insert(4, ("ARRAY", f"[#e8a020]{job.array_spec}[/]"))
     return "  ".join(f"[#7a6a50]{k}[/] {v}" for k, v in rows[:4]) + "\n" + \

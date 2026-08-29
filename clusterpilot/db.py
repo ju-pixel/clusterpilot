@@ -19,13 +19,16 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
+
+from clusterpilot import paths
 
 if TYPE_CHECKING:
     import aiosqlite
 
-DB_PATH = Path.home() / ".local" / "share" / "clusterpilot" / "jobs.db"
+# Resolved once at import. Set CLUSTERPILOT_HOME to relocate this, the config
+# file, the probe cache and the systemd unit together (see paths.py).
+DB_PATH = paths.db_path()
 
 _CREATE_JOBS = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -53,6 +56,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     remote_cleaned  INTEGER NOT NULL DEFAULT 0,  -- 1 once remote working dir deleted
     array_spec      TEXT    NOT NULL DEFAULT '',  -- e.g. "0-9" or "1-100%5"; empty for non-array jobs
     status_detail   TEXT    NOT NULL DEFAULT '',  -- per-task breakdown, e.g. "5R/27PD"
+    efficiency      TEXT    NOT NULL DEFAULT '',  -- seff summary, e.g. "CPU 12%, mem 6% of 16 GB"
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -89,6 +93,7 @@ class JobRecord:
     remote_cleaned: bool = False
     array_spec: str = ""
     status_detail: str = ""   # per-task breakdown for arrays, e.g. "5R/27PD"
+    efficiency: str = ""      # seff summary, e.g. "CPU 12%, mem 6% of 16 GB"
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -126,6 +131,7 @@ async def init_db(db: "aiosqlite.Connection") -> None:
         ("remote_cleaned", "INTEGER NOT NULL DEFAULT 0"),
         ("array_spec",     "TEXT NOT NULL DEFAULT ''"),
         ("status_detail",  "TEXT NOT NULL DEFAULT ''"),
+        ("efficiency",     "TEXT NOT NULL DEFAULT ''"),
     ):
         try:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -172,6 +178,7 @@ async def update_status(
     log_path: str | None = None,
     synced: bool | None = None,
     status_detail: str | None = None,
+    efficiency: str | None = None,
 ) -> None:
     """Update mutable fields for a job. Only non-None kwargs are written."""
     sets: list[str] = ["status = ?"]
@@ -192,6 +199,9 @@ async def update_status(
     if status_detail is not None:
         sets.append("status_detail = ?")
         params.append(status_detail)
+    if efficiency is not None:
+        sets.append("efficiency = ?")
+        params.append(efficiency)
 
     params.extend([job_id, cluster_name])
     await db.execute(
@@ -295,6 +305,11 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         status_detail = row["status_detail"]
     except (IndexError, KeyError, TypeError):
         status_detail = values[23] if len(values) > 23 else ""
+    # Same for efficiency, added later still.
+    try:
+        efficiency = row["efficiency"]
+    except (IndexError, KeyError, TypeError):
+        efficiency = values[24] if len(values) > 24 else ""
     return JobRecord(
         row_id=row_id,
         job_id=job_id,
@@ -320,4 +335,5 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         remote_cleaned=bool(remote_cleaned),
         array_spec=array_spec or "",
         status_detail=status_detail or "",
+        efficiency=efficiency or "",
     )

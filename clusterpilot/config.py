@@ -1,9 +1,12 @@
 """Configuration loading and dataclasses.
 
-Config file lives at ~/.config/clusterpilot/config.toml.
+Config file lives at ~/.config/clusterpilot/config.toml, or under
+$CLUSTERPILOT_HOME when that is set (see paths.py).
 If it doesn't exist, write_default_config() creates a template.
 
-API key precedence: config file → ANTHROPIC_API_KEY env var.
+Credential precedence for AI script generation: [defaults] api_key in the
+config file, then [hosted] api_token through the managed proxy, then the
+provider's environment variable. See Config.generation_source.
 """
 from __future__ import annotations
 
@@ -12,6 +15,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from clusterpilot import paths
+
 log = logging.getLogger(__name__)
 
 try:
@@ -19,7 +24,9 @@ try:
 except ImportError:
     import tomli as tomllib  # type: ignore[no-remodule-import]
 
-CONFIG_PATH = Path.home() / ".config" / "clusterpilot" / "config.toml"
+# Resolved once at import. Set CLUSTERPILOT_HOME to relocate this, the job
+# database, the probe cache and the systemd unit together (see paths.py).
+CONFIG_PATH = paths.config_path()
 
 _DEFAULT_TOML = """\
 [defaults]
@@ -199,13 +206,45 @@ class Config:
         return self.defaults.provider
 
     @property
+    def env_var_name(self) -> str:
+        """The environment variable this provider reads its key from."""
+        return "OPENAI_API_KEY" if self.defaults.provider == "openai" else "ANTHROPIC_API_KEY"
+
+    @property
+    def env_api_key(self) -> str:
+        """The provider's key as taken from the environment, "" when unset."""
+        return os.environ.get(self.env_var_name, "")
+
+    @property
     def api_key(self) -> str:
-        """Effective API key: config value, then provider-specific env var."""
+        """Effective own key: config value, then provider-specific env var.
+
+        This is the user's OWN credential only. The hosted proxy token is a
+        separate credential on a separate base URL, so it deliberately does not
+        appear here; ``generation_source`` is what says which of the two pays
+        for a generation.
+        """
         if self.defaults.api_key:
             return self.defaults.api_key
-        if self.defaults.provider == "openai":
-            return os.environ.get("OPENAI_API_KEY", "")
-        return os.environ.get("ANTHROPIC_API_KEY", "")
+        return self.env_api_key
+
+    @property
+    def generation_source(self) -> str:
+        """Which credential AI script generation will actually use.
+
+        Precedence: ``[defaults] api_key`` in config, then ``[hosted]
+        api_token`` through the managed proxy, then the provider's environment
+        variable. An exported key used to win over a paid subscription without
+        a word anywhere in the interface (issue #25), so this string is shown
+        on F9 rather than left to be inferred from three separate rows.
+        """
+        if self.defaults.api_key:
+            return "own key (config)"
+        if self.hosted.api_token and self.defaults.provider == "anthropic":
+            return "hosted proxy"
+        if self.env_api_key:
+            return f"own key ({self.env_var_name})"
+        return "none"
 
     @property
     def api_base_url(self) -> str:

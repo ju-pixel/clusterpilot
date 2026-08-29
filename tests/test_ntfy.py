@@ -192,3 +192,27 @@ class TestJobEventHelpers:
 
         headers = mock_client.post.call_args[1]["headers"]
         assert headers["Priority"] == "high"
+
+
+# ── Efficiency in the notification body (issue #31) ───────────────────────────
+
+class TestEfficiencyInNotifications:
+    async def test_completion_carries_it(self):
+        job = _make_job(efficiency="CPU 12%, mem 6% of 16 GB")
+        with patch("clusterpilot.notify.ntfy.send", new=AsyncMock()) as send_mock:
+            await notify_completed(_make_notify_cfg(), job)
+        body = send_mock.await_args.args[1]
+        assert "Efficiency: CPU 12%, mem 6% of 16 GB" in body
+
+    async def test_failure_carries_it(self):
+        job = _make_job(efficiency="CPU 3%, mem 90% of 16 GB")
+        with patch("clusterpilot.notify.ntfy.send", new=AsyncMock()) as send_mock:
+            await notify_failed(_make_notify_cfg(), job, "oom-killer invoked")
+        body = send_mock.await_args.args[1]
+        assert "Efficiency: CPU 3%, mem 90% of 16 GB" in body
+        assert "oom-killer invoked" in body
+
+    async def test_absent_when_seff_said_nothing(self):
+        with patch("clusterpilot.notify.ntfy.send", new=AsyncMock()) as send_mock:
+            await notify_completed(_make_notify_cfg(), _make_job())
+        assert "Efficiency" not in send_mock.await_args.args[1]

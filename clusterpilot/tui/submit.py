@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -21,6 +22,7 @@ from textual.widgets import Button, Input, Label, Select, Static, TextArea
 
 from clusterpilot.cluster.probe import PartitionAvailability, fetch_availability, probe_cluster
 from clusterpilot.cluster.slurm import SlurmError, submit
+from clusterpilot.config import Config
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
 from clusterpilot.jobs.env_detect import ScriptEnvironment, analyze_script
@@ -384,8 +386,56 @@ def _resolve_table_path(project_dir_str: str, table_raw: str) -> Path:
     return Path(project_dir_str).expanduser() / table_path
 
 
+@dataclass(frozen=True)
+class GenerationCredential:
+    """Which credential a generation will use, and where it is sent.
+
+    ``ignored_env_var`` names the provider environment variable that is being
+    bypassed in favour of the hosted proxy, "" when nothing is being bypassed.
+    """
+
+    api_key: str
+    api_base_url: str
+    hosted: bool = False
+    ignored_env_var: str = ""
+
+
+def _generation_credential(config: Config) -> GenerationCredential:
+    """Pick the credential for AI script generation.
+
+    Precedence is ``[defaults] api_key`` in config, then ``[hosted]
+    api_token`` through the managed proxy, then the provider's environment
+    variable. Only the config file counts as the user's own key at the second
+    step: reading the effective key would let an exported ANTHROPIC_API_KEY
+    silently take generation off a paid subscription and onto a personal key,
+    with the dashboard still filling up from the separate sync path and
+    nothing anywhere saying which credential paid. That is issue #25.
+    """
+    config_key = config.defaults.api_key
+    env_key = config.env_api_key
+
+    if config_key:
+        return GenerationCredential(config_key, config.api_base_url)
+
+    hosted = config.hosted
+    if hosted.api_token and config.provider == "anthropic":
+        return GenerationCredential(
+            api_key=hosted.api_token,
+            api_base_url=hosted.api_url.rstrip("/") + "/proxy",
+            hosted=True,
+            ignored_env_var=config.env_var_name if env_key else "",
+        )
+
+    return GenerationCredential(env_key, config.api_base_url)
+
+
 class SubmitView(Static):
     """Left: description + partition picker + script path. Right: generated script."""
+
+    # One warning per app run when an exported provider key is being ignored in
+    # favour of the hosted proxy. A class attribute so a remount cannot reset
+    # it: the point is to say it once, not once per visit to this screen.
+    _env_key_warned: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="submit-left"):
@@ -836,18 +886,23 @@ class SubmitView(Static):
             return
 
         provider = app._config.provider
-        api_key = app._config.api_key
-        api_base_url = app._config.api_base_url
-        hosted = app._config.hosted
+        credential = _generation_credential(app._config)
+        api_key = credential.api_key
+        api_base_url = credential.api_base_url
 
-        # Hosted tier: route through the managed proxy instead of calling Anthropic directly.
-        if hosted.api_token and not api_key and provider == "anthropic":
-            api_key = hosted.api_token
-            api_base_url = hosted.api_url.rstrip("/") + "/proxy"
-        elif not api_key and provider != "ollama":
-            env_var = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
+        if credential.ignored_env_var and not self._env_key_warned:
+            self._env_key_warned = True
             self.app.notify(
-                f"No API key. Set api_key in config or {env_var} env var.",
+                f"{credential.ignored_env_var} is set but the hosted proxy is "
+                f"being used; set api_key in config.toml to use your own key "
+                f"instead.",
+                severity="warning",
+            )
+
+        if not api_key and provider != "ollama":
+            self.app.notify(
+                f"No API key. Set api_key in config or "
+                f"{app._config.env_var_name} env var.",
                 severity="error",
             )
             self.query_one("#btn-generate", Button).disabled = False
@@ -959,8 +1014,10 @@ class SubmitView(Static):
                 upload_paths=tuple(extra_files),
                 partition_name=partition or "",
                 gpu_size=gpu_size,
+                account=profile.account,
             ),
             partitions=probe.partitions,
+            account_max_wall=probe.account_max_wall,
         )
         self._findings = findings
         is_blocked = blocking(findings)

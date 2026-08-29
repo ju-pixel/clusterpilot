@@ -16,16 +16,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 
 import aiosqlite
 
+from clusterpilot import paths
 from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
     JobStatus,
     find_array_logs,
     find_log,
+    job_efficiency,
     query_status,
     tail_log,
 )
@@ -51,6 +54,21 @@ from clusterpilot.ssh.connection import SSHError, is_connected
 from clusterpilot.ssh.rsync import RsyncError, download
 
 log = logging.getLogger(__name__)
+
+
+class DaemonError(Exception):
+    """Base class for daemon errors that a caller is expected to report."""
+
+
+class ServiceExistsError(DaemonError):
+    """Raised when installing would overwrite a different systemd unit.
+
+    A ``daemon install`` from a development checkout used to repoint the
+    research unit's ExecStart at the development interpreter, in place and
+    without a word (issue #24). Refusing is the only safe default; ``--force``
+    is the deliberate override, and it keeps a backup.
+    """
+
 
 _ETA_INTERVAL = 1800      # seconds between ETA notifications (30 min)
 _LOW_TIME_THRESHOLD = 30  # minutes remaining before low-time warning
@@ -328,6 +346,27 @@ class PollDaemon:
         job.synced = synced
         await self._notify_failed(profile, job, status)
 
+    async def _job_efficiency(
+        self,
+        profile: ClusterProfile,
+        job: JobRecord,
+    ) -> str:
+        """CPU and memory efficiency for a finished job, "" when unavailable.
+
+        seff reports per array task, not per array, so the lowest task stands
+        in for the job the same way its log does.
+        """
+        target = job.job_id
+        if job.array_spec:
+            tasks = await self._array_task_logs(profile, job)
+            if tasks:
+                target = f"{job.job_id}_{next(iter(tasks))}"
+        try:
+            return await job_efficiency(profile.host, profile.user, target)
+        except Exception:
+            log.debug("seff failed for job %s, continuing", job.job_id, exc_info=True)
+            return ""
+
     async def _array_task_logs(
         self,
         profile: ClusterProfile,
@@ -550,7 +589,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={python} -m clusterpilot daemon run
+{environment}ExecStart={python} -m clusterpilot daemon run
 Restart=on-failure
 RestartSec=30
 
@@ -558,13 +597,71 @@ RestartSec=30
 WantedBy=default.target
 """
 
-_SERVICE_PATH = Path.home() / ".config" / "systemd" / "user" / "clusterpilot-poll.service"
+# Resolved once at import, and profile-qualified when CLUSTERPILOT_HOME is set,
+# so a second profile can never install over the first one's unit (see paths.py).
+_SERVICE_NAME = paths.service_name()
+_SERVICE_PATH = paths.service_path()
 
 
-def write_service_file(python_path: str | None = None) -> Path:
-    """Write the systemd user service unit. Returns the path written."""
+def _service_text(python: str) -> str:
+    """Render the unit file for *python*, carrying the profile with it.
+
+    When CLUSTERPILOT_HOME is set, the unit exports it too: systemd starts the
+    daemon with a bare environment, so without this line the installed daemon
+    would poll the default profile's database rather than the one the unit was
+    installed from.
+    """
+    home_override = os.environ.get(paths.HOME_ENV_VAR, "").strip()
+    environment = (
+        f"Environment={paths.HOME_ENV_VAR}={paths.home()}\n" if home_override else ""
+    )
+    return _SERVICE_TEMPLATE.format(python=python, environment=environment)
+
+
+def _exec_start(unit_text: str) -> str:
+    """The unit's ExecStart line, "" when it has none."""
+    for line in unit_text.splitlines():
+        if line.startswith("ExecStart="):
+            return line.strip()
+    return ""
+
+
+def write_service_file(
+    python_path: str | None = None,
+    *,
+    force: bool = False,
+) -> Path:
+    """Write the systemd user service unit. Returns the path written.
+
+    Raises ``ServiceExistsError`` when a unit is already there and its
+    ExecStart differs from the one about to be written, because that is the
+    case where installing would silently hijack another install's daemon.
+    ``force=True`` overwrites it, keeping the old unit as ``<unit>.bak``.
+    """
+    import shutil
     import sys
+
     py = python_path or sys.executable
+    text = _service_text(py)
+
+    if _SERVICE_PATH.exists():
+        existing = _SERVICE_PATH.read_text()
+        existing_exec = _exec_start(existing)
+        if existing_exec and existing_exec != _exec_start(text):
+            if not force:
+                raise ServiceExistsError(
+                    f"{_SERVICE_PATH} already exists and runs a different "
+                    f"command:\n  {existing_exec}\nwhereas this install would "
+                    f"write:\n  {_exec_start(text)}\n"
+                    f"Overwriting it would repoint an existing daemon at this "
+                    f"interpreter. Re-run with --force to replace it (the "
+                    f"current unit is kept as {_SERVICE_PATH.name}.bak), or set "
+                    f"{paths.HOME_ENV_VAR} to install under a separate profile."
+                )
+            backup = _SERVICE_PATH.with_name(_SERVICE_PATH.name + ".bak")
+            shutil.copy2(_SERVICE_PATH, backup)
+            log.info("Existing unit backed up to %s", backup)
+
     _SERVICE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _SERVICE_PATH.write_text(_SERVICE_TEMPLATE.format(python=py))
+    _SERVICE_PATH.write_text(text)
     return _SERVICE_PATH

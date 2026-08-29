@@ -286,3 +286,89 @@ class TestJobRecord:
         job.finished_at = None
         assert job.elapsed_seconds is not None
         assert job.elapsed_seconds >= 60
+
+
+# ── efficiency (issue #31) ────────────────────────────────────────────────────
+
+class TestEfficiency:
+    async def test_defaults_to_empty_string(self, db):
+        await insert_job(db, _make_job())
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.efficiency == ""
+
+    async def test_written_at_a_terminal_update(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_status(
+            db, "12345", "grex", "COMPLETED",
+            finished_at=time.time(), efficiency="CPU 12%, mem 6% of 16 GB",
+        )
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.efficiency == "CPU 12%, mem 6% of 16 GB"
+        assert fetched.status == "COMPLETED"
+
+    async def test_omitting_it_leaves_the_stored_value_alone(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_status(db, "12345", "grex", "COMPLETED", efficiency="CPU 90%")
+        await update_status(db, "12345", "grex", "COMPLETED", synced=True)
+        fetched = await get_job(db, "12345", "grex")
+        assert fetched.efficiency == "CPU 90%"
+
+    async def test_carried_by_the_history_load(self, db):
+        await insert_job(db, _make_job(status="RUNNING"))
+        await update_status(db, "12345", "grex", "COMPLETED", efficiency="CPU 90%")
+        assert [j.efficiency for j in await get_all_jobs(db)] == ["CPU 90%"]
+
+    async def test_pre_migration_database_loads(self):
+        """A database written before the column existed still loads."""
+        async with aiosqlite.connect(":memory:") as conn:
+            conn.row_factory = aiosqlite.Row
+            # The schema as it stood before efficiency was added.
+            await conn.execute(
+                """
+                CREATE TABLE jobs (
+                    row_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id        TEXT NOT NULL,
+                    job_name      TEXT NOT NULL,
+                    cluster_name  TEXT NOT NULL,
+                    host          TEXT NOT NULL,
+                    user          TEXT NOT NULL,
+                    account       TEXT NOT NULL,
+                    partition     TEXT NOT NULL,
+                    script_path   TEXT NOT NULL,
+                    working_dir   TEXT NOT NULL,
+                    local_dir     TEXT NOT NULL,
+                    status        TEXT NOT NULL DEFAULT 'PENDING',
+                    submitted_at  REAL NOT NULL,
+                    started_at    REAL,
+                    finished_at   REAL,
+                    walltime      TEXT NOT NULL,
+                    log_path      TEXT,
+                    synced         INTEGER NOT NULL DEFAULT 0,
+                    input_tokens   INTEGER NOT NULL DEFAULT 0,
+                    output_tokens  INTEGER NOT NULL DEFAULT 0,
+                    model_used     TEXT NOT NULL DEFAULT '',
+                    remote_cleaned INTEGER NOT NULL DEFAULT 0,
+                    array_spec     TEXT NOT NULL DEFAULT '',
+                    status_detail  TEXT NOT NULL DEFAULT '',
+                    UNIQUE(job_id, cluster_name)
+                )
+                """
+            )
+            await conn.execute(
+                "INSERT INTO jobs (job_id, job_name, cluster_name, host, user, "
+                "account, partition, script_path, working_dir, local_dir, "
+                "status, submitted_at, walltime) "
+                "VALUES ('9', 'old', 'grex', 'h', 'u', 'a', 'p', 's', 'w', 'l', "
+                "'RUNNING', 1000.0, '01:00:00')"
+            )
+            await conn.commit()
+
+            fetched = await get_job(conn, "9", "grex")
+            assert fetched is not None
+            assert fetched.efficiency == ""
+
+            # After migration the column exists and is writable.
+            await init_db(conn)
+            await update_status(conn, "9", "grex", "COMPLETED", efficiency="CPU 40%")
+            migrated = await get_job(conn, "9", "grex")
+            assert migrated.efficiency == "CPU 40%"

@@ -385,3 +385,55 @@ async def find_array_logs(
         return (int(task), "") if task.isdigit() else (2**31, task)
 
     return {task: tasks[task] for task in sorted(tasks, key=_order)}
+
+
+# ── Job efficiency (seff) ─────────────────────────────────────────────────────
+
+# seff reports one percentage per resource, each against the amount reserved:
+#   CPU Efficiency: 12.34% of 01:23:45 core-walltime
+#   Memory Efficiency: 5.60% of 16.00 GB
+_CPU_EFFICIENCY_RE = re.compile(r"^CPU Efficiency:\s*([\d.]+)%", re.MULTILINE)
+_MEM_EFFICIENCY_RE = re.compile(
+    r"^Memory Efficiency:\s*([\d.]+)%\s*of\s*([\d.]+)\s*(\S+)", re.MULTILINE
+)
+
+
+def _parse_efficiency(output: str) -> str:
+    """Condense ``seff`` output into one short line, "" when it says nothing.
+
+    Returns something like ``CPU 12%, mem 6% of 16 GB``. Either half is
+    dropped when seff did not report it, which is normal: a job that never
+    started has no CPU figure, and some sites build SLURM without job
+    accounting for memory.
+    """
+    parts: list[str] = []
+
+    cpu = _CPU_EFFICIENCY_RE.search(output)
+    if cpu:
+        parts.append(f"CPU {round(float(cpu.group(1)))}%")
+
+    mem = _MEM_EFFICIENCY_RE.search(output)
+    if mem:
+        percent = round(float(mem.group(1)))
+        reserved = round(float(mem.group(2)))
+        parts.append(f"mem {percent}% of {reserved} {mem.group(3)}")
+
+    return ", ".join(parts)
+
+
+async def job_efficiency(host: str, user: str, job_id: str) -> str:
+    """CPU and memory efficiency for a finished job, "" when unavailable.
+
+    Best-effort by design and never raises: ``seff`` is a site-optional
+    wrapper, it needs the accounting database, and it says nothing useful
+    until the job has left the queue. A job with no efficiency line is not a
+    problem worth interrupting a notification for.
+
+    For an array, pass ``<job_id>_<task>``: seff reports per task, and asking
+    it about the array master gives nothing.
+    """
+    try:
+        output = await run_remote(host, user, f"seff {job_id} 2>/dev/null")
+    except Exception:
+        return ""
+    return _parse_efficiency(output)

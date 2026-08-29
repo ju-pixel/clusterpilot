@@ -63,8 +63,11 @@ async def _poll(
         "find_array_logs": AsyncMock(return_value=dict(array_logs or {})),
         "tail_log": AsyncMock(side_effect=_tail),
         "log_completed_job": MagicMock(),
+        # seff runs at every terminal transition; never let a test reach SSH.
+        "job_efficiency": AsyncMock(return_value=""),
     }
     with patch("clusterpilot.jobs.daemon.find_array_logs", new=mocks["find_array_logs"]), \
+         patch("clusterpilot.jobs.daemon.job_efficiency", new=mocks["job_efficiency"]), \
          patch("clusterpilot.jobs.daemon.query_status",
                new=AsyncMock(return_value=status)), \
          patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
@@ -241,3 +244,69 @@ class TestArrayLogDiscovery:
         assert [p for p in tried if p in many.values()] == [
             many["0"], many["1"], many["2"],
         ]
+
+
+class TestEfficiencyAtTerminalTransition:
+    """Issue #31: seff runs once, when the job leaves the queue."""
+
+    async def test_stored_and_carried_into_the_completion_notification(self):
+        status = JobStatus(state="COMPLETED", counts={"COMPLETED": 1}, source="sacct")
+        job = _make_job(status="RUNNING", started_at=1.0)
+        daemon = _make_daemon()
+
+        mocks = {
+            "update_status": AsyncMock(),
+            "download": AsyncMock(),
+            "notify_completed": AsyncMock(),
+            "notify_failed": AsyncMock(),
+            "find_array_logs": AsyncMock(return_value={}),
+            "find_log": AsyncMock(return_value=None),
+            "tail_log": AsyncMock(return_value=""),
+            "log_completed_job": MagicMock(),
+            "job_efficiency": AsyncMock(return_value="CPU 12%, mem 6% of 16 GB"),
+        }
+        with patch("clusterpilot.jobs.daemon.query_status",
+                   new=AsyncMock(return_value=status)), \
+             patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
+             patch("clusterpilot.jobs.daemon.download", new=mocks["download"]), \
+             patch("clusterpilot.jobs.daemon.notify_completed", new=mocks["notify_completed"]), \
+             patch("clusterpilot.jobs.daemon.notify_failed", new=mocks["notify_failed"]), \
+             patch("clusterpilot.jobs.daemon.find_array_logs", new=mocks["find_array_logs"]), \
+             patch("clusterpilot.jobs.daemon.find_log", new=mocks["find_log"]), \
+             patch("clusterpilot.jobs.daemon.tail_log", new=mocks["tail_log"]), \
+             patch("clusterpilot.jobs.daemon.log_completed_job", new=mocks["log_completed_job"]), \
+             patch("clusterpilot.jobs.daemon.job_efficiency", new=mocks["job_efficiency"]), \
+             patch.object(daemon, "_sync", new=AsyncMock()):
+            await daemon._poll_job(MagicMock(), _PROFILE, job)
+
+        mocks["job_efficiency"].assert_awaited_once()
+        assert mocks["job_efficiency"].await_args.args[2] == "12345"
+        written = [
+            call.kwargs.get("efficiency")
+            for call in mocks["update_status"].await_args_list
+        ]
+        assert "CPU 12%, mem 6% of 16 GB" in written
+        # The notification is sent after the fetch, so it can carry the figure.
+        assert job.efficiency == "CPU 12%, mem 6% of 16 GB"
+        notified = mocks["notify_completed"].await_args.args[1]
+        assert notified.efficiency == "CPU 12%, mem 6% of 16 GB"
+
+    async def test_an_array_asks_seff_about_its_lowest_task(self):
+        status = JobStatus(state="FAILED", counts={"FAILED": 10}, source="sacct")
+        job = _make_job(status="RUNNING", started_at=1.0, array_spec="0-9")
+        mocks = await _poll(
+            job, status,
+            array_logs={
+                "3": "/home/juliaf/jobs/bench_run/bench_run-12345-3.out",
+                "7": "/home/juliaf/jobs/bench_run/bench_run-12345-7.out",
+            },
+        )
+        assert mocks["job_efficiency"].await_args.args[2] == "12345_3"
+
+    async def test_an_empty_result_writes_nothing(self):
+        status = JobStatus(state="FAILED", counts={"FAILED": 1}, source="sacct")
+        mocks = await _poll(_make_job(status="RUNNING", started_at=1.0), status)
+        assert all(
+            call.kwargs.get("efficiency") is None
+            for call in mocks["update_status"].await_args_list
+        )

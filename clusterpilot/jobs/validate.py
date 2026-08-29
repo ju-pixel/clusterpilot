@@ -32,6 +32,8 @@ Checks implemented, by slug:
 ``gpu-count``               a multi-GPU request on a single-task job
 ``gpu-size``                a GPU request that does not name the picked size
 ``walltime-over-partition`` ``--time`` exceeds the probed partition limit
+``account-walltime``        ``--time`` exceeds the account's probed ceiling
+``resources``               cores or memory exceed what a node in the partition has
 ``driver-not-uploaded``     the script runs a file the upload set omits
 ``stdbuf``                  the script wraps a command in stdbuf or LD_PRELOAD
 ``truncated``               the generation looks cut off part way through
@@ -42,7 +44,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -112,6 +114,8 @@ class SubmitIntent:
     ``gpu_size``            the GPU size the user picked, a whole card
                             ("a100") or a MIG slice ("a100_3g.20gb"), "" when
                             the choice was left blank
+    ``account``             the SLURM account the job will be charged to, taken
+                            from the cluster profile, "" when none is set
     """
 
     array_spec: str = ""
@@ -121,6 +125,7 @@ class SubmitIntent:
     partition_name: str = ""
     requested_walltime: str = ""
     gpu_size: str = ""
+    account: str = ""
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -130,11 +135,14 @@ def validate_script(
     *,
     intent: SubmitIntent,
     partitions: Sequence[PartitionInfo] | None = None,
+    account_max_wall: Mapping[str, str] | None = None,
 ) -> list[Finding]:
     """Check *script* against *intent* and return every finding, worst first.
 
-    *partitions* is the probed partition table for the selected cluster. Omit
-    it and the checks that need probed facts are skipped rather than guessed.
+    *partitions* is the probed partition table for the selected cluster.
+    *account_max_wall* is the probe's account-to-walltime-ceiling mapping.
+    Omit either and the checks that need those probed facts are skipped rather
+    than guessed.
 
     Raises ``IntentError`` when *intent* itself is impossible.
     """
@@ -148,6 +156,8 @@ def validate_script(
     findings.extend(_check_gpu_count(script))
     findings.extend(_check_gpu_size(script, intent))
     findings.extend(_check_walltime(script, intent, partitions))
+    findings.extend(_check_account_walltime(script, intent, account_max_wall))
+    findings.extend(_check_resources(script, intent, partitions))
     findings.extend(_check_driver_uploaded(script, intent))
     findings.extend(_check_stdbuf(script))
     findings.extend(_check_truncated(script))
@@ -722,6 +732,190 @@ def _check_walltime(
             line=line,
         )
     ]
+
+
+# ── Check: walltime against the account's probed ceiling ──────────────────────
+
+def _check_account_walltime(
+    script: str,
+    intent: SubmitIntent,
+    account_max_wall: Mapping[str, str] | None,
+) -> list[Finding]:
+    """Compare the emitted ``--time`` with the account's probed MaxWall.
+
+    An account ceiling is enforced independently of the partition's, so a job
+    can sit comfortably inside the partition limit and still be refused. The
+    figure is probed (``sacctmgr``), never built in, and that probe is
+    best-effort: it fails outright on DRAC login nodes, and an account with no
+    limit reports an empty string. Either way the check is skipped rather than
+    guessed at.
+    """
+    if not account_max_wall:
+        return []
+    account = intent.account.strip()
+    if not account:
+        return []
+    ceiling = (account_max_wall.get(account) or "").strip()
+    if not ceiling:
+        return []
+    limit = _parse_walltime_seconds(ceiling)
+    if limit is None:
+        return []
+
+    emitted = _directive_value(script, "time")
+    if emitted is None:
+        return []
+    line, value = emitted
+    requested = _parse_walltime_seconds(value)
+    if requested is None or requested <= limit:
+        return []
+
+    return [
+        Finding(
+            check="account-walltime",
+            severity=Severity.BLOCKING,
+            message=(
+                f"The script asks for --time={value} but account '{account}' has a "
+                f"probed walltime ceiling of {ceiling}, so sbatch will refuse the job "
+                f"however much the partition allows."
+            ),
+            line=line,
+        )
+    ]
+
+
+# ── Check: cores and memory against the partition's nodes ─────────────────────
+
+_MEMORY_UNITS: dict[str, int] = {"K": 1, "M": 1024, "G": 1024 ** 2, "T": 1024 ** 3}
+
+
+def _parse_memory_kb(text: str) -> int | None:
+    """A SLURM memory value in KB, or None when it cannot be read.
+
+    SLURM accepts an optional ``K``, ``M``, ``G`` or ``T`` suffix and defaults
+    to megabytes when there is none, so ``4000`` and ``4000M`` are the same
+    request.
+    """
+    value = text.strip().rstrip("bB")
+    if not value:
+        return None
+    unit = "M"
+    if value[-1].upper() in _MEMORY_UNITS:
+        unit = value[-1].upper()
+        value = value[:-1]
+    if not value.isdigit():
+        return None
+    return int(value) * _MEMORY_UNITS[unit]
+
+
+def _directive_int(script: str, option: str) -> tuple[int, int] | None:
+    """(line number, value) for an integer directive, or None when absent or unreadable."""
+    found = _directive_value(script, option)
+    if found is None:
+        return None
+    line, raw = found
+    return (line, int(raw)) if raw.isdigit() else None
+
+
+def _check_resources(
+    script: str,
+    intent: SubmitIntent,
+    partitions: Sequence[PartitionInfo] | None,
+) -> list[Finding]:
+    """Report a request no single node in the chosen partition can satisfy.
+
+    Both figures are probed per node (``sinfo``'s ``%c`` and ``%m``), and a
+    partition whose probe predates that request reports 0, which is read as
+    "not known" and skips the comparison. As with every other check here, the
+    partition is the one the user picked; nothing is chosen on their behalf.
+    """
+    if not partitions:
+        return []
+    name = intent.partition_name.strip()
+    if not name:
+        return []
+    chosen = next((p for p in partitions if p.name == name), None)
+    if chosen is None:
+        return []
+
+    findings: list[Finding] = []
+    cpus_per_task = _directive_int(script, "cpus-per-task")
+    tasks_per_node = _directive_int(script, "ntasks-per-node")
+
+    if chosen.cpus > 0 and cpus_per_task is not None:
+        line, per_task = cpus_per_task
+        if per_task > chosen.cpus:
+            findings.append(
+                Finding(
+                    check="resources",
+                    severity=Severity.BLOCKING,
+                    message=(
+                        f"The script asks for --cpus-per-task={per_task} but a node in "
+                        f"partition '{name}' has {chosen.cpus} CPUs, so the job can "
+                        f"never be scheduled."
+                    ),
+                    line=line,
+                )
+            )
+        elif tasks_per_node is not None:
+            task_line, tasks = tasks_per_node
+            total = tasks * per_task
+            if total > chosen.cpus:
+                findings.append(
+                    Finding(
+                        check="resources",
+                        severity=Severity.BLOCKING,
+                        message=(
+                            f"The script asks for {tasks} tasks per node at "
+                            f"{per_task} CPUs each, {total} in all, but a node in "
+                            f"partition '{name}' has {chosen.cpus} CPUs."
+                        ),
+                        line=task_line,
+                    )
+                )
+
+    if chosen.memory_mb > 0:
+        limit_kb = chosen.memory_mb * 1024
+        emitted_mem = _directive_value(script, "mem")
+        if emitted_mem is not None:
+            line, raw = emitted_mem
+            requested = _parse_memory_kb(raw)
+            if requested is not None and requested > limit_kb:
+                findings.append(
+                    Finding(
+                        check="resources",
+                        severity=Severity.BLOCKING,
+                        message=(
+                            f"The script asks for --mem={raw} but a node in partition "
+                            f"'{name}' has {chosen.memory_mb} MB, so the job can never "
+                            f"be scheduled."
+                        ),
+                        line=line,
+                    )
+                )
+        else:
+            emitted_per_cpu = _directive_value(script, "mem-per-cpu")
+            if emitted_per_cpu is not None and cpus_per_task is not None:
+                line, raw = emitted_per_cpu
+                per_cpu = _parse_memory_kb(raw)
+                if per_cpu is not None:
+                    total_kb = per_cpu * cpus_per_task[1]
+                    if total_kb > limit_kb:
+                        findings.append(
+                            Finding(
+                                check="resources",
+                                severity=Severity.BLOCKING,
+                                message=(
+                                    f"The script asks for --mem-per-cpu={raw} across "
+                                    f"{cpus_per_task[1]} CPUs, more than the "
+                                    f"{chosen.memory_mb} MB a node in partition "
+                                    f"'{name}' has."
+                                ),
+                                line=line,
+                            )
+                        )
+
+    return findings
 
 
 # ── Check: the driver is in the upload set ────────────────────────────────────

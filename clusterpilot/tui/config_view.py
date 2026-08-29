@@ -61,14 +61,20 @@ def _render(app: "ClusterPilotApp") -> str:
     lines.append(_row("Model", cfg.model))
     if cfg.provider == "ollama":
         api_display = "[#7a6a50](not required for ollama)[/]"
-    elif cfg.hosted.api_token:
-        api_display = "[#7a6a50](using managed key — see Hosted tier below)[/]"
-    elif cfg.api_key:
-        api_display = f"[#7a6a50]{cfg.api_key[:8]}…[/]"
+    elif cfg.defaults.api_key:
+        api_display = f"[#7a6a50]{cfg.defaults.api_key[:8]}…[/]"
+    elif cfg.hosted.api_token and cfg.provider == "anthropic":
+        api_display = "[#7a6a50](using managed key, see Hosted tier below)[/]"
+    elif cfg.env_api_key:
+        api_display = f"[#7a6a50]{cfg.env_api_key[:8]}… (from {cfg.env_var_name})[/]"
     else:
-        env_var = "OPENAI_API_KEY" if cfg.provider == "openai" else "ANTHROPIC_API_KEY"
-        api_display = f"[#e05050](not set — export {env_var})[/]"
+        api_display = f"[#e05050](not set, export {cfg.env_var_name})[/]"
     lines.append(f"[#7a6a50]{'API key':<20}[/] {api_display}\n")
+    # Which credential a generation will actually be charged to. Three rows
+    # (API key, Token, and the provider's env var, which has no row at all)
+    # could not be read off against each other, so an exported key silently
+    # bypassing the paid proxy was invisible here (issue #25).
+    lines.append(_row("Generation", cfg.generation_source))
     if cfg.api_base_url:
         lines.append(_row("Base URL", cfg.api_base_url))
     lines.append(_row("Poll interval", f"{cfg.poll_interval}s"))

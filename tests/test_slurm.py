@@ -9,9 +9,11 @@ from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
     JobStatus,
     SlurmError,
+    _parse_efficiency,
     aggregate,
     find_array_logs,
     find_log,
+    job_efficiency,
     job_status,
     query_status,
     submit,
@@ -413,3 +415,71 @@ class TestFindArrayLogs:
             await find_array_logs("host", "user", "myjob", "99", "/home/user/myjob")
         cmd = mock.call_args[0][2]
         assert "/home/user/myjob/myjob-99-*.out" in cmd
+
+
+# ── seff: job efficiency (issue #31) ──────────────────────────────────────────
+
+_SEFF_OUTPUT = """Job ID: 8271604
+Cluster: narval
+User/Group: juliaf/juliaf
+State: COMPLETED (exit code 0)
+Cores: 1
+CPU Utilized: 00:10:15
+CPU Efficiency: 12.34% of 01:23:45 core-walltime
+Job Wall-clock time: 01:23:45
+Memory Utilized: 918.40 MB
+Memory Efficiency: 5.60% of 16.00 GB
+"""
+
+
+class TestParseEfficiency:
+    def test_real_shaped_output(self):
+        assert _parse_efficiency(_SEFF_OUTPUT) == "CPU 12%, mem 6% of 16 GB"
+
+    def test_percentages_round_to_integers(self):
+        output = (
+            "CPU Efficiency: 99.60% of 10:00:00 core-walltime\n"
+            "Memory Efficiency: 49.50% of 8.00 GB\n"
+        )
+        assert _parse_efficiency(output) == "CPU 100%, mem 50% of 8 GB"
+
+    def test_a_missing_memory_line_drops_that_half(self):
+        output = "CPU Efficiency: 12.34% of 01:23:45 core-walltime\n"
+        assert _parse_efficiency(output) == "CPU 12%"
+
+    def test_a_missing_cpu_line_drops_that_half(self):
+        output = "Memory Efficiency: 5.60% of 16.00 GB\n"
+        assert _parse_efficiency(output) == "mem 6% of 16 GB"
+
+    def test_the_reported_unit_is_kept(self):
+        output = "Memory Efficiency: 10.00% of 512.00 MB\n"
+        assert _parse_efficiency(output) == "mem 10% of 512 MB"
+
+    def test_nothing_useful_gives_an_empty_string(self):
+        assert _parse_efficiency("") == ""
+        assert _parse_efficiency("seff: command not found") == ""
+
+
+class TestJobEfficiency:
+    async def test_runs_seff_for_the_job(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(return_value=_SEFF_OUTPUT)) as run:
+            result = await job_efficiency("yak", "juliaf", "8271604")
+        assert result == "CPU 12%, mem 6% of 16 GB"
+        assert "seff 8271604" in run.await_args.args[2]
+
+    async def test_an_array_task_id_is_passed_through(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(return_value=_SEFF_OUTPUT)) as run:
+            await job_efficiency("yak", "juliaf", "8271604_3")
+        assert "seff 8271604_3" in run.await_args.args[2]
+
+    async def test_an_ssh_failure_is_swallowed(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(side_effect=SSHError("no socket"))):
+            assert await job_efficiency("yak", "juliaf", "1") == ""
+
+    async def test_any_other_failure_is_swallowed(self):
+        with patch("clusterpilot.cluster.slurm.run_remote",
+                   new=AsyncMock(side_effect=RuntimeError("boom"))):
+            assert await job_efficiency("yak", "juliaf", "1") == ""

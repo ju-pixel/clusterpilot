@@ -788,3 +788,168 @@ class TestFormatFindings:
     def test_the_check_slug_is_shown(self):
         findings = [Finding("walltime-over-partition", Severity.BLOCKING, "oops")]
         assert "walltime-over-partition" in format_findings(findings)
+
+
+# ── Check: account walltime ceiling (issue #23) ───────────────────────────────
+
+class TestAccountWalltimeCheck:
+    _WALL = {"def-stamps": "1-00:00:00", "def-stamps_gpu": ""}
+
+    def test_over_the_account_ceiling_blocks(self):
+        script = _sbatch("--time=3-00:00:00")
+        intent = SubmitIntent(account="def-stamps")
+        findings = validate._check_account_walltime(script, intent, self._WALL)
+        assert len(findings) == 1
+        assert findings[0].check == "account-walltime"
+        assert findings[0].severity is Severity.BLOCKING
+        assert "def-stamps" in findings[0].message
+        assert "1-00:00:00" in findings[0].message
+        assert findings[0].line == 2
+
+    def test_within_the_ceiling_is_clean(self):
+        script = _sbatch("--time=12:00:00")
+        intent = SubmitIntent(account="def-stamps")
+        assert validate._check_account_walltime(script, intent, self._WALL) == []
+
+    def test_exactly_the_ceiling_is_clean(self):
+        script = _sbatch("--time=1-00:00:00")
+        intent = SubmitIntent(account="def-stamps")
+        assert validate._check_account_walltime(script, intent, self._WALL) == []
+
+    def test_an_empty_ceiling_is_a_no_op(self):
+        # sacctmgr reports "" for an account with no limit set.
+        script = _sbatch("--time=30-00:00:00")
+        intent = SubmitIntent(account="def-stamps_gpu")
+        assert validate._check_account_walltime(script, intent, self._WALL) == []
+
+    def test_an_unprobed_account_is_a_no_op(self):
+        script = _sbatch("--time=30-00:00:00")
+        intent = SubmitIntent(account="def-someone-else")
+        assert validate._check_account_walltime(script, intent, self._WALL) == []
+
+    def test_skipped_without_probe_data(self):
+        # sacctmgr fails outright from a DRAC login node; absent stays silent.
+        script = _sbatch("--time=30-00:00:00")
+        intent = SubmitIntent(account="def-stamps")
+        assert validate._check_account_walltime(script, intent, None) == []
+        assert validate._check_account_walltime(script, intent, {}) == []
+
+    def test_skipped_when_no_account_is_configured(self):
+        script = _sbatch("--time=30-00:00:00")
+        assert validate._check_account_walltime(script, SubmitIntent(), self._WALL) == []
+
+    def test_reached_through_validate_script(self, no_bash):
+        script = _sbatch("--time=3-00:00:00")
+        findings = validate_script(
+            script,
+            intent=SubmitIntent(account="def-stamps"),
+            account_max_wall=self._WALL,
+        )
+        assert any(f.check == "account-walltime" for f in findings)
+
+
+# ── Check: cores and memory per node (issue #22) ──────────────────────────────
+
+@pytest.fixture
+def sized_partitions():
+    return [
+        PartitionInfo("stamps", "21-00:00:00", "gpu:v100:4", 3,
+                      is_default=False, cpus=32, memory_mb=192000),
+        PartitionInfo("unsized", "7-00:00:00", "", 4, is_default=False),
+    ]
+
+
+class TestMemoryParsing:
+    @pytest.mark.parametrize("text,expected", [
+        ("4000", 4000 * 1024),      # bare value means MB
+        ("4000M", 4000 * 1024),
+        ("16G", 16 * 1024 ** 2),
+        ("1T", 1024 ** 3),
+        ("512K", 512),
+        ("16GB", 16 * 1024 ** 2),
+    ])
+    def test_units(self, text, expected):
+        assert validate._parse_memory_kb(text) == expected
+
+    @pytest.mark.parametrize("text", ["", "   ", "lots", "16X", "1.5G"])
+    def test_unreadable_values_are_none(self, text):
+        assert validate._parse_memory_kb(text) is None
+
+
+class TestResourcesCheck:
+    def test_cpus_over_the_node_blocks(self, sized_partitions):
+        script = _sbatch("--cpus-per-task=64")
+        intent = SubmitIntent(partition_name="stamps")
+        findings = validate._check_resources(script, intent, sized_partitions)
+        assert len(findings) == 1
+        assert findings[0].check == "resources"
+        assert findings[0].severity is Severity.BLOCKING
+        assert "32" in findings[0].message
+
+    def test_cpus_within_the_node_is_clean(self, sized_partitions):
+        script = _sbatch("--cpus-per-task=8", "--mem=16G")
+        intent = SubmitIntent(partition_name="stamps")
+        assert validate._check_resources(script, intent, sized_partitions) == []
+
+    def test_tasks_times_cpus_over_the_node_blocks(self, sized_partitions):
+        script = _sbatch("--ntasks-per-node=8", "--cpus-per-task=8")
+        intent = SubmitIntent(partition_name="stamps")
+        findings = validate._check_resources(script, intent, sized_partitions)
+        assert len(findings) == 1
+        assert findings[0].check == "resources"
+        assert "64" in findings[0].message
+
+    def test_memory_over_the_node_blocks(self, sized_partitions):
+        script = _sbatch("--mem=512G")
+        intent = SubmitIntent(partition_name="stamps")
+        findings = validate._check_resources(script, intent, sized_partitions)
+        assert len(findings) == 1
+        assert findings[0].check == "resources"
+        assert "192000" in findings[0].message
+
+    def test_memory_within_the_node_is_clean(self, sized_partitions):
+        script = _sbatch("--mem=100G")
+        intent = SubmitIntent(partition_name="stamps")
+        assert validate._check_resources(script, intent, sized_partitions) == []
+
+    def test_mem_per_cpu_totalled_over_the_node_blocks(self, sized_partitions):
+        script = _sbatch("--cpus-per-task=16", "--mem-per-cpu=16G")
+        intent = SubmitIntent(partition_name="stamps")
+        findings = validate._check_resources(script, intent, sized_partitions)
+        assert len(findings) == 1
+        assert findings[0].check == "resources"
+
+    def test_mem_per_cpu_within_the_node_is_clean(self, sized_partitions):
+        script = _sbatch("--cpus-per-task=4", "--mem-per-cpu=4G")
+        intent = SubmitIntent(partition_name="stamps")
+        assert validate._check_resources(script, intent, sized_partitions) == []
+
+    def test_an_unsized_partition_is_a_no_op(self, sized_partitions):
+        # A probe cached before %c and %m were asked for reports zeroes.
+        script = _sbatch("--cpus-per-task=999", "--mem=999G")
+        intent = SubmitIntent(partition_name="unsized")
+        assert validate._check_resources(script, intent, sized_partitions) == []
+
+    def test_skipped_without_probe_data(self):
+        script = _sbatch("--cpus-per-task=999")
+        intent = SubmitIntent(partition_name="stamps")
+        assert validate._check_resources(script, intent, None) == []
+        assert validate._check_resources(script, intent, []) == []
+
+    def test_skipped_when_no_partition_was_chosen(self, sized_partitions):
+        script = _sbatch("--cpus-per-task=999")
+        assert validate._check_resources(script, SubmitIntent(), sized_partitions) == []
+
+    def test_skipped_when_the_partition_is_not_in_the_probe(self, sized_partitions):
+        script = _sbatch("--cpus-per-task=999")
+        intent = SubmitIntent(partition_name="not-probed")
+        assert validate._check_resources(script, intent, sized_partitions) == []
+
+    def test_reached_through_validate_script(self, sized_partitions, no_bash):
+        script = _sbatch("--cpus-per-task=64")
+        findings = validate_script(
+            script,
+            intent=SubmitIntent(partition_name="stamps"),
+            partitions=sized_partitions,
+        )
+        assert any(f.check == "resources" for f in findings)

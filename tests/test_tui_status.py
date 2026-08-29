@@ -73,3 +73,26 @@ class TestResultsRowInTheDetailPane:
     def test_the_rsync_hint_names_the_results_directory(self):
         from clusterpilot.tui.app import HINTS
         assert "RESULTS" in HINTS["btn-rsync"]
+
+
+class TestEfficiencyRow:
+    """Issue #31: the seff figure has somewhere to be read in F1."""
+
+    def _job(self, efficiency: str):
+        from clusterpilot.db import JobRecord
+        return JobRecord(
+            job_id="4137812", job_name="ising-sweep", cluster_name="narval",
+            host="h", user="u", account="a", partition="p", script_path="s",
+            working_dir="w", local_dir="/data/runs", walltime="01:00:00",
+            status="COMPLETED", efficiency=efficiency,
+        )
+
+    def test_shown_when_seff_answered(self):
+        from clusterpilot.tui.jobs import _format_meta
+        meta = _format_meta(self._job("CPU 12%, mem 6% of 16 GB"))
+        assert "EFFICIENCY" in meta
+        assert "CPU 12%, mem 6% of 16 GB" in meta
+
+    def test_absent_while_there_is_nothing_to_show(self):
+        from clusterpilot.tui.jobs import _format_meta
+        assert "EFFICIENCY" not in _format_meta(self._job(""))

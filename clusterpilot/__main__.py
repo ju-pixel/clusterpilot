@@ -6,6 +6,9 @@ Usage
     clusterpilot init               # create starter ~/.config/clusterpilot/config.toml
     clusterpilot daemon run         # run poll daemon in foreground (no TUI)
     clusterpilot daemon install     # install systemd user service
+
+Set CLUSTERPILOT_HOME to run a second, fully separate profile: config, job
+database, probe cache and the systemd unit all move with it.
 """
 from __future__ import annotations
 
@@ -25,7 +28,13 @@ def main() -> None:
     daemon_p = sub.add_parser("daemon", help="Daemon management")
     daemon_sub = daemon_p.add_subparsers(dest="daemon_cmd")
     daemon_sub.add_parser("run", help="Run poll daemon in foreground")
-    daemon_sub.add_parser("install", help="Install systemd user service unit")
+    install_p = daemon_sub.add_parser("install", help="Install systemd user service unit")
+    install_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing unit that runs a different command "
+             "(the current one is kept as <unit>.bak)",
+    )
 
     args = parser.parse_args()
 
@@ -35,7 +44,7 @@ def main() -> None:
         if args.daemon_cmd == "run":
             _cmd_daemon_run()
         elif args.daemon_cmd == "install":
-            _cmd_daemon_install()
+            _cmd_daemon_install(force=args.force)
         else:
             daemon_p.print_help()
     else:
@@ -81,14 +90,25 @@ def _cmd_daemon_run() -> None:
         print("\nDaemon stopped.")
 
 
-def _cmd_daemon_install() -> None:
-    from clusterpilot.jobs.daemon import write_service_file
-    path = write_service_file()
-    print(f"Service file written to: {path}")
+def _cmd_daemon_install(*, force: bool = False) -> None:
+    from clusterpilot.jobs.daemon import (
+        _SERVICE_NAME,
+        ServiceExistsError,
+        write_service_file,
+    )
+
+    try:
+        path = write_service_file(force=force)
+    except ServiceExistsError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Unit: {_SERVICE_NAME}")
+    print(f"Written to: {path}")
     print()
     print("Enable and start with:")
     print("  systemctl --user daemon-reload")
-    print("  systemctl --user enable --now clusterpilot-poll.service")
+    print(f"  systemctl --user enable --now {_SERVICE_NAME}")
 
 
 def _cmd_tui() -> None:
