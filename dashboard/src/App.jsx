@@ -45,7 +45,17 @@ export default function ClusterPilotDashboard() {
     return () => clearInterval(id);
   }, []);
 
-  if (!isLoaded) return null;
+  // Not null: rendering nothing leaves the browser painting its own white,
+  // which on a dark app looks like a crash rather than a wait.
+  if (!isLoaded) {
+    return (
+      <div style={{
+        minHeight: "100vh", background: T.bg, color: T.dim,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: T.sans, fontSize: 15,
+      }}>Loading...</div>
+    );
+  }
   if (!isSignedIn) return <RedirectToSignIn />;
 
   // Show subscribe gate for free users once userInfo has loaded
