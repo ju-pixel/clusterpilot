@@ -88,7 +88,7 @@ export default function AccountPage({ email, userInfo }) {
         <div style={{
           background: T.amberLo, border: `1px solid ${T.amber}55`,
           borderRadius: 6, padding: "10px 14px", marginBottom: 24,
-          fontFamily: T.sans, fontSize: 15, color: T.amber,
+          fontFamily: T.sans, fontSize: 15, color: T.amberText,
           display: "flex", alignItems: "center", gap: 8,
         }}>
           <span style={{ fontFamily: T.mono }}>◈</span>
@@ -105,7 +105,7 @@ export default function AccountPage({ email, userInfo }) {
           <div style={{
             background: T.amberLo, border: `1px solid ${T.amber}44`,
             borderRadius: 5, padding: "8px 12px", marginBottom: 10,
-            fontFamily: T.sans, fontSize: 14, color: T.amber,
+            fontFamily: T.sans, fontSize: 14, color: T.amberText,
           }}>
             Copy this key now — it will not be shown again.
           </div>
@@ -153,7 +153,7 @@ export default function AccountPage({ email, userInfo }) {
             <div style={{ fontFamily: T.sans, fontSize: 17, fontWeight: 600, color: T.text }}>
               Researcher{" "}
               {subscription && (
-                <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amber }}>{describePlan(subscription)}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 15, color: T.amberText }}>{describePlan(subscription)}</span>
               )}
             </div>
             <div style={{ fontFamily: T.sans, fontSize: 15, color: T.dim, marginTop: 3 }}>

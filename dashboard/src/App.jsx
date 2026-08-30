@@ -110,7 +110,7 @@ export default function ClusterPilotDashboard() {
         padding: "0 20px",
         flexShrink: 0,
       }}>
-        <Glow color={T.amber} style={{ fontFamily: T.mono, fontSize: 17, fontWeight: 700, letterSpacing: "0.18em" }}>
+        <Glow color={T.amberText} style={{ fontFamily: T.mono, fontSize: 17, fontWeight: 700, letterSpacing: "0.18em" }}>
           ◈ CLUSTERPILOT
         </Glow>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -158,7 +158,7 @@ export default function ClusterPilotDashboard() {
                 background: active ? `${T.amber}0f` : "transparent",
                 borderLeft: `2px solid ${active ? T.amber : "transparent"}`,
                 border: "none", cursor: "pointer", width: "100%", textAlign: "left",
-                color: active ? T.amber : T.dim,
+                color: active ? T.amberText : T.dim,
                 fontFamily: T.sans, fontSize: 16, fontWeight: active ? 600 : 400,
               }}>
                 <span style={{
@@ -189,7 +189,7 @@ export default function ClusterPilotDashboard() {
                     {c.running > 0
                       ? <><Glow color={T.green} style={{ fontSize: 13 }}>{c.running}</Glow> running</>
                       : c.pending > 0
-                      ? <><Glow color={T.amber} style={{ fontSize: 13 }}>{c.pending}</Glow> pending</>
+                      ? <><Glow color={T.amberText} style={{ fontSize: 13 }}>{c.pending}</Glow> pending</>
                       : "idle"}
                   </div>
                 </div>
@@ -217,7 +217,7 @@ export default function ClusterPilotDashboard() {
               </div>
               <div style={{ width: 1, background: T.border }} />
               <div style={{ textAlign: "center" }}>
-                <Glow color={T.amber} style={{ fontFamily: T.mono, fontSize: 20, fontWeight: 700, display: "block" }}>
+                <Glow color={T.amberText} style={{ fontFamily: T.mono, fontSize: 20, fontWeight: 700, display: "block" }}>
                   {pending}
                 </Glow>
                 <div style={{ fontFamily: T.sans, fontSize: 13, color: T.dim, marginTop: 1 }}>pending</div>

@@ -1,6 +1,6 @@
 import { T, STATUS } from "../theme.js";
 
-export function Glow({ color = T.amber, children, style = {} }) {
+export function Glow({ color = T.amberText, children, style = {} }) {
   return (
     <span style={{ color, textShadow: `0 0 8px ${color}88`, ...style }}>
       {children}
@@ -61,7 +61,7 @@ export function SlurmScript({ src }) {
     }}>
       {src.split("\n").map((line, i) => {
         let color = T.text;
-        if (line.startsWith("#SBATCH")) color = T.amber;
+        if (line.startsWith("#SBATCH")) color = T.amberText;
         else if (line.startsWith("#!")) color = T.muted;
         else if (line.startsWith("#")) color = T.dim;
         else if (/^(module|cd|julia|python|export)\b/.test(line.trim())) color = T.green;

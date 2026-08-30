@@ -53,7 +53,7 @@ function Resources({ job }) {
       </div>
       <div style={{
         marginTop: 20, paddingTop: 14, borderTop: `1px solid ${T.border}`,
-        fontFamily: T.sans, fontSize: 14, color: measured ? T.amber : T.dim,
+        fontFamily: T.sans, fontSize: 14, color: measured ? T.amberText : T.dim,
         lineHeight: 1.6, maxWidth: "68ch",
       }}>
         {measured
@@ -85,7 +85,7 @@ export default function JobDetailPage({ job, loading, navigate }) {
         </p>
         <button onClick={() => navigate("/jobs")} style={{
           background: "transparent", border: `1px solid ${T.amber}`, borderRadius: 5,
-          padding: "8px 14px", fontFamily: T.sans, fontSize: 15, color: T.amber, cursor: "pointer",
+          padding: "8px 14px", fontFamily: T.sans, fontSize: 15, color: T.amberText, cursor: "pointer",
         }}>Back to all jobs</button>
       </div>
     );
@@ -140,7 +140,7 @@ export default function JobDetailPage({ job, loading, navigate }) {
             <button key={t} onClick={() => setTab(t)} style={{
               padding: "9px 16px", background: "transparent", border: "none", cursor: "pointer",
               fontFamily: T.sans, fontSize: 15, fontWeight: 500,
-              color: tab === t ? T.amber : T.dim,
+              color: tab === t ? T.amberText : T.dim,
               borderBottom: `2px solid ${tab === t ? T.amber : "transparent"}`,
               textTransform: "capitalize",
             }}>{t}</button>
@@ -158,7 +158,7 @@ export default function JobDetailPage({ job, loading, navigate }) {
                   fontFamily: T.mono, fontSize: 14.5, lineHeight: 1.75,
                   color: /error|fatal|traceback/i.test(line) ? T.red
                        : /done|completed|success/i.test(line) ? T.green
-                       : /running|starting/i.test(line) ? T.amber
+                       : /running|starting/i.test(line) ? T.amberText
                        : T.muted,
                   whiteSpace: "pre-wrap", wordBreak: "break-word",
                 }}>{line}</div>

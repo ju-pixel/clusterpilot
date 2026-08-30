@@ -32,7 +32,7 @@ function IntervalToggle({ value, onChange, field }) {
             <div style={{ fontFamily: T.sans, fontSize: 15, fontWeight: 600, color: on ? T.text : T.muted }}>
               {plan.label}
             </div>
-            <div style={{ fontFamily: T.mono, fontSize: 13, color: on ? T.amber : T.dim, marginTop: 2 }}>
+            <div style={{ fontFamily: T.mono, fontSize: 13, color: on ? T.amberText : T.dim, marginTop: 2 }}>
               {plan[field]}{plan.note ? `, ${plan.note}` : ""}
             </div>
           </button>
@@ -100,7 +100,7 @@ export default function SubscribeGate({ email, getToken }) {
       flexDirection: "column", alignItems: "center", justifyContent: "center",
       fontFamily: T.sans, padding: "0 24px",
     }}>
-      <Glow color={T.amber} style={{ fontFamily: T.mono, fontSize: 17, fontWeight: 700, letterSpacing: "0.18em", marginBottom: 40 }}>
+      <Glow color={T.amberText} style={{ fontFamily: T.mono, fontSize: 17, fontWeight: 700, letterSpacing: "0.18em", marginBottom: 40 }}>
         ◈ CLUSTERPILOT
       </Glow>
 
@@ -140,7 +140,7 @@ export default function SubscribeGate({ email, getToken }) {
             style={{
               width: "100%", padding: "12px 0",
               background: T.amber, border: "none", borderRadius: 6,
-              fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.bg,
+              fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.ink,
               cursor: (redeemLoading || !redeemCode.trim()) ? "not-allowed" : "pointer",
               opacity: (redeemLoading || !redeemCode.trim()) ? 0.7 : 1,
             }}
@@ -187,7 +187,7 @@ export default function SubscribeGate({ email, getToken }) {
                 "Priority support",
               ].map(f => (
                 <div key={f} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <span style={{ color: T.amber, fontFamily: T.mono, fontSize: 14 }}>✓</span>
+                  <span style={{ color: T.amberText, fontFamily: T.mono, fontSize: 14 }}>✓</span>
                   <span style={{ fontFamily: T.sans, fontSize: 15, color: T.muted }}>{f}</span>
                 </div>
               ))}
@@ -198,7 +198,7 @@ export default function SubscribeGate({ email, getToken }) {
               style={{
                 width: "100%", padding: "12px 0",
                 background: T.amber, border: "none", borderRadius: 6,
-                fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.bg,
+                fontFamily: T.sans, fontSize: 16, fontWeight: 600, color: T.ink,
                 cursor: loading ? "not-allowed" : "pointer",
                 opacity: loading ? 0.7 : 1,
               }}
@@ -249,7 +249,7 @@ export default function SubscribeGate({ email, getToken }) {
                 width: "100%", padding: "11px 0",
                 background: "transparent", border: `1.5px solid ${T.amber}`,
                 borderRadius: 6, fontFamily: T.sans, fontSize: 16, fontWeight: 600,
-                color: T.amber, cursor: piLoading ? "not-allowed" : "pointer",
+                color: T.amberText, cursor: piLoading ? "not-allowed" : "pointer",
                 opacity: piLoading ? 0.7 : 1,
               }}
             >
@@ -259,7 +259,7 @@ export default function SubscribeGate({ email, getToken }) {
               Have a code from your PI?{" "}
               <span
                 onClick={() => setRedeemMode(true)}
-                style={{ color: T.amber, cursor: "pointer", textDecoration: "underline" }}
+                style={{ color: T.amberText, cursor: "pointer", textDecoration: "underline" }}
               >
                 Redeem it here
               </span>
@@ -272,7 +272,7 @@ export default function SubscribeGate({ email, getToken }) {
         Signed in as {email}.{" "}
         <span
           onClick={() => signOut({ redirectUrl: "https://clusterpilot.sh" })}
-          style={{ color: T.amber, cursor: "pointer", textDecoration: "underline" }}
+          style={{ color: T.amberText, cursor: "pointer", textDecoration: "underline" }}
         >
           Sign out or use a different account
         </span>

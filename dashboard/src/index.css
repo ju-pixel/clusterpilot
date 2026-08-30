@@ -9,8 +9,8 @@ body {
   /* The dark ground is painted before React mounts and before Clerk has
      loaded. Without it the browser shows white for the second or two that
      takes, which on a dark app reads as a broken page. */
-  background: #0a0a0a;
-  color: #fafafa;
+  background: #14110B;
+  color: #F2EBDD;
 }
 
 #root {

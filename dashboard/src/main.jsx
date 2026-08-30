@@ -13,19 +13,19 @@ if (!publishableKey) {
 // Match ClusterPilot dark theme
 const clerkAppearance = {
   variables: {
-    colorBackground:       '#0d0d0d',
-    colorInputBackground:  '#111111',
-    colorInputText:        '#fafafa',
-    colorPrimary:          '#FFB866',
-    colorText:             '#fafafa',
-    colorTextSecondary:    '#8899b2',
-    colorNeutral:          '#fafafa',
+    colorBackground:       '#1D1913',
+    colorInputBackground:  '#26211A',
+    colorInputText:        '#F2EBDD',
+    colorPrimary:          '#e8a020',
+    colorText:             '#F2EBDD',
+    colorTextSecondary:    '#C9BEA9',
+    colorNeutral:          '#F2EBDD',
     borderRadius:          '6px',
     fontFamily:            "'DM Sans', system-ui, sans-serif",
   },
   elements: {
-    card:            { boxShadow: 'none', border: '1px solid #222222' },
-    formButtonPrimary: { backgroundColor: '#FFB866', color: '#0a0a0a' },
+    card:            { boxShadow: 'none', border: '1px solid #4A4235' },
+    formButtonPrimary: { backgroundColor: '#e8a020', color: '#14110B' },
   },
 }
 
