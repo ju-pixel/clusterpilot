@@ -20,7 +20,13 @@ export function makeApiClient(getToken) {
   }
 
   return {
-    getJobs:           ()      => req('GET',  '/jobs'),
+    // Cursor paging on submitted_at. `before` is the submitted_at of the
+    // oldest job already held; an offset would shift every time the daemon
+    // syncs a new job.
+    getJobs: (before, limit = 100) => req(
+      'GET',
+      `/jobs?limit=${limit}` + (before ? `&before=${encodeURIComponent(before)}` : ''),
+    ),
     getMe:             ()      => req('GET',  '/users/me'),
     getKeys:           ()      => req('GET',  '/keys'),
     issueKey:          ()      => req('POST', '/keys'),

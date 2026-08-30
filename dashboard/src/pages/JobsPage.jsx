@@ -61,7 +61,9 @@ function Filters({ query, setQuery, cluster, setCluster, status, setStatus,
   );
 }
 
-export default function JobsPage({ jobs, loading, navigate }) {
+export default function JobsPage({
+  jobs, loading, navigate, onLoadOlder, loadingOlder, exhausted,
+}) {
   const [query, setQuery] = useState("");
   const [cluster, setCluster] = useState(ALL);
   const [status, setStatus] = useState(ALL);
@@ -194,6 +196,30 @@ export default function JobsPage({ jobs, loading, navigate }) {
             </div>
           );
         })}
+
+        {/* A button, not infinite scroll: scroll hijacking fights the back
+            button, and now that each job has a URL it would make a job's
+            position unreproducible. */}
+        <div style={{ padding: "16px 20px", textAlign: "center" }}>
+          {exhausted ? (
+            <span style={{ fontFamily: T.sans, fontSize: 14, color: T.dim }}>
+              That is every job ClusterPilot has synced.
+            </span>
+          ) : (
+            <button
+              onClick={onLoadOlder}
+              disabled={loadingOlder}
+              style={{
+                background: "transparent", border: `1px solid ${T.border2}`,
+                borderRadius: 5, padding: "9px 18px", fontFamily: T.sans,
+                fontSize: 15, color: loadingOlder ? T.dim : T.amberText,
+                cursor: loadingOlder ? "default" : "pointer",
+              }}
+            >
+              {loadingOlder ? "Loading..." : "Load older jobs"}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

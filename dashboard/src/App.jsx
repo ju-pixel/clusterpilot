@@ -33,6 +33,7 @@ export default function ClusterPilotDashboard() {
   const {
     jobs, loading: jobsLoading, error: jobsError,
     fetchedAt, refreshing, refresh,
+    loadOlder, loadingOlder, exhausted,
   } = useJobs(isSignedIn, getToken);
 
   useEffect(() => {
@@ -255,7 +256,11 @@ export default function ClusterPilotDashboard() {
           {/* page content */}
           <div style={{ flex: 1, overflow: "auto", display: "flex" }}>
             {route.page === "jobs" && (
-              <JobsPage jobs={jobs} loading={jobsLoading} navigate={navigate} />
+              <JobsPage
+                jobs={jobs} loading={jobsLoading} navigate={navigate}
+                onLoadOlder={loadOlder} loadingOlder={loadingOlder}
+                exhausted={exhausted}
+              />
             )}
             {route.page === "job" && (
               <JobDetailPage

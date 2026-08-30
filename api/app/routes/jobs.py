@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,14 +14,27 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 @router.get("", response_model=list[JobOut])
 async def list_jobs(
+    limit: int = Query(100, ge=1, le=200),
+    before: Optional[datetime] = Query(
+        None,
+        description="Return jobs submitted strictly before this time. Use the "
+                    "submitted_at of the oldest job you already have.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[Job]:
+    """One page of the user's jobs, newest first.
+
+    Paged on ``submitted_at`` rather than an offset. An offset shifts under
+    the reader every time the daemon syncs a new job, so page two silently
+    repeats or skips rows; a cursor does not. Jobs with no submitted_at are
+    excluded from paging rather than sorted arbitrarily.
+    """
+    query = select(Job).where(Job.user_id == current_user.id)
+    if before is not None:
+        query = query.where(Job.submitted_at < before)
     result = await db.execute(
-        select(Job)
-        .where(Job.user_id == current_user.id)
-        .order_by(Job.submitted_at.desc())
-        .limit(200)
+        query.order_by(Job.submitted_at.desc()).limit(limit)
     )
     return list(result.scalars().all())
 

@@ -14,6 +14,11 @@ export function useJobs(isSignedIn, getToken) {
   const [error, setError] = useState(null);
   const [fetchedAt, setFetchedAt] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Older pages are appended and then left alone: refreshing re-fetches only
+  // the newest page, because that is where anything changes.
+  const [older, setOlder] = useState([]);
+  const [exhausted, setExhausted] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   // Kept in a ref so the polling effect does not restart on every fetch.
   const inFlight = useRef(false);
@@ -64,5 +69,37 @@ export function useJobs(isSignedIn, getToken) {
     return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
   }, [isSignedIn, refresh]);
 
-  return { jobs, loading, error, fetchedAt, refreshing, refresh };
+  // One page older than whatever is on screen. A button, not infinite scroll:
+  // scroll hijacking fights the back button, and now that a job has its own
+  // URL it would make a job's position unreproducible.
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder || exhausted) return;
+    const all = [...jobs, ...older];
+    const oldest = all[all.length - 1]?.submitted_at;
+    if (!oldest) { setExhausted(true); return; }
+    setLoadingOlder(true);
+    try {
+      const page = await makeApiClient(getToken).getJobs(oldest);
+      if (page.length === 0) setExhausted(true);
+      else setOlder(prev => [...prev, ...page]);
+    } catch (err) {
+      setError(err.message || "Could not load older jobs");
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [jobs, older, loadingOlder, exhausted, getToken]);
+
+  // The newest page can overtake what was paged in earlier, so anything the
+  // refresh already returned is dropped from the older pages rather than
+  // rendered twice.
+  const newestKeys = new Set(jobs.map(j => `${j.cluster_name}/${j.slurm_job_id}`));
+  const combined = [
+    ...jobs,
+    ...older.filter(j => !newestKeys.has(`${j.cluster_name}/${j.slurm_job_id}`)),
+  ];
+
+  return {
+    jobs: combined, loading, error, fetchedAt, refreshing, refresh,
+    loadOlder, loadingOlder, exhausted,
+  };
 }

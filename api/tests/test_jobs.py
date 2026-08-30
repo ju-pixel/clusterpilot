@@ -7,7 +7,7 @@ and a client that predates the fields is still accepted.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -98,8 +98,62 @@ class TestAccountingFields:
         await upsert_job(_payload(
             core_seconds=14400.0, alloc_gpus=1, status_detail="5R/27PD",
         ), current_user=user, db=db)
-        jobs = await list_jobs(current_user=user, db=db)
+        jobs = await list_jobs(limit=100, before=None, current_user=user, db=db)
         assert len(jobs) == 1
         assert jobs[0].core_seconds == 14400.0
         assert jobs[0].alloc_gpus == 1
         assert jobs[0].status_detail == "5R/27PD"
+
+
+class TestPaging:
+    """Cursor paging on submitted_at, not an offset (clusterpilot#50).
+
+    An offset shifts every time the daemon syncs a new job, so page two
+    silently repeats or skips rows. These pin that it does not.
+    """
+
+    async def _seed(self, db, user, count):
+        for n in range(count):
+            await upsert_job(_payload(
+                slurm_job_id=str(1000 + n),
+                submitted_at=datetime(2026, 8, 1, tzinfo=timezone.utc) + timedelta(hours=n),
+            ), current_user=user, db=db)
+
+    async def test_newest_first_and_limited(self, db):
+        user = await _user(db)
+        await self._seed(db, user, 5)
+        page = await list_jobs(limit=2, before=None, current_user=user, db=db)
+        assert [j.slurm_job_id for j in page] == ["1004", "1003"]
+
+    async def test_the_cursor_continues_without_repeating(self, db):
+        user = await _user(db)
+        await self._seed(db, user, 5)
+        first = await list_jobs(limit=2, before=None, current_user=user, db=db)
+        second = await list_jobs(
+            limit=2, before=first[-1].submitted_at, current_user=user, db=db,
+        )
+        assert [j.slurm_job_id for j in second] == ["1002", "1001"]
+        assert not {j.slurm_job_id for j in first} & {j.slurm_job_id for j in second}
+
+    async def test_a_job_arriving_mid_page_does_not_shift_the_next_one(self, db):
+        # The whole reason for a cursor: with an offset, inserting a newer job
+        # between two reads pushes an unread row onto a page already returned.
+        user = await _user(db)
+        await self._seed(db, user, 5)
+        first = await list_jobs(limit=2, before=None, current_user=user, db=db)
+        await upsert_job(_payload(
+            slurm_job_id="9999",
+            submitted_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        ), current_user=user, db=db)
+        second = await list_jobs(
+            limit=2, before=first[-1].submitted_at, current_user=user, db=db,
+        )
+        assert [j.slurm_job_id for j in second] == ["1002", "1001"]
+
+    async def test_the_end_of_the_list_is_empty(self, db):
+        user = await _user(db)
+        await self._seed(db, user, 2)
+        oldest = (await list_jobs(limit=10, before=None, current_user=user, db=db))[-1]
+        assert await list_jobs(
+            limit=10, before=oldest.submitted_at, current_user=user, db=db,
+        ) == []
