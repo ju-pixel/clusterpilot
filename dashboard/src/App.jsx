@@ -5,8 +5,10 @@ import { useState, useEffect } from "react";
 import { RedirectToSignIn, useUser, useAuth, useClerk } from "@clerk/react";
 
 import { makeApiClient } from "./api.js";
-import { T, CLUSTER_META } from "./theme.js";
+import { useJobs } from "./useJobs.js";
+import { T, CLUSTER_META, btnStyle } from "./theme.js";
 import { NAV } from "./nav.js";
+import { formatAge } from "./format.js";
 import JobsPage from "./pages/JobsPage.jsx";
 import NotificationsPage from "./pages/NotificationsPage.jsx";
 import AccountPage from "./pages/AccountPage.jsx";
@@ -14,23 +16,29 @@ import SubscribeGate from "./pages/SubscribeGate.jsx";
 
 export default function ClusterPilotDashboard() {
   const [activeNav, setActiveNav] = useState("jobs");
-  const [jobs, setJobs] = useState([]);
-  const [jobsLoading, setJobsLoading] = useState(true);
   const [userInfo, setUserInfo] = useState(null);
+  // Re-rendered on a timer purely so the "updated Ns ago" stamp counts up.
+  const [, setTick] = useState(0);
 
   const { isSignedIn, isLoaded, getToken } = useAuth();
   const { user } = useUser();
   const { signOut } = useClerk();
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
 
+  const {
+    jobs, loading: jobsLoading, error: jobsError,
+    fetchedAt, refreshing, refresh,
+  } = useJobs(isSignedIn, getToken);
+
   useEffect(() => {
     if (!isSignedIn) return;
-    const api = makeApiClient(getToken);
-    api.getJobs()
-      .then(data => { setJobs(data); setJobsLoading(false); })
-      .catch(() => setJobsLoading(false));
-    api.getMe().then(setUserInfo).catch(() => {});
+    makeApiClient(getToken).getMe().then(setUserInfo).catch(() => {});
   }, [isSignedIn, getToken]);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(n => n + 1), 5000);
+    return () => clearInterval(id);
+  }, []);
 
   if (!isLoaded) return null;
   if (!isSignedIn) return <RedirectToSignIn />;
@@ -212,10 +220,19 @@ export default function ClusterPilotDashboard() {
             borderBottom: `1px solid ${T.border}`,
             background: T.panel,
             flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
           }}>
             <h1 style={{ margin: 0, fontFamily: T.sans, fontSize: 20, fontWeight: 600, color: T.text }}>
               {NAV.find(n => n.id === activeNav)?.label}
             </h1>
+            {activeNav === "jobs" && (
+              <Freshness
+                fetchedAt={fetchedAt}
+                refreshing={refreshing}
+                error={jobsError}
+                onRefresh={refresh}
+              />
+            )}
           </div>
 
           {/* page content */}
@@ -226,6 +243,33 @@ export default function ClusterPilotDashboard() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// Says how old the list on screen is, because a job monitor that silently
+// stops updating is worse than one that admits it. The stamp stops advancing
+// when a refresh fails, which is the signal that something is wrong.
+function Freshness({ fetchedAt, refreshing, error, onRefresh }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <span style={{
+        fontFamily: T.sans, fontSize: 13,
+        color: error ? T.red : T.dim,
+      }}>
+        {error
+          ? `not updating: ${error}`
+          : refreshing ? "updating..." : `updated ${formatAge(fetchedAt)}`}
+      </span>
+      <button
+        onClick={onRefresh}
+        disabled={refreshing}
+        style={{ ...btnStyle, padding: "5px 11px", fontSize: 14,
+                 cursor: refreshing ? "default" : "pointer" }}
+      >
+        Refresh
+      </button>
     </div>
   );
 }
