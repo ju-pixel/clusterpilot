@@ -3,6 +3,30 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## v0.7.1 (2026-08-29)
+
+### Fixed
+
+- **Job accounting now works on Alliance clusters, where 0.7.0 silently did
+  nothing.** Reading it needs `sacct`, and `sacct` needs the accounting
+  database, which Narval, Fir, Nibi, Rorqual and Trillium login nodes cannot
+  reach. ClusterPilot now measures instead: it reads what the scheduler
+  allocated from `squeue`, which does answer there, and adds up the running
+  task count against it on every poll. For a job array that is more accurate
+  than a single start-to-finish figure, which would charge one task's
+  allocation for the whole span however many were running.
+- Every figure now records where it came from, either your scheduler's
+  accounting or ClusterPilot's own measurement, so a measurement is never
+  presented as an accounting record.
+- **GPU jobs are no longer valued as if they were CPU jobs.** ClusterPilot
+  now tracks the scheduler's billing weight, which is what your allocation is
+  actually charged. On Narval a job with four CPUs and four A100s bills at
+  16000 while a plain eight-CPU job bills at 8, so counting cores alone
+  understated a GPU job by three orders of magnitude.
+- `clusterpilot backfill` no longer claims your jobs are past the cluster's
+  accounting retention when it simply could not reach the accounting
+  database. It now says which happened, and prints what the cluster said.
+
 ## v0.7.0 (2026-08-29)
 
 ### Added
