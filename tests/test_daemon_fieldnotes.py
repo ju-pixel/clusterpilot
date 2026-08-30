@@ -45,6 +45,7 @@ async def _run_completion(download_side_effect=None):
     with patch("clusterpilot.jobs.daemon.download",
                new=AsyncMock(side_effect=download_side_effect)), \
          patch("clusterpilot.jobs.daemon.update_status", new=AsyncMock()), \
+         patch("clusterpilot.jobs.daemon.record_download_attempt", new=AsyncMock()), \
          patch("clusterpilot.jobs.daemon.notify_completed", new=AsyncMock()), \
          patch("clusterpilot.jobs.daemon.tail_log", new=AsyncMock(return_value="")), \
          patch.object(daemon, "_sync", new=AsyncMock()), \

@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- usage report must never present 'measured' as an accounting record.
     accounting_source TEXT  NOT NULL DEFAULT '',
     measured_at     REAL,              -- poll time the running total reaches
+    -- How many times a results download has been tried. Non-zero means one
+    -- was attempted, which is what separates "the rsync failed" from "this
+    -- job never wanted results" (issue #48).
+    sync_attempts   INTEGER NOT NULL DEFAULT 0,
     UNIQUE(job_id, cluster_name)
 )
 """
@@ -126,6 +130,7 @@ class JobRecord:
     billing_seconds: float | None = None
     accounting_source: str = ""   # 'sacct', 'measured', or "" for neither
     measured_at: float | None = None
+    sync_attempts: int = 0        # results downloads tried; 0 means none was
     row_id: int | None = None
 
     def __post_init__(self) -> None:
@@ -175,6 +180,7 @@ async def init_db(db: "aiosqlite.Connection") -> None:
         ("billing_seconds", "REAL"),
         ("accounting_source", "TEXT NOT NULL DEFAULT ''"),
         ("measured_at",     "REAL"),
+        ("sync_attempts",   "INTEGER NOT NULL DEFAULT 0"),
     ):
         try:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
@@ -370,6 +376,54 @@ async def accumulate_reserved(
     await db.commit()
 
 
+async def record_download_attempt(
+    db: "aiosqlite.Connection",
+    job_id: str,
+    cluster_name: str,
+    *,
+    synced: bool,
+) -> None:
+    """Count a results download, whether or not it worked.
+
+    The count is what makes a retry possible at all: ``synced = 0`` on its own
+    is also true of a job that failed before producing anything and never
+    wanted a download, so retrying on that alone would rsync jobs that have
+    nothing to fetch. A non-zero attempt count means a download was genuinely
+    tried and did not land (issue #48).
+    """
+    await db.execute(
+        "UPDATE jobs SET synced = ?, sync_attempts = sync_attempts + 1 "
+        "WHERE job_id = ? AND cluster_name = ?",
+        (1 if synced else 0, job_id, cluster_name),
+    )
+    await db.commit()
+
+
+async def get_retryable_downloads(
+    db: "aiosqlite.Connection",
+    *,
+    max_attempts: int = 5,
+) -> list[JobRecord]:
+    """Finished jobs whose results download failed and is worth trying again.
+
+    Bounded on purpose: a job whose remote directory is gone, or whose local
+    path no longer exists, will never succeed, and retrying it every poll
+    forever would be a permanent error in the log rather than a warning worth
+    reading. After ``max_attempts`` it stops and the jobs screen keeps saying
+    the results are not synced, where `r` still works.
+    """
+    from clusterpilot.cluster.slurm import TERMINAL_STATES
+    placeholders = ",".join("?" * len(TERMINAL_STATES))
+    async with db.execute(
+        f"SELECT * FROM jobs WHERE synced = 0 AND sync_attempts BETWEEN 1 AND ? "
+        f"AND remote_cleaned = 0 AND status IN ({placeholders}) "
+        f"ORDER BY finished_at DESC",
+        [max_attempts - 1, *TERMINAL_STATES],
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_record(r) for r in rows]
+
+
 async def mark_remote_cleaned(
     db: "aiosqlite.Connection",
     job_id: str,
@@ -508,7 +562,7 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         efficiency = values[24] if len(values) > 24 else ""
     # Accounting columns, added later still again. Absent on a row written
     # before this release, which reads as None rather than zero.
-    acct = values[25:36] + (None,) * max(0, 36 - len(values))
+    acct = values[25:37] + (None,) * max(0, 37 - len(values))
     return JobRecord(
         row_id=row_id,
         job_id=job_id,
@@ -546,4 +600,5 @@ def _row_to_record(row: tuple) -> JobRecord:  # type: ignore[type-arg]
         billing_seconds=acct[8],
         accounting_source=acct[9] or "",
         measured_at=acct[10],
+        sync_attempts=acct[11] or 0,
     )

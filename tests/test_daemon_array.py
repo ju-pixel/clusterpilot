@@ -83,6 +83,7 @@ async def _poll(
          patch("clusterpilot.jobs.daemon.query_status",
                new=AsyncMock(return_value=status)), \
          patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
+         patch("clusterpilot.jobs.daemon.record_download_attempt", new=AsyncMock()), \
          patch("clusterpilot.jobs.daemon.download", new=mocks["download"]), \
          patch("clusterpilot.jobs.daemon.notify_started", new=mocks["notify_started"]), \
          patch("clusterpilot.jobs.daemon.notify_completed", new=mocks["notify_completed"]), \
@@ -285,6 +286,7 @@ class TestEfficiencyAtTerminalTransition:
         with patch("clusterpilot.jobs.daemon.query_status",
                    new=AsyncMock(return_value=status)), \
              patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
+             patch("clusterpilot.jobs.daemon.record_download_attempt", new=AsyncMock()), \
              patch("clusterpilot.jobs.daemon.download", new=mocks["download"]), \
              patch("clusterpilot.jobs.daemon.notify_completed", new=mocks["notify_completed"]), \
              patch("clusterpilot.jobs.daemon.notify_failed", new=mocks["notify_failed"]), \
@@ -366,6 +368,7 @@ class TestAccountingAtTerminalTransition:
         with patch("clusterpilot.jobs.daemon.query_status",
                    new=AsyncMock(return_value=status)), \
              patch("clusterpilot.jobs.daemon.update_status", new=mocks["update_status"]), \
+             patch("clusterpilot.jobs.daemon.record_download_attempt", new=AsyncMock()), \
              patch("clusterpilot.jobs.daemon.update_accounting", new=mocks["update_accounting"]), \
              patch("clusterpilot.jobs.daemon.job_allocation", new=mocks["job_allocation"]), \
              patch("clusterpilot.jobs.daemon.update_allocation", new=mocks["update_allocation"]), \
@@ -419,6 +422,7 @@ class TestAccountingAtTerminalTransition:
         with patch("clusterpilot.jobs.daemon.query_status",
                    new=AsyncMock(return_value=status)), \
              patch("clusterpilot.jobs.daemon.update_status", new=AsyncMock()), \
+             patch("clusterpilot.jobs.daemon.record_download_attempt", new=AsyncMock()), \
              patch("clusterpilot.jobs.daemon.update_accounting", new=AsyncMock()), \
              patch("clusterpilot.jobs.daemon.job_allocation",
                    new=AsyncMock(return_value=JobAllocation())), \

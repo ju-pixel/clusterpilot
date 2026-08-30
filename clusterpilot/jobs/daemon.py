@@ -43,7 +43,9 @@ from clusterpilot.db import (
     get_active_jobs,
     get_all_jobs,
     accumulate_reserved,
+    get_retryable_downloads,
     init_db,
+    record_download_attempt,
     update_accounting,
     update_allocation,
     update_status,
@@ -146,6 +148,47 @@ class PollDaemon:
             async with aiosqlite.connect(self.db_path) as db:
                 await init_db(db)
                 await self._poll_cluster(db, profile, cluster_jobs)
+
+        await self._retry_downloads()
+
+    async def _retry_downloads(self) -> None:
+        """Try again for finished jobs whose results never made it back.
+
+        A job is written terminal as soon as it finishes, so it drops out of
+        get_active_jobs immediately and the ordinary poll never looks at it
+        again. Before this, one failed rsync at 03:00 meant the results sat on
+        the cluster with nothing but "SYNCED no" on the jobs screen to say so
+        (issue #48). Never raises: a retry is a bonus, not a poll cycle.
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await init_db(db)
+                pending = await get_retryable_downloads(db)
+                if not pending:
+                    return
+                for job in pending:
+                    profile = self.config.get_cluster(job.cluster_name)
+                    if profile is None or not is_connected(profile.host, profile.user):
+                        continue
+                    log.info(
+                        "Retrying results download for job %s (attempt %d)",
+                        job.job_id, job.sync_attempts + 1,
+                    )
+                    synced = await self._download_results(profile, job)
+                    await record_download_attempt(
+                        db, job.job_id, job.cluster_name, synced=synced,
+                    )
+                    job.synced = synced
+                    if synced:
+                        # Only now is the run complete enough to record.
+                        try:
+                            await asyncio.to_thread(log_completed_job, job, self.config)
+                        except Exception:
+                            log.warning("Fieldnotes logging failed for %s after retry",
+                                        job.job_id, exc_info=True)
+                        await self._sync(job, job.status)
+        except Exception:
+            log.warning("Results download retry pass failed, continuing", exc_info=True)
 
     # ── Per-cluster polling ───────────────────────────────────────────────────
 
@@ -338,10 +381,8 @@ class PollDaemon:
     ) -> None:
         synced = await self._download_results(profile, job)
 
-        await update_status(
-            db, job.job_id, job.cluster_name, status,
-            synced=synced,
-        )
+        await update_status(db, job.job_id, job.cluster_name, status)
+        await record_download_attempt(db, job.job_id, job.cluster_name, synced=synced)
         job.synced = synced
         try:
             if self._should_notify("completed"):
@@ -382,10 +423,8 @@ class PollDaemon:
         array is not a scientific record.
         """
         synced = await self._download_results(profile, job)
-        await update_status(
-            db, job.job_id, job.cluster_name, status,
-            synced=synced,
-        )
+        await update_status(db, job.job_id, job.cluster_name, status)
+        await record_download_attempt(db, job.job_id, job.cluster_name, synced=synced)
         job.synced = synced
         await self._notify_failed(profile, job, status)
 
