@@ -3,7 +3,7 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
-## v0.7.1 (2026-08-29)
+## v0.7.1 (2026-08-30)
 
 ### Fixed
 
