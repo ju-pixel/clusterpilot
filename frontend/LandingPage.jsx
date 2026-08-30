@@ -540,6 +540,15 @@ function Pricing() {
           Hosted tier: now live.
         </h2>
 
+        <p style={{
+          fontFamily: sans, fontSize: F.body, color: T.muted,
+          margin: '20px 0 0', maxWidth: '58ch', lineHeight: 1.55,
+        }}>
+          The TUI is where you act. The dashboard is where you look: one job
+          history across every machine and cluster you use, which is the one
+          thing a terminal on one laptop cannot give you.
+        </p>
+
         <div className="pricing-grid">
           <PricingCard
             badge="Current"
