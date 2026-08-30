@@ -47,7 +47,11 @@ poll_interval = 300           # seconds between job status checks
 
 [[clusters]]
 name = "grex"
-host = "yak.hpc.umanitoba.ca"
+# The round-robin name, not a single login node. Grex publishes several and
+# they go down individually: yak was refusing connections on 2026-08-29 while
+# grex.hpc.umanitoba.ca still resolved to a working one (issue #49). Naming
+# one node has gone wrong here before; tatanka and zebu are decommissioned.
+host = "grex.hpc.umanitoba.ca"
 user = ""          # your Grex username
 account = ""       # your SLURM account, e.g. def-stamps (leave blank if not required)
 scratch = "$HOME/clusterpilot_jobs"

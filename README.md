@@ -132,7 +132,7 @@ poll_interval = 300           # seconds between job status checks
 
 [[clusters]]
 name = "grex"
-host = "yak.hpc.umanitoba.ca"
+host = "grex.hpc.umanitoba.ca"
 user = "your_username"
 account = "def-yoursupervisor"
 scratch = "$HOME/clusterpilot_jobs"
@@ -166,7 +166,7 @@ automatically on startup.
 ```toml
 [[clusters]]
 name = "grex"
-host = "yak.hpc.umanitoba.ca"
+host = "grex.hpc.umanitoba.ca"
 user = "jsmith"
 account = "def-supervisor"
 scratch = "$HOME/clusterpilot_jobs"
