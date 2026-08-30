@@ -3,6 +3,32 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## v0.7.2 (2026-08-30)
+
+### Fixed
+
+- **A results download that fails is now retried.** ClusterPilot marks a job
+  finished the moment it finishes, which meant it stopped being watched
+  straight afterwards, so a single rsync that failed at three in the morning
+  left your results sitting on the cluster with nothing but "SYNCED no" on
+  the jobs screen to say so. The daemon now tries again, up to five times.
+  Jobs that never produced results are not retried, and a cluster that is
+  simply unreachable does not use up the attempts.
+- **Grex now points at `grex.hpc.umanitoba.ca`, not a single login node.**
+  The starter config named `yak`, which is one machine; when it went down
+  ClusterPilot could not connect while a plain `ssh grex.hpc.umanitoba.ca`
+  still worked, because that name resolves to several nodes and falls through
+  to a live one. Existing configs are not changed: edit the `host` line under
+  your Grex cluster to pick this up.
+
+### Hosted tier
+
+- The dashboard keeps up now. The job list refreshes itself and says how old
+  it is, you can search it and filter by cluster and status, and each job has
+  its own page with the full script, log and resource accounting. A failed
+  job shows why it failed in the list, so you usually do not need to open it.
+  Older jobs load a page at a time instead of stopping at the most recent 200.
+
 ## v0.7.1 (2026-08-30)
 
 ### Fixed
