@@ -3,6 +3,7 @@ import { useClerk } from "@clerk/react";
 
 import { makeApiClient } from "../api.js";
 import { T, btnStyle } from "../theme.js";
+import { Glow } from "../components/primitives.jsx";
 
 const PLANS = {
   month: { label: "Monthly", price: "$6 / month", seat: "$5.10 / month", note: null },

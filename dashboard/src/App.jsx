@@ -9,6 +9,7 @@ import { useJobs } from "./useJobs.js";
 import { T, CLUSTER_META, btnStyle } from "./theme.js";
 import { NAV } from "./nav.js";
 import { formatAge } from "./format.js";
+import { Glow, Dot, SectionLabel } from "./components/primitives.jsx";
 import JobsPage from "./pages/JobsPage.jsx";
 import NotificationsPage from "./pages/NotificationsPage.jsx";
 import AccountPage from "./pages/AccountPage.jsx";
