@@ -10,13 +10,17 @@ import { T, CLUSTER_META, btnStyle } from "./theme.js";
 import { NAV } from "./nav.js";
 import { formatAge } from "./format.js";
 import { Glow, Dot, SectionLabel } from "./components/primitives.jsx";
+import { useRoute } from "./router.js";
 import JobsPage from "./pages/JobsPage.jsx";
+import JobDetailPage from "./pages/JobDetailPage.jsx";
 import NotificationsPage from "./pages/NotificationsPage.jsx";
 import AccountPage from "./pages/AccountPage.jsx";
 import SubscribeGate from "./pages/SubscribeGate.jsx";
 
 export default function ClusterPilotDashboard() {
-  const [activeNav, setActiveNav] = useState("jobs");
+  const [route, navigate] = useRoute();
+  // The detail page is still "Jobs" as far as the sidebar is concerned.
+  const activeNav = route.page === "job" ? "jobs" : route.page;
   const [userInfo, setUserInfo] = useState(null);
   // Re-rendered on a timer purely so the "updated Ns ago" stamp counts up.
   const [, setTick] = useState(0);
@@ -138,7 +142,7 @@ export default function ClusterPilotDashboard() {
           {NAV.map(item => {
             const active = item.id === activeNav;
             return (
-              <button key={item.id} onClick={() => setActiveNav(item.id)} style={{
+              <button key={item.id} onClick={() => navigate(`/${item.id}`)} style={{
                 display: "flex", alignItems: "center", gap: 10,
                 padding: "10px 16px",
                 background: active ? `${T.amber}0f` : "transparent",
@@ -224,9 +228,11 @@ export default function ClusterPilotDashboard() {
             display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
           }}>
             <h1 style={{ margin: 0, fontFamily: T.sans, fontSize: 20, fontWeight: 600, color: T.text }}>
-              {NAV.find(n => n.id === activeNav)?.label}
+              {route.page === "job"
+                ? "Job"
+                : NAV.find(n => n.id === activeNav)?.label}
             </h1>
-            {activeNav === "jobs" && (
+            {(route.page === "jobs" || route.page === "job") && (
               <Freshness
                 fetchedAt={fetchedAt}
                 refreshing={refreshing}
@@ -238,9 +244,20 @@ export default function ClusterPilotDashboard() {
 
           {/* page content */}
           <div style={{ flex: 1, overflow: "auto", display: "flex" }}>
-            {activeNav === "jobs"          && <JobsPage jobs={jobs} loading={jobsLoading} />}
-            {activeNav === "notifications" && <NotificationsPage />}
-            {activeNav === "account"       && <AccountPage email={email} userInfo={userInfo} />}
+            {route.page === "jobs" && (
+              <JobsPage jobs={jobs} loading={jobsLoading} navigate={navigate} />
+            )}
+            {route.page === "job" && (
+              <JobDetailPage
+                job={jobs.find(j =>
+                  String(j.slurm_job_id) === route.id && j.cluster_name === route.cluster
+                ) ?? null}
+                loading={jobsLoading}
+                navigate={navigate}
+              />
+            )}
+            {route.page === "notifications" && <NotificationsPage />}
+            {route.page === "account"       && <AccountPage email={email} userInfo={userInfo} />}
           </div>
         </div>
       </div>

@@ -1,16 +1,18 @@
 import { useMemo, useState } from "react";
 
 import { T, STATUS } from "../theme.js";
-import { walltimePct, formatDatetime, formatHours, describeExit } from "../format.js";
-import { StatusBadge, ProgressBar, SlurmScript } from "../components/primitives.jsx";
+import { walltimePct, formatDatetime, firstErrorLine, describeExit } from "../format.js";
+import { StatusBadge, ProgressBar } from "../components/primitives.jsx";
+import { jobPath } from "../router.js";
 
 const ALL = "all";
 
-// Rows are keyed on this everywhere, because slurm_job_id alone is not unique
-// once two clusters are in the list.
-const keyOf = (j) => `${j.cluster_name}/${j.slurm_job_id}`;
+// Five columns, not seven. Partition is a submit-time decision nobody scans
+// by and Account only matters for the usage report, so both moved to the
+// detail page (issue #50). What is left gets room for two lines.
+const GRID = "minmax(240px, 2.2fr) minmax(150px, 1.3fr) 110px minmax(170px, 1.5fr) 130px 18px";
 
-const GRID = "minmax(180px, 1.4fr) 130px 110px 110px 210px 150px";
+const keyOf = (j) => `${j.cluster_name}/${j.slurm_job_id}`;
 
 function matches(job, query) {
   if (!query) return true;
@@ -59,92 +61,21 @@ function Filters({ query, setQuery, cluster, setCluster, status, setStatus,
   );
 }
 
-// One resource figure with its unit. Renders nothing when the number is
-// absent, so a cluster that reports no GPUs shows no GPU row rather than a
-// zero that reads as "used none".
-function Figure({ label, value, unit }) {
-  if (value == null) return null;
-  return (
-    <div>
-      <div style={{ fontFamily: T.sans, fontSize: 12, color: T.dim,
-                    textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
-      <div style={{ fontFamily: T.mono, fontSize: 15, color: T.text, marginTop: 2 }}>
-        {value}{unit ? <span style={{ color: T.muted, fontSize: 13 }}> {unit}</span> : null}
-      </div>
-    </div>
-  );
-}
-
-// What the job reserved, and where the numbers came from. The provenance line
-// is not decoration: 'measured' figures are ClusterPilot's own integration of
-// running tasks over its poll cycles, used where sacct cannot reach slurmdbd,
-// and must never be read as a scheduler accounting record.
-function Resources({ job }) {
-  const measured = job.accounting_source === "measured";
-  const known = job.accounting_source === "sacct" || measured;
-
-  if (!known) {
-    return (
-      <div style={{ padding: "14px 16px", fontFamily: T.sans, fontSize: 14,
-                    color: T.dim, lineHeight: 1.6 }}>
-        No resource accounting for this job yet. ClusterPilot records it when a
-        job finishes, so jobs that ran before you upgraded have none, and a
-        cluster whose accounting database cannot be reached may have none at all.
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ padding: "14px 16px" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
-        <Figure label="CPUs" value={job.alloc_cpus} unit="per task" />
-        <Figure label="GPUs" value={job.alloc_gpus} unit="per task" />
-        <Figure label="Nodes" value={job.alloc_nodes} unit="per task" />
-        <Figure label="Core-hours" value={formatHours(job.core_seconds)} />
-        <Figure label="GPU-hours" value={formatHours(job.gpu_seconds)} />
-        <Figure label="Billing-hours" value={formatHours(job.billing_seconds)} />
-      </div>
-      <div style={{
-        marginTop: 14, paddingTop: 10, borderTop: `1px solid ${T.border}`,
-        fontFamily: T.sans, fontSize: 13, color: measured ? T.amber : T.dim,
-        lineHeight: 1.6,
-      }}>
-        {measured
-          ? "Measured by ClusterPilot from the scheduler's live allocation and "
-            + "its own polling, because this cluster's accounting database "
-            + "could not be reached. Close, but not a scheduler accounting record."
-          : "From your scheduler's own accounting records."}
-      </div>
-    </div>
-  );
-}
-
-export default function JobsPage({ jobs, loading }) {
+export default function JobsPage({ jobs, loading, navigate }) {
   const [query, setQuery] = useState("");
   const [cluster, setCluster] = useState(ALL);
   const [status, setStatus] = useState(ALL);
-  const [selectedKey, setSelectedKey] = useState(null);
-  const [detailTab, setDetailTab] = useState("script");
 
   const clusters = useMemo(
-    () => [...new Set(jobs.map(j => j.cluster_name).filter(Boolean))].sort(),
-    [jobs],
-  );
+    () => [...new Set(jobs.map(j => j.cluster_name).filter(Boolean))].sort(), [jobs]);
   const statuses = useMemo(
-    () => [...new Set(jobs.map(j => j.status).filter(Boolean))].sort(),
-    [jobs],
-  );
+    () => [...new Set(jobs.map(j => j.status).filter(Boolean))].sort(), [jobs]);
 
   const visible = useMemo(() => jobs.filter(j =>
     matches(j, query)
     && (cluster === ALL || j.cluster_name === cluster)
     && (status === ALL || j.status === status)
   ), [jobs, query, cluster, status]);
-
-  // Derived rather than held in an effect: picking the first row when nothing
-  // is selected is a render-time decision, and doing it with setState in an
-  // effect costs a second render every time the list changes.
-  const job = visible.find(j => keyOf(j) === selectedKey) ?? visible[0] ?? null;
 
   if (loading) {
     return (
@@ -172,171 +103,97 @@ export default function JobsPage({ jobs, loading }) {
         shown={visible.length} total={jobs.length}
       />
 
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* ── JOB TABLE ────────────────────────────────────────────────── */}
-        <div style={{ flex: 1, overflow: "auto", borderRight: `1px solid ${T.border}` }}>
-          <div style={{
-            display: "grid", gridTemplateColumns: GRID,
-            padding: "10px 20px", borderBottom: `1px solid ${T.border}`,
-            background: T.panel, position: "sticky", top: 0, zIndex: 1,
-          }}>
-            {["Job", "Status", "Cluster", "Partition", "Walltime used / req.", "Submitted"].map(h => (
-              <div key={h} style={{
-                fontFamily: T.sans, fontSize: 14, fontWeight: 600,
-                color: T.dim, textTransform: "uppercase", letterSpacing: "0.07em",
-              }}>{h}</div>
-            ))}
-          </div>
-
-          {visible.length === 0 && (
-            <div style={{ padding: 28, fontFamily: T.sans, fontSize: 15, color: T.dim }}>
-              No jobs match those filters.
-            </div>
-          )}
-
-          {visible.map(j => {
-            const s = STATUS[j.status] ?? STATUS.PENDING;
-            const active = job && keyOf(j) === keyOf(job);
-            const pct = walltimePct(j.walltime_consumed, j.walltime_requested);
-            return (
-              <div key={keyOf(j)} onClick={() => setSelectedKey(keyOf(j))} style={{
-                display: "grid", gridTemplateColumns: GRID,
-                padding: "11px 20px", borderBottom: `1px solid ${T.border}`,
-                background: active ? `${T.amber}08` : "transparent",
-                borderLeft: `2px solid ${active ? T.amber : "transparent"}`,
-                cursor: "pointer", alignItems: "center",
-              }}>
-                <div>
-                  <div style={{ fontFamily: T.mono, fontSize: 15, color: T.text,
-                                fontWeight: active ? 500 : 400 }}>
-                    {j.job_name ?? `#${j.slurm_job_id}`}
-                  </div>
-                  <div style={{ fontFamily: T.sans, fontSize: 13, color: T.dim, marginTop: 2 }}>
-                    #{j.slurm_job_id}{j.array_spec ? ` · array ${j.array_spec}` : ""}
-                  </div>
-                </div>
-                <div>
-                  <StatusBadge status={j.status} />
-                  {j.status_detail && (
-                    <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 3 }}>
-                      {j.status_detail}
-                    </div>
-                  )}
-                </div>
-                <div style={{ fontFamily: T.mono, fontSize: 15, color: T.muted }}>{j.cluster_name}</div>
-                <div style={{ fontFamily: T.mono, fontSize: 15, color: T.dim }}>{j.partition ?? "─"}</div>
-                <div>
-                  <div style={{ fontFamily: T.mono, fontSize: 15, color: s.fg }}>
-                    {j.walltime_consumed ?? "─:──:──"} / {j.walltime_requested ?? "─:──:──"}
-                  </div>
-                  {j.status !== "PENDING" && (j.walltime_consumed || j.walltime_requested) && (
-                    <div style={{ marginTop: 5 }}><ProgressBar pct={pct} color={s.fg} /></div>
-                  )}
-                </div>
-                <div style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>
-                  {formatDatetime(j.submitted_at)}
-                </div>
-              </div>
-            );
-          })}
+      <div style={{ flex: 1, overflow: "auto" }}>
+        <div style={{
+          display: "grid", gridTemplateColumns: GRID, gap: 14,
+          padding: "10px 20px", borderBottom: `1px solid ${T.border}`,
+          background: T.panel, position: "sticky", top: 0, zIndex: 1,
+        }}>
+          {["Job", "Status", "Cluster", "Walltime used / req.", "Submitted", ""].map((h, i) => (
+            <div key={i} style={{
+              fontFamily: T.sans, fontSize: 14, fontWeight: 600,
+              color: T.dim, textTransform: "uppercase", letterSpacing: "0.07em",
+            }}>{h}</div>
+          ))}
         </div>
 
-        {/* ── JOB DETAIL ───────────────────────────────────────────────── */}
-        {job && (
-          <div style={{ width: 520, flexShrink: 0, display: "flex",
-                        flexDirection: "column", overflow: "hidden" }}>
-            <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`,
-                          background: T.panel }}>
-              <div style={{ display: "flex", alignItems: "center",
-                            justifyContent: "space-between", marginBottom: 6 }}>
-                <div>
-                  <span style={{ fontFamily: T.mono, fontSize: 16, fontWeight: 600, color: T.text }}>
-                    {job.job_name ?? `#${job.slurm_job_id}`}
-                  </span>
-                  {job.job_name && (
-                    <span style={{ fontFamily: T.mono, fontSize: 13, color: T.dim, marginLeft: 10 }}>
-                      #{job.slurm_job_id}
-                    </span>
-                  )}
-                </div>
-                <StatusBadge status={job.status} />
-              </div>
-              <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-                {[
-                  ["cluster", job.cluster_name],
-                  ["partition", job.partition ?? "─"],
-                  ["account", job.account ?? "─"],
-                  ["submitted", formatDatetime(job.submitted_at)],
-                ].map(([k, v]) => (
-                  <div key={k}>
-                    <span style={{ fontFamily: T.mono, fontSize: 13, color: T.dim }}>{k} </span>
-                    <span style={{ fontFamily: T.mono, fontSize: 14, color: T.muted }}>{v}</span>
-                  </div>
-                ))}
-              </div>
-              {describeExit(job.exit_code) && job.status !== "COMPLETED" && (
-                <div style={{ marginTop: 8, fontFamily: T.mono, fontSize: 14, color: T.red }}>
-                  {describeExit(job.exit_code)}
-                </div>
-              )}
-              {job.efficiency && (
-                <div style={{ marginTop: 8, fontFamily: T.mono, fontSize: 14, color: T.muted }}>
-                  {job.efficiency}
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", borderBottom: `1px solid ${T.border}`, background: T.panel }}>
-              {["script", "logs", "resources"].map(tab => (
-                <button key={tab} onClick={() => setDetailTab(tab)} style={{
-                  padding: "8px 16px", background: "transparent", border: "none", cursor: "pointer",
-                  fontFamily: T.sans, fontSize: 15, fontWeight: 500,
-                  color: detailTab === tab ? T.amber : T.dim,
-                  borderBottom: `2px solid ${detailTab === tab ? T.amber : "transparent"}`,
-                  textTransform: "capitalize",
-                }}>{tab}</button>
-              ))}
-            </div>
-
-            <div style={{ flex: 1, overflow: "auto", background: T.bg }}>
-              {detailTab === "script" && <SlurmScript src={job.script} />}
-
-              {detailTab === "logs" && (
-                <div style={{ padding: "12px 16px" }}>
-                  {job.log_tail
-                    ? job.log_tail.split("\n").map((line, i) => (
-                        <div key={i} style={{
-                          fontFamily: T.mono, fontSize: 15, lineHeight: 1.7,
-                          color: /error/i.test(line) ? T.red
-                               : /done|completed/i.test(line) ? T.green
-                               : /running/i.test(line) ? T.amber
-                               : T.muted,
-                        }}>{line}</div>
-                      ))
-                    : <div style={{ fontFamily: T.mono, fontSize: 15, color: T.dim, padding: "4px 0" }}>
-                        No log output available.
-                      </div>}
-                </div>
-              )}
-
-              {detailTab === "resources" && <Resources job={job} />}
-            </div>
-
-            {/* Only shown once a run is actually linked. A row that can only
-                ever say "not linked" is noise on every job. */}
-            {job.fieldnotes_run_id && (
-              <div style={{
-                padding: "10px 16px", borderTop: `1px solid ${T.border}`, background: T.panel,
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-              }}>
-                <span style={{ fontFamily: T.sans, fontSize: 14, color: T.dim }}>Fieldnotes run</span>
-                <span style={{ fontFamily: T.mono, fontSize: 14, color: "#3D74F6" }}>
-                  → fn://runs/{job.fieldnotes_run_id} ↗
-                </span>
-              </div>
-            )}
+        {visible.length === 0 && (
+          <div style={{ padding: 28, fontFamily: T.sans, fontSize: 15, color: T.dim }}>
+            No jobs match those filters.
           </div>
         )}
+
+        {visible.map(j => {
+          const s = STATUS[j.status] ?? STATUS.PENDING;
+          const pct = walltimePct(j.walltime_consumed, j.walltime_requested);
+          const failed = j.status !== "COMPLETED" && j.status !== "RUNNING" && j.status !== "PENDING";
+          // The answer goes in the list; the evidence lives on the job's own
+          // page (issue #50). Most of the time this is all you needed.
+          const reason = failed ? describeExit(j.exit_code) : null;
+          const excerpt = failed ? firstErrorLine(j.log_tail) : null;
+
+          return (
+            <div
+              key={keyOf(j)}
+              onClick={() => navigate(jobPath(j))}
+              onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(jobPath(j)); } }}
+              role="link"
+              tabIndex={0}
+              aria-label={`${j.job_name ?? j.slurm_job_id} on ${j.cluster_name}`}
+              style={{
+                display: "grid", gridTemplateColumns: GRID, gap: 14,
+                padding: "11px 20px", borderBottom: `1px solid ${T.border}`,
+                cursor: "pointer", alignItems: "start",
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: T.mono, fontSize: 15, color: T.text }}>
+                  {j.job_name ?? `#${j.slurm_job_id}`}
+                </div>
+                <div style={{ fontFamily: T.sans, fontSize: 13, color: T.dim, marginTop: 2 }}>
+                  #{j.slurm_job_id}{j.array_spec ? ` · array ${j.array_spec}` : ""}
+                </div>
+                {excerpt && (
+                  <div style={{
+                    fontFamily: T.mono, fontSize: 12.5, color: T.red, marginTop: 4,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }} title={excerpt}>{excerpt}</div>
+                )}
+              </div>
+
+              <div>
+                <StatusBadge status={j.status} />
+                {j.status_detail && (
+                  <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 3 }}>
+                    {j.status_detail}
+                  </div>
+                )}
+                {reason && (
+                  <div style={{ fontFamily: T.mono, fontSize: 12, color: T.red, marginTop: 3 }}>
+                    {reason}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ fontFamily: T.mono, fontSize: 15, color: T.muted }}>{j.cluster_name}</div>
+
+              <div>
+                <div style={{ fontFamily: T.mono, fontSize: 15, color: s.fg }}>
+                  {j.walltime_consumed ?? "─:──:──"} / {j.walltime_requested ?? "─:──:──"}
+                </div>
+                {j.status !== "PENDING" && (j.walltime_consumed || j.walltime_requested) && (
+                  <div style={{ marginTop: 5 }}><ProgressBar pct={pct} color={s.fg} /></div>
+                )}
+              </div>
+
+              <div style={{ fontFamily: T.mono, fontSize: 14, color: T.dim }}>
+                {formatDatetime(j.submitted_at)}
+              </div>
+
+              <div style={{ fontFamily: T.mono, fontSize: 16, color: T.dim, textAlign: "right" }}>›</div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

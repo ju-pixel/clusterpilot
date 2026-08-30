@@ -64,3 +64,22 @@ export function describeExit(code) {
   if (Number(exit)) return `exit code ${exit}`;
   return "exit 0";
 }
+
+
+// Lines worth surfacing from a log tail. Deliberately narrow: the point is to
+// answer "what went wrong" at a glance, and a pattern that matches half the
+// log would put noise in every row instead.
+const ERROR_LINE = /\b(error|fatal|traceback|segmentation fault|out of memory|oom|killed|cannot|no such file|not found|permission denied|command not found)\b/i;
+
+// The first line of a failed job's log that looks like the reason, trimmed to
+// fit one row. Returns null when nothing stands out, because a guessed reason
+// is worse than none.
+export function firstErrorLine(logTail, limit = 90) {
+  if (!logTail) return null;
+  for (const raw of logTail.split("\n")) {
+    const line = raw.trim();
+    if (!line || !ERROR_LINE.test(line)) continue;
+    return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+  }
+  return null;
+}
