@@ -6,7 +6,7 @@ import re
 import subprocess
 import tempfile
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -20,13 +20,23 @@ from textual.events import DescendantFocus
 from textual.suggester import Suggester
 from textual.widgets import Button, Input, Label, Select, Static, Switch, TextArea
 
-from clusterpilot.cluster.probe import PartitionAvailability, fetch_availability, probe_cluster
+from clusterpilot.cluster.probe import (
+    ClusterProbe,
+    PartitionAvailability,
+    fetch_availability,
+    probe_cluster,
+)
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.config import Config
 from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
 from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
 from clusterpilot.jobs.env_detect import ScriptEnvironment, analyze_script
-from clusterpilot.jobs.params_table import ParamsTableError, load_params_table
+from clusterpilot.jobs.params_table import (
+    ParamsTable,
+    ParamsTableError,
+    load_params_table,
+    render_bash_reader,
+)
 from clusterpilot.jobs.validate import (
     Finding,
     SubmitIntent,
@@ -39,6 +49,7 @@ from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import run_remote
 from clusterpilot.ssh.rsync import read_ignore_file, upload, upload_file
 from clusterpilot.tui.jobs import JobsView
+from clusterpilot.tui.widgets.file_explorer import save_recent_path
 
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
@@ -139,6 +150,15 @@ _ROUTED_TYPES: frozenset[str] = frozenset({"drac", "trillium"})
 # default, for one generation.
 _OPUS_MODEL = "claude-opus-5"
 
+# The form fields that name a local path. A file chosen in the F3 explorer goes
+# into whichever of these the user was last in (#58).
+_PATH_FIELD_IDS: frozenset[str] = frozenset({
+    "project-dir-input",
+    "script-path-input",
+    "extra-files-input",
+    "params-table-input",
+})
+
 
 def _strip_job_name_suffix(job_name: str) -> str:
     """Remove a ClusterPilot "-MMDD-HHMM" suffix from a job name.
@@ -219,6 +239,79 @@ def _julia_upload_includes(project_dir: Path, driver_rel: str) -> list[str] | No
     if driver_rel and not driver_rel.startswith("src/"):
         includes.append(driver_rel)
     return includes
+
+
+def _upload_includes(
+    project_dir: Path,
+    driver_rel: str,
+    included_files: Sequence[str] = (),
+) -> tuple[list[str] | None, list[str]]:
+    """The rsync allowlist for this project, and any include()d file missing.
+
+    Returns ``(None, [])`` for a non-Julia project, where the upload is a
+    whole-tree blocklist rsync and there is no allowlist to speak of.
+
+    A Julia driver's ``include()``d files are not imports, so the allowlist
+    never saw them and the job died on its first include. They are added here
+    when they exist; the ones that do not are handed back so the caller can
+    say so.
+
+    One function because the uploader and the validator must agree on what is
+    being sent. They used to derive it separately, and the validator was in
+    fact handed the EXTRA FILES field, which blocked a correct script (#52).
+    """
+    includes = _julia_upload_includes(project_dir, driver_rel)
+    if includes is None:
+        return None, []
+    missing: list[str] = []
+    for rel_include in included_files:
+        if (project_dir / rel_include).exists():
+            if rel_include not in includes:
+                includes.append(rel_include)
+        else:
+            missing.append(rel_include)
+    return includes, missing
+
+
+def _validator_upload_paths(
+    project_dir_str: str,
+    driver_rel: str,
+    extra_files: Sequence[str],
+    params_table: ParamsTable | None,
+    included_files: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """Every path the uploader will send, as ``SubmitIntent.upload_paths``.
+
+    Empty means the upload set is not an allowlist, which the validator reads
+    as unknown and skips: a whole-tree rsync covers the driver by construction,
+    and single-file mode has no project to send.
+
+    Entries that do not exist locally are dropped. The uploader may harmlessly
+    list a path that is not there, since an rsync include simply matches
+    nothing, but the validator must not read a missing file as covered: a
+    driver that is not on disk is exactly the case worth blocking on.
+    """
+    if not project_dir_str:
+        return ()
+    project_dir = Path(project_dir_str).expanduser()
+    includes, _missing = _upload_includes(project_dir, driver_rel, included_files)
+    if includes is None:
+        return ()
+
+    paths = [
+        entry for entry in includes
+        # "src/***" and friends are rsync patterns, not paths: keep them, they
+        # are what makes a driver under src/ covered.
+        if "*" in entry or (project_dir / entry).exists()
+    ]
+    for entry in extra_files:
+        local_file, rel, _warning = _resolve_extra_file(entry, project_dir)
+        if local_file.exists():
+            paths.append(rel.as_posix())
+    if params_table is not None:
+        # The table is uploaded to the job root by name, whatever its local path.
+        paths.append(params_table.path.name)
+    return tuple(paths)
 
 
 def _resolve_extra_file(entry: str, project_dir: Path) -> tuple[Path, Path, str | None]:
@@ -552,10 +645,19 @@ class SubmitView(Static):
         self._findings: list[Finding] = []
         self._last_usage = ApiUsage()
         self._last_script_env: ScriptEnvironment | None = None
+        # What the last generation was checked against, kept so EDIT can run
+        # the same checks again on the edited script (#53).
+        self._last_intent: SubmitIntent | None = None
+        self._last_probe: ClusterProbe | None = None
         # The job name as generated, without any "-MMDD-HHMM" uniqueness
         # suffix. Every submit derives its name from this, so re-submitting
         # cannot stack one suffix on top of another.
         self._base_job_name: str = ""
+        # Which path field the user was last in, so the F3 file picker can put
+        # a chosen file there rather than guessing (#58). "" until they focus
+        # one, in which case the picker falls back to filling the first empty
+        # field, which is the right behaviour for a fresh form.
+        self._last_path_field: str = ""
         self._partition_availability: dict[str, PartitionAvailability] = {}
         # GPU types the probe reports, per partition name and across the whole
         # cluster. The probe lists MIG instances as extra rows for the same
@@ -600,15 +702,86 @@ class SubmitView(Static):
             return p if p.is_dir() else None
         return None
 
+    # ── File picker ───────────────────────────────────────────────────────────
+
+    def receive_picked_file(self, path: Path) -> None:
+        """Put a file chosen in the F3 explorer into the right field.
+
+        The field the user was last in wins. Before #58 the routing filled the
+        first empty field instead, so a table chosen with PARAM TABLE focused
+        landed in EXTRA FILES and the whole parameter-table path was bypassed
+        in silence.
+
+        With no field yet focused the old fill-the-first-empty behaviour still
+        applies, since on a fresh form it is what the user wants.
+        """
+        target = self._last_path_field
+        if not target:
+            target = self._first_empty_path_field()
+            if target == "project-dir-input":
+                # A first pick on an empty form names both the project and the
+                # driver, which is the only sensible reading of it.
+                self.query_one("#script-path-input", Input).value = path.name
+
+        if target == "project-dir-input":
+            # A file names its directory: PROJECT DIR is a directory field.
+            self.query_one("#project-dir-input", Input).value = str(path.parent)
+            save_recent_path(path.parent)
+        elif target == "extra-files-input":
+            # The one list field: append rather than replace, so picking three
+            # files in a row queues three rather than the last one.
+            field = self.query_one("#extra-files-input", Input)
+            existing = field.value.strip()
+            entry = self._project_relative(path)
+            entries = [e.strip() for e in existing.split(",") if e.strip()]
+            if entry not in entries:
+                field.value = f"{existing}, {entry}" if existing else entry
+        else:
+            self.query_one(f"#{target}", Input).value = self._project_relative(path)
+
+        # Focus the field the file landed in: it shows the user where it went,
+        # and it keeps the next pick pointed somewhere they chose.
+        self.query_one(f"#{target}", Input).focus()
+
+    def _first_empty_path_field(self) -> str:
+        """The field to fill when the user has not focused one yet.
+
+        PROJECT DIR first, then DRIVER SCRIPT, then EXTRA FILES: the order the
+        form is filled in. PARAM TABLE is never guessed at, because a table is
+        a deliberate choice and picking one is how the user says so.
+        """
+        if not self.query_one("#project-dir-input", Input).value.strip():
+            return "project-dir-input"
+        if not self.query_one("#script-path-input", Input).value.strip():
+            return "script-path-input"
+        return "extra-files-input"
+
+    def _project_relative(self, path: Path) -> str:
+        """*path* relative to PROJECT DIR when it sits inside it, else as given."""
+        project_dir = self.query_one("#project-dir-input", Input).value.strip()
+        if not project_dir:
+            return str(path)
+        try:
+            root = Path(project_dir).expanduser().resolve()
+            return str(path.resolve().relative_to(root))
+        except (ValueError, OSError):
+            return str(path)
+
     # ── Contextual help ───────────────────────────────────────────────────────
 
     def on_descendant_focus(self, event: DescendantFocus) -> None:
-        """Update the help panel when any input field receives focus."""
+        """Update the help panel when any input field receives focus.
+
+        Also remembers which path field the user was last in, because that is
+        where a file picked in the F3 explorer belongs (#58).
+        """
         help_widget = self.query_one("#field-help", Static)
         # Walk up the DOM in case focus landed on an internal child widget
         # (e.g. Select's SelectCurrent, or TextArea's inner editor).
         for node in event.widget.ancestors_with_self:
             node_id = getattr(node, "id", None)
+            if node_id in _PATH_FIELD_IDS:
+                self._last_path_field = node_id
             if node_id == "partition-select":
                 profile = self._selected_profile()
                 if profile is not None and profile.cluster_type in _ROUTED_TYPES:
@@ -954,6 +1127,10 @@ class SubmitView(Static):
             self._params_table = params_table
             if not array_spec:
                 array_spec = params_table.array_spec
+                # Write it back into the field, not just this local: SUBMIT
+                # reads the field, and a blank one there cost the job its
+                # per-task log names and its array tracking (#51).
+                self.query_one("#array-input", Input).value = array_spec
                 self.app.notify(
                     f"Array set from the parameter table: {array_spec} "
                     f"({params_table.task_count} tasks)",
@@ -967,6 +1144,43 @@ class SubmitView(Static):
             _OPUS_MODEL
             if self.query_one("#opus-switch", Switch).value
             else app._config.model
+        )
+
+        # What the user asked for is known before the model is called, and is
+        # what the generated script gets checked against. Built here rather
+        # than after the stream so that a truncated generation, which still
+        # leaves an editable script on screen, has an intent for EDIT to
+        # re-check it against (#53).
+        self._last_probe = probe
+        self._last_intent = SubmitIntent(
+            array_spec=array_spec,
+            param_row_count=(
+                params_table.task_count if params_table is not None else None
+            ),
+            driver_rel=driver_script or "",
+            # The set the uploader will actually send, not the EXTRA FILES
+            # field: for a Julia project the driver is already in it, and
+            # passing EXTRA FILES blocked a correct script (#52).
+            upload_paths=_validator_upload_paths(
+                project_dir_str,
+                driver_script or "",
+                extra_files,
+                params_table,
+                script_env.included_files,
+            ),
+            partition_name=partition or "",
+            gpu_size=gpu_size,
+            account=profile.account,
+            # The reader ClusterPilot rendered for this table, so the validator
+            # can confirm it survived generation rather than being paraphrased
+            # into a second, unchecked mapping (#54).
+            param_reader=(
+                render_bash_reader(params_table) if params_table is not None else ""
+            ),
+            param_columns=(
+                tuple(params_table.headers) if params_table is not None else ()
+            ),
+            cluster_type=profile.cluster_type,
         )
 
         try:
@@ -1035,25 +1249,41 @@ class SubmitView(Static):
         # Check the generated script against what the user actually asked for,
         # BEFORE it can be submitted. Nothing else inspects the generation, so
         # this is the only gate between a plausible-looking script and sbatch.
+        self._apply_validation()
+
+        self.query_one("#btn-generate", Button).disabled = False
+        self.query_one("#btn-edit-script", Button).disabled = False
+        self.query_one("#btn-save", Button).disabled = False
+        self.query_one("#btn-clear", Button).disabled = False
+
+    # ── Validation ────────────────────────────────────────────────────────────
+
+    def _apply_validation(self, *, announce_clean: bool = False) -> None:
+        """Re-check the current script, report findings, and gate SUBMIT.
+
+        Runs after every generation and after every EDIT. Before #53 the edit
+        handler replaced the script and refreshed the display but re-ran
+        nothing, so a block the user had just fixed stayed on the button, and
+        a clean script edited into a broken one went to sbatch unchecked.
+
+        The intent is the one the last generation was checked against: it is
+        what the user asked for, and editing the script does not change that.
+        """
+        intent = self._last_intent
+        if intent is None or not self._generated_script:
+            return
+
+        probe = self._last_probe
         findings = validate_script(
             self._generated_script,
-            intent=SubmitIntent(
-                array_spec=array_spec,
-                param_row_count=(
-                    params_table.task_count if params_table is not None else None
-                ),
-                driver_rel=driver_script or "",
-                upload_paths=tuple(extra_files),
-                partition_name=partition or "",
-                gpu_size=gpu_size,
-                account=profile.account,
-                cluster_type=profile.cluster_type,
-            ),
-            partitions=probe.partitions,
-            account_max_wall=probe.account_max_wall,
+            intent=intent,
+            partitions=probe.partitions if probe is not None else None,
+            account_max_wall=probe.account_max_wall if probe is not None else None,
         )
+        was_blocked = blocking(self._findings)
         self._findings = findings
         is_blocked = blocking(findings)
+
         if findings:
             self.app.notify(
                 format_findings(findings),
@@ -1063,16 +1293,19 @@ class SubmitView(Static):
             )
         if is_blocked:
             self.app.notify(
-                "SUBMIT is disabled: the generated script does not match what "
-                "you asked for. Fix it with EDIT, or regenerate.",
+                "SUBMIT is disabled: the script does not match what you asked "
+                "for. Fix it with EDIT and it is re-checked when you close the "
+                "editor, or regenerate.",
                 severity="error", markup=False, timeout=20,
             )
+        elif announce_clean and was_blocked:
+            self.app.notify(
+                "Re-checked after your edit: nothing blocking left. SUBMIT is "
+                "enabled.",
+                severity="information", markup=False, timeout=8,
+            )
 
-        self.query_one("#btn-generate", Button).disabled = False
         self.query_one("#btn-submit", Button).disabled = is_blocked
-        self.query_one("#btn-edit-script", Button).disabled = False
-        self.query_one("#btn-save", Button).disabled = False
-        self.query_one("#btn-clear", Button).disabled = False
 
     # ── Submit ────────────────────────────────────────────────────────────────
 
@@ -1167,26 +1400,18 @@ class SubmitView(Static):
                     self.app.notify(str(exc), severity="error", markup=False, timeout=15)
                     self.query_one("#btn-submit", Button).disabled = False
                     return
-                includes = _julia_upload_includes(project_dir, driver_rel)
-
-                # A Julia driver's include()d files are not imports, so the
-                # allowlist never saw them and the job died on its first
-                # include. Ship the ones that exist and say so for the rest.
                 env = self._last_script_env
-                if includes is not None and env is not None and env.included_files:
-                    missing: list[str] = []
-                    for rel_include in env.included_files:
-                        if (project_dir / rel_include).exists():
-                            if rel_include not in includes:
-                                includes.append(rel_include)
-                        else:
-                            missing.append(rel_include)
-                    if missing:
-                        self.app.notify(
-                            "Driver include()s files that do not exist locally, "
-                            "so they cannot be uploaded: " + ", ".join(missing),
-                            severity="warning", markup=False, timeout=12,
-                        )
+                includes, missing = _upload_includes(
+                    project_dir,
+                    driver_rel,
+                    env.included_files if env is not None else (),
+                )
+                if missing:
+                    self.app.notify(
+                        "Driver include()s files that do not exist locally, "
+                        "so they cannot be uploaded: " + ", ".join(missing),
+                        severity="warning", markup=False, timeout=12,
+                    )
 
                 await upload(
                     profile.host, profile.user,
@@ -1341,6 +1566,7 @@ class SubmitView(Static):
         """
         self._generated_script = ""
         self._findings = []
+        self._last_intent = None
         self.query_one("#script-display", Static).update(_EMPTY_HINT)
         for btn_id in ("#btn-submit", "#btn-edit-script", "#btn-save", "#btn-clear"):
             self.query_one(btn_id, Button).disabled = True
@@ -1365,6 +1591,11 @@ class SubmitView(Static):
             self.query_one("#script-display", Static).update(
                 _format_script(self._generated_script)
             )
+            # An edited script is a different script, so it gets the same gate
+            # the generated one got. Both directions matter: a block the user
+            # has just fixed must clear, and a clean script edited into a
+            # broken one must not reach sbatch (#53).
+            self._apply_validation(announce_clean=True)
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

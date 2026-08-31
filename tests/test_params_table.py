@@ -185,6 +185,68 @@ class TestBashReader:
         assert "not found" in result.stderr
 
 
+class TestBlankLinesAndLineEndings:
+    """#55: the parser and the emitted reader must count rows the same way.
+
+    They did not: the parser skipped blank lines whilst the reader selected by
+    physical line number, so one blank line in the middle of a 70-row table
+    handed every later task its neighbour's parameters, silently.
+    """
+
+    def _run(self, tmp_path: Path, table: ParamsTable, task_id: int):
+        return TestBashReader()._run(tmp_path, table, task_id)
+
+    def test_an_interior_blank_line_does_not_shift_the_tasks(self, tmp_path):
+        path = _write(tmp_path, "p.tsv", "x\ta\n1\tone\n\n2\ttwo\n3\tthree\n")
+        table = load_params_table(path)
+        assert table.task_count == 3
+        for task_id, expected in enumerate(("one", "two", "three")):
+            result = self._run(tmp_path, table, task_id)
+            assert result.returncode == 0, result.stderr
+            assert f"a={expected}" in result.stdout, result.stdout
+
+    def test_a_whitespace_only_line_is_not_a_task(self, tmp_path):
+        path = _write(tmp_path, "p.tsv", "x\n1\n   \n2\n")
+        table = load_params_table(path)
+        assert table.task_count == 2
+        assert "x=2" in self._run(tmp_path, table, 1).stdout
+
+    def test_crlf_does_not_reach_the_last_column(self, tmp_path):
+        path = tmp_path / "p.tsv"
+        path.write_bytes(b"x\ta\r\n1\tone\r\n2\ttwo\r\n")
+        table = load_params_table(path)
+        assert table.headers == ["x", "a"]
+        assert table.rows == [["1", "one"], ["2", "two"]]
+        result = self._run(tmp_path, table, 1)
+        assert result.returncode == 0, result.stderr
+        assert "a=two\n" in result.stdout, repr(result.stdout)
+
+    def test_a_lone_cr_is_treated_as_a_line_ending(self, tmp_path):
+        path = tmp_path / "p.csv"
+        path.write_bytes(b"x,a\r1,one\r2,two\r")
+        assert load_params_table(path).task_count == 2
+
+    def test_a_quoted_delimiter_is_refused(self, tmp_path):
+        path = _write(tmp_path, "p.csv", 'x,a\n1,"one,two"\n')
+        with pytest.raises(ParamsTableError, match="quoted fields are not supported"):
+            load_params_table(path)
+
+    def test_a_quoted_field_is_refused_even_without_a_delimiter(self, tmp_path):
+        path = _write(tmp_path, "p.csv", 'x,a\n1,"one"\n')
+        with pytest.raises(ParamsTableError, match="quoted fields are not supported"):
+            load_params_table(path)
+
+    def test_the_refusal_names_the_line(self, tmp_path):
+        path = _write(tmp_path, "p.csv", 'x,a\n1,ok\n2,"two,three"\n')
+        with pytest.raises(ParamsTableError, match="line 3"):
+            load_params_table(path)
+
+    def test_a_ragged_row_after_a_blank_line_names_its_own_line(self, tmp_path):
+        path = _write(tmp_path, "p.csv", "a,b\n1,2\n\n3\n")
+        with pytest.raises(ParamsTableError, match="line 4"):
+            load_params_table(path)
+
+
 class TestPromptDescription:
     def test_names_the_columns_and_the_count_but_not_the_rows(self, tmp_path):
         path = _write(tmp_path, "p.tsv", "lattice\teta\nfcc\t0.30\nbcc\t0.15\n")

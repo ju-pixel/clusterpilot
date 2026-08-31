@@ -11,6 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from clusterpilot.jobs import validate
+from clusterpilot.jobs.params_table import load_params_table
+from clusterpilot.jobs.validate import Severity, SubmitIntent
 from clusterpilot.ssh.rsync import (
     _build_filter_args,
     read_ignore_file,
@@ -20,6 +23,8 @@ from clusterpilot.tui.submit import (
     _julia_upload_includes,
     _package_src_warning,
     _resolve_extra_file,
+    _upload_includes,
+    _validator_upload_paths,
 )
 
 # ── read_ignore_file ────────────────────────────────────────────────────────────
@@ -203,3 +208,117 @@ class TestPackageSrcWarning:
         sub = tmp_path / "src"
         sub.mkdir()
         assert _package_src_warning(sub) is None
+
+
+# ── the upload set handed to the validator (#52) ────────────────────────────────
+
+DRIVER = "scripts/drivers/run_zfc_ewald.jl"
+
+SCRIPT = f"""#!/bin/bash
+#SBATCH --job-name=zfc
+#SBATCH --array=0-69
+
+julia --project=. {DRIVER}
+"""
+
+
+def julia_project(tmp_path: Path, *, with_driver: bool = True) -> Path:
+    """A Julia project laid out the way SpinGlassLab is."""
+    (tmp_path / "Project.toml").write_text('name = "SpinGlassLab"\n')
+    (tmp_path / "Manifest.toml").write_text("\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "SpinGlassLab.jl").write_text("module SpinGlassLab\nend\n")
+    if with_driver:
+        (tmp_path / "scripts" / "drivers").mkdir(parents=True)
+        (tmp_path / DRIVER).write_text("println(1)\n")
+    return tmp_path
+
+
+def findings_for(project_dir: Path, extra_files, table=None):
+    """Run the driver-uploaded check the way the submit screen now does."""
+    intent = SubmitIntent(
+        driver_rel=DRIVER,
+        upload_paths=_validator_upload_paths(
+            str(project_dir), DRIVER, extra_files, table
+        ),
+    )
+    return validate._check_driver_uploaded(SCRIPT, intent)
+
+
+class TestValidatorUploadPaths:
+    def test_empty_extra_files_and_the_driver_present_is_clean(self, tmp_path):
+        """(a) The case that used to skip the check entirely."""
+        project = julia_project(tmp_path)
+        assert findings_for(project, []) == []
+
+    def test_extra_files_naming_something_else_is_clean(self, tmp_path):
+        """(b) The case that blocked a correct 70-task array on Narval."""
+        project = julia_project(tmp_path)
+        (project / "experiments").mkdir()
+        (project / "experiments" / "sweep.tsv").write_text("x\n1\n")
+        findings = findings_for(project, ["experiments/sweep.tsv"])
+        assert findings == [], [f.message for f in findings]
+
+    def test_a_driver_that_is_not_on_disk_blocks(self, tmp_path):
+        """(c) Nothing to upload, so the job would die on its first line."""
+        project = julia_project(tmp_path, with_driver=False)
+        findings = findings_for(project, [])
+        assert len(findings) == 1
+        assert findings[0].check == "driver-not-uploaded"
+        assert findings[0].severity is Severity.BLOCKING
+
+    def test_the_driver_is_in_the_set(self, tmp_path):
+        project = julia_project(tmp_path)
+        assert DRIVER in _validator_upload_paths(str(project), DRIVER, [], None)
+
+    def test_extra_files_are_in_the_set(self, tmp_path):
+        project = julia_project(tmp_path)
+        (project / "data.jld2").write_text("x")
+        paths = _validator_upload_paths(str(project), DRIVER, ["data.jld2"], None)
+        assert "data.jld2" in paths
+
+    def test_an_extra_file_that_does_not_exist_is_not_in_the_set(self, tmp_path):
+        project = julia_project(tmp_path)
+        paths = _validator_upload_paths(str(project), DRIVER, ["ghost.jld2"], None)
+        assert "ghost.jld2" not in paths
+
+    def test_the_parameter_table_travels_under_its_own_name(self, tmp_path):
+        project = julia_project(tmp_path)
+        table_file = project / "experiments" / "sweep.tsv"
+        table_file.parent.mkdir()
+        table_file.write_text("a\tb\n1\t2\n")
+        table = load_params_table(table_file)
+        paths = _validator_upload_paths(str(project), DRIVER, [], table)
+        assert "sweep.tsv" in paths
+
+    def test_a_whole_tree_upload_reports_an_unknown_set(self, tmp_path):
+        """No Project.toml means a blocklist rsync, which covers everything."""
+        (tmp_path / "run.py").write_text("print(1)\n")
+        assert _validator_upload_paths(str(tmp_path), "run.py", [], None) == ()
+
+    def test_single_file_mode_reports_an_unknown_set(self, tmp_path):
+        assert _validator_upload_paths("", DRIVER, [], None) == ()
+
+    def test_rsync_patterns_survive_the_existence_filter(self, tmp_path):
+        project = julia_project(tmp_path)
+        assert "src/***" in _validator_upload_paths(str(project), DRIVER, [], None)
+
+
+class TestUploadIncludes:
+    def test_included_files_that_exist_are_added(self, tmp_path):
+        project = julia_project(tmp_path)
+        (project / "helpers.jl").write_text("x")
+        includes, missing = _upload_includes(project, DRIVER, ["helpers.jl"])
+        assert "helpers.jl" in includes
+        assert missing == []
+
+    def test_included_files_that_do_not_exist_are_reported(self, tmp_path):
+        project = julia_project(tmp_path)
+        includes, missing = _upload_includes(project, DRIVER, ["ghost.jl"])
+        assert "ghost.jl" not in includes
+        assert missing == ["ghost.jl"]
+
+    def test_a_non_julia_project_has_no_allowlist(self, tmp_path):
+        includes, missing = _upload_includes(tmp_path, "run.py", [])
+        assert includes is None
+        assert missing == []

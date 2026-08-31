@@ -11,7 +11,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.events import DescendantFocus
-from textual.widgets import Input, Static, TabbedContent, TabPane
+from textual.widgets import Static, TabbedContent, TabPane
 
 from clusterpilot import __version__
 from clusterpilot.config import Config
@@ -24,7 +24,7 @@ from clusterpilot.tui.config_view import ConfigView
 from clusterpilot.tui.jobs import JobsView
 from clusterpilot.tui.submit import SubmitView
 from clusterpilot.tui.widgets.confirm import ConfirmScreen
-from clusterpilot.tui.widgets.file_explorer import FileExplorer, save_recent_path
+from clusterpilot.tui.widgets.file_explorer import FileExplorer
 
 log = logging.getLogger(__name__)
 
@@ -1024,42 +1024,17 @@ Button:hover { background: $amberLo; }
     def on_file_explorer_file_selected(
         self, event: FileExplorer.FileSelected
     ) -> None:
-        """Wire file clicks to the F2 Submit form when that tab is active."""
+        """Wire file clicks to the F2 Submit form when that tab is active.
+
+        The Submit view owns the routing: it knows which of its own fields the
+        user was last in, and a picked file belongs in that one (#58).
+        """
         if self.query_one(TabbedContent).active != "submit":
             # On other tabs: just show the path in a notification.
             self.notify(str(event.path), title="File", timeout=4)
             return
 
-        submit = self.query_one(SubmitView)
-        proj_input = submit.query_one("#project-dir-input", Input)
-        script_input = submit.query_one("#script-path-input", Input)
-
-        proj_val = proj_input.value.strip()
-        script_val = script_input.value.strip()
-
-        if not proj_val:
-            # Nothing set yet — fill PROJECT DIR with the file's parent and
-            # DRIVER SCRIPT with the filename.
-            proj_input.value = str(event.path.parent)
-            script_input.value = event.path.name
-            save_recent_path(event.path.parent)
-        elif not script_val:
-            # PROJECT DIR set but no driver script yet — fill DRIVER SCRIPT.
-            proj_dir = Path(proj_val).expanduser().resolve()
-            try:
-                script_input.value = str(event.path.relative_to(proj_dir))
-            except ValueError:
-                script_input.value = str(event.path)
-        else:
-            # Both already set — append to EXTRA FILES (comma-separated).
-            extra_input = submit.query_one("#extra-files-input", Input)
-            proj_dir = Path(proj_val).expanduser().resolve()
-            try:
-                new_entry = str(event.path.relative_to(proj_dir))
-            except ValueError:
-                new_entry = str(event.path)
-            existing = extra_input.value.strip()
-            extra_input.value = f"{existing}, {new_entry}" if existing else new_entry
+        self.query_one(SubmitView).receive_picked_file(event.path)
 
         # Switch to Submit tab so the user sees the result immediately.
         self.query_one(TabbedContent).active = "submit"

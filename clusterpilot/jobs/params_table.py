@@ -84,13 +84,20 @@ def load_params_table(path: str | Path) -> ParamsTable:
     """Parse a parameter table from a CSV or TSV file.
 
     The delimiter is chosen from the file extension: ``.csv`` is comma
-    separated, ``.tsv`` and ``.tab`` are tab separated. Blank lines are ignored
-    so a trailing newline does not become an empty task.
+    separated, ``.tsv`` and ``.tab`` are tab separated. Line endings are
+    normalised, and a whitespace-only line is not a task, so a trailing newline
+    does not become an empty one.
+
+    "Blank" deliberately means whitespace only, which is the one definition the
+    emitted reader can also apply. The two used to disagree: this parser
+    skipped a row whose cells were all empty whilst the reader counted physical
+    lines, so one interior blank line shifted every task after it onto its
+    neighbour's parameters, silently (#55).
 
     Raises:
         ParamsTableError: if the file is missing, unreadable, has an unknown
-            extension, is empty, has a malformed header, or has rows whose width
-            does not match the header.
+            extension, is empty, has a malformed header, contains a quoted
+            field, or has rows whose width does not match the header.
     """
     table_path = Path(path)
     delimiter = _DELIMITERS.get(table_path.suffix.lower())
@@ -105,22 +112,28 @@ def load_params_table(path: str | Path) -> ParamsTable:
     except OSError as exc:
         raise ParamsTableError(f"cannot read {table_path}: {exc}") from exc
 
-    records = [
-        row for row in csv.reader(text.splitlines(), delimiter=delimiter)
-        if any(cell.strip() for cell in row)
-    ]
+    # A table written on Windows otherwise leaves a carriage return on the last
+    # column of every row, and the value reaches the job with it attached.
+    normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    records: list[tuple[int, list[str]]] = []
+    for number, line in enumerate(normalised.split("\n"), start=1):
+        if not line.strip():
+            continue
+        records.append((number, _split_row(line, delimiter, table_path.name, number)))
+
     if not records:
         raise ParamsTableError(f"{table_path.name} is empty")
 
-    headers = [cell.strip() for cell in records[0]]
+    headers = [cell.strip() for cell in records[0][1]]
     _validate_headers(headers, table_path.name)
 
     rows: list[list[str]] = []
-    for offset, record in enumerate(records[1:], start=2):
+    for number, record in records[1:]:
         cells = [cell.strip() for cell in record]
         if len(cells) != len(headers):
             raise ParamsTableError(
-                f"{table_path.name} line {offset}: expected "
+                f"{table_path.name} line {number}: expected "
                 f"{len(headers)} values to match the header, found {len(cells)}"
             )
         rows.append(cells)
@@ -144,6 +157,12 @@ def render_bash_reader(table: ParamsTable, *, indent: str = "") -> str:
     so task 0 is the first data row. It fails loudly on a missing file or an
     out-of-range index, because a task that silently runs with empty parameters
     is worse than one that does not start.
+
+    It counts non-blank lines rather than physical ones, matching how
+    :func:`load_params_table` counts rows, so a blank line in the middle of a
+    table cannot shift the tasks after it (#55). It also drops a trailing
+    carriage return, because the file that reaches the cluster is the user's
+    own, line endings and all.
     """
     name = table.path.name
     delimiter = _DELIMITERS[table.path.suffix.lower()]
@@ -162,7 +181,8 @@ def render_bash_reader(table: ParamsTable, *, indent: str = "") -> str:
         f'{indent}    exit 1\n'
         f'{indent}fi\n'
         f'{indent}_cp_row="$(awk -F\'{awk_fs}\' -v n="$SLURM_ARRAY_TASK_ID" '
-        f'\'NR==n+2\' "$_cp_table")"\n'
+        f'\'{{sub(/\\r$/, "")}} /[^[:space:]]/ '
+        f'{{c++; if (c == n + 2) {{print; exit}}}}\' "$_cp_table")"\n'
         f'{indent}if [ -z "$_cp_row" ]; then\n'
         f'{indent}    echo "ERROR: no row for SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID '
         f'in $_cp_table" >&2\n'
@@ -187,6 +207,29 @@ def describe_for_prompt(table: ParamsTable) -> str:
 
 
 # ── Internals ─────────────────────────────────────────────────────────────────
+
+def _split_row(
+    line: str, delimiter: str, filename: str, number: int
+) -> list[str]:
+    """Split one physical line, refusing anything ``cut`` would read differently.
+
+    The emitted reader slices the row with ``cut``, which knows nothing about
+    quoting. A quoted delimiter, an embedded newline or a quoted field of any
+    kind would therefore give the job different values from the ones validated
+    here, and the difference would only show up in the results. Refuse the
+    table instead: the fix is one edit in a spreadsheet.
+    """
+    naive = line.split(delimiter)
+    parsed = next(csv.reader([line], delimiter=delimiter), [])
+    if parsed != naive:
+        raise ParamsTableError(
+            f"{filename} line {number}: quoted fields are not supported. The "
+            f"job reads its row with cut, which ignores quoting, so the value "
+            f"it gets would not be the one checked here. Remove the quotes, or "
+            f"the delimiter inside them."
+        )
+    return naive
+
 
 def _validate_headers(headers: list[str], filename: str) -> None:
     """Raise if any header is unusable as a shell variable name."""

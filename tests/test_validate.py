@@ -1059,3 +1059,161 @@ class TestTrilliumCheck:
             intent=SubmitIntent(cluster_type="drac"),
         )
         assert not any(f.check == "trillium" for f in findings)
+
+
+# ── the parameter-table reader (#54, #60) ─────────────────────────────────────
+
+READER = """# Parameter table: one row per array task, written by ClusterPilot.
+_cp_table="params.tsv"
+if [ ! -f "$_cp_table" ]; then
+    echo "ERROR: parameter table $_cp_table not found" >&2
+    exit 1
+fi
+_cp_row="$(awk -F'\\t' -v n="$SLURM_ARRAY_TASK_ID" '{sub(/\\r$/, "")} /[^[:space:]]/ {c++; if (c == n + 2) {print; exit}}' "$_cp_table")"
+if [ -z "$_cp_row" ]; then
+    echo "ERROR: no row for SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID in $_cp_table" >&2
+    exit 1
+fi
+export SGL_LATTICE="$(echo "$_cp_row" | cut -f1)"
+export SGL_ETA="$(echo "$_cp_row" | cut -f2)"
+"""
+
+TABLE_INTENT = SubmitIntent(
+    array_spec="0-69",
+    param_row_count=70,
+    param_reader=READER,
+    param_columns=("SGL_LATTICE", "SGL_ETA"),
+)
+
+
+def script_with(body: str) -> str:
+    """A minimal array script wrapped around *body*."""
+    return (
+        "#!/bin/bash\n"
+        "#SBATCH --job-name=zfc\n"
+        "#SBATCH --array=0-69\n"
+        "#SBATCH --output=%x-%A-%a.out\n"
+        "\n"
+        "module load julia/1.11.3\n"
+        "\n"
+        f"{body}\n"
+        "julia --project=. scripts/run.jl\n"
+    )
+
+
+class TestParamsReaderSurvived:
+    def test_reader_present_is_clean(self):
+        script = script_with(READER)
+        assert validate._check_params_reader(script, TABLE_INTENT) == []
+
+    def test_reader_present_indented_is_clean(self):
+        """The model chooses the indentation; only the content is checked."""
+        indented = "\n".join(
+            f"    {line}" if line else line for line in READER.splitlines()
+        )
+        assert validate._check_params_reader(script_with(indented), TABLE_INTENT) == []
+
+    def test_missing_reader_blocks(self):
+        script = script_with('export SGL_LATTICE=cubic\nexport SGL_ETA=0.30')
+        findings = validate._check_params_reader(script, TABLE_INTENT)
+        slugs = [f.check for f in findings]
+        assert "params-reader-missing" in slugs
+        missing = next(f for f in findings if f.check == "params-reader-missing")
+        assert missing.severity is Severity.BLOCKING
+
+    def test_paraphrased_reader_blocks(self):
+        """A reader that reads the same file its own way is not the reader."""
+        script = script_with(
+            '_cp_row="$(sed -n "$((SLURM_ARRAY_TASK_ID + 2))p" params.tsv)"\n'
+            'export SGL_LATTICE="$(echo "$_cp_row" | cut -f1)"\n'
+            'export SGL_ETA="$(echo "$_cp_row" | cut -f2)"'
+        )
+        findings = validate._check_params_reader(script, TABLE_INTENT)
+        assert [f.check for f in findings] == ["params-reader-missing"]
+
+    def test_case_statement_alongside_the_reader_blocks(self):
+        script = script_with(
+            READER
+            + 'case "$SLURM_ARRAY_TASK_ID" in\n'
+            '  0) SGL_HSTAR=0.1 ;;\n'
+            '  *) SGL_HSTAR=0.2 ;;\n'
+            'esac'
+        )
+        findings = validate._check_params_reader(script, TABLE_INTENT)
+        assert [f.check for f in findings] == ["params-reader-competing"]
+        assert findings[0].severity is Severity.BLOCKING
+
+    def test_array_indexed_by_task_id_blocks(self):
+        script = script_with(
+            READER + 'ETAS=(0.1 0.2 0.3)\nE="${ETAS[$SLURM_ARRAY_TASK_ID]}"'
+        )
+        findings = validate._check_params_reader(script, TABLE_INTENT)
+        assert [f.check for f in findings] == ["params-reader-competing"]
+
+    def test_braced_array_index_blocks(self):
+        script = script_with(READER + 'E="${ETAS[${SLURM_ARRAY_TASK_ID}]}"')
+        assert [f.check for f in validate._check_params_reader(script, TABLE_INTENT)] == [
+            "params-reader-competing"
+        ]
+
+    def test_task_id_used_as_a_seed_is_not_a_mapping(self):
+        script = script_with(READER + 'SEED=$((SGL_SEED_BASE + SLURM_ARRAY_TASK_ID))')
+        assert validate._check_params_reader(script, TABLE_INTENT) == []
+
+    def test_commented_out_mapping_is_not_a_mapping(self):
+        script = script_with(READER + '# case "$SLURM_ARRAY_TASK_ID" in')
+        assert validate._check_params_reader(script, TABLE_INTENT) == []
+
+    def test_no_table_means_no_check(self):
+        script = script_with('case "$SLURM_ARRAY_TASK_ID" in\n  *) X=1 ;;\nesac')
+        assert validate._check_params_reader(script, SubmitIntent()) == []
+
+    def test_only_one_competing_mapping_is_reported(self):
+        script = script_with(
+            READER
+            + 'case "$SLURM_ARRAY_TASK_ID" in\n  *) X=1 ;;\nesac\n'
+            'Y="${YS[$SLURM_ARRAY_TASK_ID]}"'
+        )
+        findings = validate._check_params_reader(script, TABLE_INTENT)
+        assert len(findings) == 1
+
+    def test_the_check_runs_from_validate_script(self, no_bash):
+        script = script_with("julia --project=. run.jl")
+        findings = validate_script(script, intent=TABLE_INTENT)
+        assert any(f.check == "params-reader-missing" for f in findings)
+        assert blocking(findings)
+
+
+class TestParamsColumnShadowed:
+    def test_fixed_export_after_the_reader_warns(self):
+        script = script_with(READER + "export SGL_LATTICE=cubi")
+        findings = validate._check_params_reader(script, TABLE_INTENT)
+        assert [f.check for f in findings] == ["params-column-shadowed"]
+        assert findings[0].severity is Severity.WARNING
+        assert "overrides the table" in findings[0].message
+        assert "SGL_LATTICE" in findings[0].message
+
+    def test_fixed_export_before_the_reader_warns_the_other_way(self):
+        script = script_with("export SGL_ETA=0.30\n" + READER)
+        findings = validate._check_params_reader(script, TABLE_INTENT)
+        assert [f.check for f in findings] == ["params-column-shadowed"]
+        assert "never takes effect" in findings[0].message
+
+    def test_assignment_without_export_warns(self):
+        script = script_with(READER + "SGL_ETA=0.30")
+        assert [f.check for f in validate._check_params_reader(script, TABLE_INTENT)] == [
+            "params-column-shadowed"
+        ]
+
+    def test_the_reader_own_exports_do_not_warn(self):
+        assert validate._check_params_reader(script_with(READER), TABLE_INTENT) == []
+
+    def test_a_column_never_assigned_is_clean(self):
+        script = script_with(READER + "export SGL_OTHER=1")
+        assert validate._check_params_reader(script, TABLE_INTENT) == []
+
+    def test_a_shadowed_column_does_not_block(self, no_bash):
+        script = script_with(READER + "export SGL_LATTICE=cubi")
+        findings = validate_script(script, intent=TABLE_INTENT)
+        assert any(f.check == "params-column-shadowed" for f in findings)
+        assert not blocking(findings)

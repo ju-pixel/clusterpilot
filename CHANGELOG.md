@@ -3,6 +3,72 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## v0.7.3 (2026-08-31)
+
+Parameter-table job arrays now work end to end. A real 70-task array was
+blocked by four separate faults on this one path, and each was silent about
+what it had done.
+
+### Fixed
+
+- **The file picker now puts a file in the field you are in.** Choosing a
+  parameter table with PARAM TABLE focused wrote the path into EXTRA FILES
+  instead, because the picker filled the first empty field rather than the
+  focused one. With the path never reaching PARAM TABLE, nothing parsed the
+  table, nothing derived the array size from it, and no reader was rendered:
+  the model was left to invent one from your prose description. In the case
+  that prompted this it read the first two columns positionally against a
+  table whose first column was `task_id`, so every task would have taken its
+  own task id as a physics parameter. (#58)
+- **The driver-uploaded check is given the real upload set.** It was handed
+  the EXTRA FILES field, which is not the upload set: for a Julia project the
+  driver is already in the allowlist. So the check did nothing at all when
+  EXTRA FILES was empty, and blocked a perfectly good script when EXTRA FILES
+  held anything that was not the driver. That is what stopped the array. (#52)
+- **EDIT re-runs the checks.** The edit handler replaced the script and
+  refreshed the display but validated nothing, so a block stayed on the SUBMIT
+  button after you had fixed the line it complained about, and a clean script
+  edited into a broken one was submitted unchecked. Both directions now work,
+  and the message that says to fix it with EDIT is finally true. (#53)
+- **The parameter-table reader is checked into the emitted script.**
+  ClusterPilot renders the row-reading block itself so the mapping from array
+  index to parameters has one implementation, but nothing confirmed the block
+  had survived generation. A script that paraphrased it, substituted a case
+  statement or hardcoded the values passed every other check. On a 70-task
+  array that is the most expensive silent failure available. It is now a
+  blocking finding, as is a second per-task mapping sitting beside the
+  table. (#54)
+- **A blank ARRAY field with a table now fills itself in.** The array spec
+  derived from the row count was written to a local variable and never back to
+  the field the submit path reads, so the job lost its per-task log names and
+  its array tracking. (#51)
+- **A blank line in the middle of a table no longer shifts every task after
+  it.** The parser skipped blank lines when counting rows whilst the emitted
+  reader selected by physical line number, so the two disagreed from the first
+  blank line onwards and each later task ran on its neighbour's parameters.
+  Both now count the same way. Line endings are normalised, a stray carriage
+  return no longer travels into the last column's value, and a quoted
+  delimiter is refused outright rather than being read one way here and
+  another way by `cut` on the cluster. (#55)
+- **A fixed export that shadows a table column is now reported.** A job
+  description that set `SGL_LATTICE=cubi` alongside a table whose
+  `SGL_LATTICE` column said `cubic` produced both, with no complaint and no
+  way to tell which had won. The table is the source of truth; the collision
+  is a warning that names the column, the line, and which one takes effect.
+  (#60)
+
+### Verified
+
+The workflow this release unblocks is covered by a test that drives the real
+submit screen: a Julia CUDA project, a 70-row TSV headed `task_id,
+SGL_LATTICE, SGL_ETA, SGL_HSTAR, SGL_SEED_BASE, SGL_BOX_PARITY`, one MIG
+slice per task on a DRAC cluster, the table chosen into PARAM TABLE and ARRAY
+typed as `0-69`. The emitted script carries the rendered reader, every task
+exports its five columns from its own row, the logs are named `%x-%A-%a.out`,
+and SUBMIT is enabled. The model call is stubbed there, so what is proven is
+everything ClusterPilot does around the generation rather than the generation
+itself.
+
 ## v0.7.2 (2026-08-30)
 
 ### Fixed

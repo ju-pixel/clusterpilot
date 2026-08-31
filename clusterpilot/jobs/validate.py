@@ -41,6 +41,9 @@ Checks implemented, by slug:
 ``resources``               cores or memory exceed what a node in the partition has
 ``trillium``                a directive Trillium refuses, on a Trillium cluster
 ``driver-not-uploaded``     the script runs a file the upload set omits
+``params-reader-missing``   the rendered parameter-table reader is not in the script
+``params-reader-competing`` a second per-task mapping alongside the table
+``params-column-shadowed``  a fixed export overwrites a parameter-table column
 ``stdbuf``                  the script wraps a command in stdbuf or LD_PRELOAD
 ``truncated``               the generation looks cut off part way through
 """
@@ -122,6 +125,15 @@ class SubmitIntent:
                             the choice was left blank
     ``account``             the SLURM account the job will be charged to, taken
                             from the cluster profile, "" when none is set
+    ``param_reader``        the row-reading block ClusterPilot rendered for the
+                            supplied parameter table, verbatim, "" when there
+                            is no table. The script must contain it: the reader
+                            is rendered rather than described precisely so the
+                            index-to-parameter mapping has one implementation,
+                            and a generation that paraphrases it has quietly
+                            reintroduced a second one
+    ``param_columns``       the table's column names, which become the per-task
+                            environment variables, empty when there is no table
     ``cluster_type``        the profile's cluster type, "" when unknown. The
                             only cluster fact here, and it is the user's own
                             configuration rather than a probe result: it gates
@@ -137,6 +149,8 @@ class SubmitIntent:
     requested_walltime: str = ""
     gpu_size: str = ""
     account: str = ""
+    param_reader: str = ""
+    param_columns: Sequence[str] = ()
     cluster_type: str = ""
 
 
@@ -172,6 +186,7 @@ def validate_script(
     findings.extend(_check_resources(script, intent, partitions))
     findings.extend(_check_trillium(script, intent))
     findings.extend(_check_driver_uploaded(script, intent))
+    findings.extend(_check_params_reader(script, intent))
     findings.extend(_check_stdbuf(script))
     findings.extend(_check_truncated(script))
     return findings
@@ -1139,6 +1154,152 @@ def _check_driver_uploaded(script: str, intent: SubmitIntent) -> list[Finding]:
             line=line,
         )
     ]
+
+
+# ── Check: the parameter-table reader survived generation ─────────────────────
+
+# The two shapes of hand-built per-task mapping the generator is told by name
+# not to emit when a table was supplied: a case statement keyed on the task id,
+# and a shell array indexed by it. Both are unambiguous. A bare
+# ``$SLURM_ARRAY_TASK_ID`` passed to the job as a seed or a suffix is not a
+# mapping and is deliberately not matched here.
+_CASE_ON_TASK_ID = re.compile(r"^\s*case\s+[^\n]*SLURM_ARRAY_TASK_ID[^\n]*\sin\b")
+_ARRAY_INDEXED_BY_TASK_ID = re.compile(
+    r"\$\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\$?\{?\s*SLURM_ARRAY_TASK_ID"
+)
+
+
+def _significant_lines(text: str) -> list[str]:
+    """*text* line by line, indentation stripped and blank lines dropped."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _block_span(script: str, block: str) -> tuple[int, int] | None:
+    """1-based (first, last) line of *block* inside *script*, or None.
+
+    Indentation and blank lines are ignored, because the model chooses where in
+    the script the block sits and indents it to match. Nothing else is ignored:
+    a reworded reader is a different reader, and that is the case worth
+    catching.
+    """
+    wanted = _significant_lines(block)
+    if not wanted:
+        return None
+    numbered = [
+        (number, line.strip())
+        for number, line in enumerate(script.splitlines(), start=1)
+        if line.strip()
+    ]
+    width = len(wanted)
+    for start in range(len(numbered) - width + 1):
+        if [text for _, text in numbered[start:start + width]] == wanted:
+            return numbered[start][0], numbered[start + width - 1][0]
+    return None
+
+
+def _assignment_lines(script: str, name: str, exclude: range) -> list[int]:
+    """Line numbers outside *exclude* where the script assigns *name*.
+
+    Matches ``NAME=`` and ``export NAME=`` at the start of a statement, which
+    is how a fixed environment block is written. Commented-out lines do not
+    count.
+    """
+    pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(name)}=")
+    found: list[int] = []
+    for number, line in enumerate(script.splitlines(), start=1):
+        if number in exclude:
+            continue
+        if pattern.match(_code_portion(line)):
+            found.append(number)
+    return found
+
+
+def _check_params_reader(script: str, intent: SubmitIntent) -> list[Finding]:
+    """Confirm the rendered parameter-table reader reached the script.
+
+    ClusterPilot renders the row-reading block itself and asks for it verbatim,
+    so the mapping from array index to parameters has exactly one
+    implementation. Nothing checked that it arrived (#54): a generation that
+    paraphrased it, swapped in a case statement or hardcoded the values passed
+    every other check, and on a large array that is the most expensive silent
+    failure available.
+
+    Also reports a fixed assignment to a column name (#60). The table is the
+    source of truth when one is supplied, so a constant of the same name is at
+    best redundant and at worst overrides every task's own value.
+
+    Skipped entirely when no table was supplied.
+    """
+    reader = intent.param_reader
+    if not reader.strip():
+        return []
+
+    findings: list[Finding] = []
+    span = _block_span(script, reader)
+    if span is None:
+        findings.append(
+            Finding(
+                check="params-reader-missing",
+                severity=Severity.BLOCKING,
+                message=(
+                    "The parameter table's reader block is not in the script, so "
+                    "nothing maps an array index to a row. Whatever the script "
+                    "does instead was invented for this generation and has not "
+                    "been checked against the table. Regenerate, or paste the "
+                    "block back in with EDIT."
+                ),
+            )
+        )
+    reader_lines = range(span[0], span[1] + 1) if span else range(0)
+
+    for number, line in enumerate(script.splitlines(), start=1):
+        if number in reader_lines:
+            continue
+        code = _code_portion(line)
+        if not (_CASE_ON_TASK_ID.search(code) or _ARRAY_INDEXED_BY_TASK_ID.search(code)):
+            continue
+        findings.append(
+            Finding(
+                check="params-reader-competing",
+                severity=Severity.BLOCKING,
+                message=(
+                    f"A second per-task mapping sits alongside the parameter "
+                    f"table: {_quote(line)}. The table is the mapping; two of "
+                    f"them disagree silently and only on some tasks."
+                ),
+                line=number,
+            )
+        )
+        break
+
+    # Only worth reporting when the reader is actually there. Without it the
+    # script assigns the columns some other way, which is the blocking finding
+    # above; every one of those assignments would be reported here as well.
+    columns = intent.param_columns if span is not None else ()
+    for column in columns:
+        for number in _assignment_lines(script, column, reader_lines):
+            overrides = span is not None and number > span[1]
+            consequence = (
+                "it runs after the reader, so it overrides the table on every "
+                "task" if overrides else
+                "the reader runs later and wins, so the fixed value never "
+                "takes effect"
+            )
+            findings.append(
+                Finding(
+                    check="params-column-shadowed",
+                    severity=Severity.WARNING,
+                    message=(
+                        f"'{column}' is both a parameter-table column and a "
+                        f"fixed assignment in the script, and {consequence}. "
+                        f"The table is the source of truth: remove the fixed "
+                        f"assignment."
+                    ),
+                    line=number,
+                )
+            )
+
+    return findings
 
 
 # ── Check: stdbuf and LD_PRELOAD ──────────────────────────────────────────────
