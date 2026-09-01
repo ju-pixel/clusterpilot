@@ -104,6 +104,9 @@ class PollDaemon:
         # token was configured after the job had already changed state), rather
         # than only syncing on a live edge.
         self._synced: dict[str, str] = {}
+        # Job key -> when its log tail was last pushed, so a running job's log
+        # refreshes on a clock rather than only when its status changes (#72).
+        self._tailed: dict[str, float] = {}
         # Per-event switches read from the user's hosted account at
         # reconcile. None means the cloud has no opinion (self-hosted, or
         # the fetch failed) and local config alone decides.
@@ -235,7 +238,8 @@ class PollDaemon:
 
         new_status = status.state
         summary = status.summary
-        if summary != (job.status_detail or ""):
+        detail_changed = summary != (job.status_detail or "")
+        if detail_changed:
             # Record the per-task breakdown even when the aggregate state has
             # not moved, so the TUI shows an array's progress between waves.
             # Written against the current state on purpose: the transition
@@ -246,6 +250,16 @@ class PollDaemon:
                 status_detail=summary,
             )
             job.status_detail = summary
+
+        # Where the scheduler actually put the job. On a routed cluster the
+        # script names no partition, so squeue is the only source, and until
+        # this landed the field held whatever submit had guessed (#57).
+        if status.partition and status.partition != job.partition:
+            await update_status(
+                db, job.job_id, job.cluster_name, job.status,
+                partition=status.partition,
+            )
+            job.partition = status.partition
 
         # Measured before the transition is handled, so the final poll of a
         # job still charges the interval it was running for.
@@ -258,15 +272,46 @@ class PollDaemon:
         if new_status == "RUNNING":
             await self._maybe_notify_running(profile, job)
 
-        # No live transition, but the hosted API may not yet reflect this status
-        # (transition missed before the token was set, or a prior sync failed).
-        # Re-push once per status until it lands; cheap thereafter.
-        if (
-            self.config.hosted.api_token
-            and self._synced.get(_key(job)) != new_status
-        ):
+        if not self.config.hosted.api_token:
+            return
+
+        # Three reasons to push without a transition:
+        #
+        # 1. The API may not reflect this status yet (a transition missed
+        #    before the token was set, or a prior sync failed). Once per
+        #    status until it lands; cheap thereafter.
+        # 2. The per-task breakdown changed. This is the one that mattered:
+        #    the guard below used to be reason 1 alone, so an array pushed
+        #    "10R/60PD" at the instant it went RUNNING and never corrected it,
+        #    however long it ran (#72). The TUI was right the whole time,
+        #    which is why it only showed on the web.
+        # 3. The log tail is old. Unlike the breakdown this costs an SSH round
+        #    trip, so it is bounded by time per job rather than run per poll.
+        unsynced = self._synced.get(_key(job)) != new_status
+        tail_due = self._tail_is_due(job, new_status)
+        if not (unsynced or detail_changed or tail_due):
+            return
+
+        log_tail = None
+        if unsynced or tail_due:
             log_tail = await self._tail_for_sync(profile, job, new_status)
-            await self._sync(job, new_status, log_tail=log_tail)
+            if log_tail is not None:
+                self._tailed[_key(job)] = time.time()
+        await self._sync(job, new_status, log_tail=log_tail)
+
+    def _tail_is_due(self, job: JobRecord, status: str) -> bool:
+        """True when a running job's log tail is old enough to re-send.
+
+        A job that stays RUNNING for hours used to show the excerpt captured
+        at the moment it started, because the tail only ever travelled with a
+        transition (#72, and the first half of #69). Terminal states are
+        excluded: their tail is sent by the transition itself and will not
+        change afterwards.
+        """
+        if status != "RUNNING":
+            return False
+        last = self._tailed.get(_key(job))
+        return last is None or (time.time() - last) >= TAIL_REFRESH_SECONDS
 
     async def _handle_transition(
         self,
@@ -779,6 +824,11 @@ class PollDaemon:
 # scrolling: 50 lines is a notification excerpt, not a log (#64). Capped by
 # bytes as well as lines, because a job can emit very long lines and this
 # travels on every status transition, for every task of every array.
+# How often a running job's log tail is re-sent to the dashboard. Each refresh
+# is one SSH round trip, so this is deliberately slower than the poll cycle:
+# the point is that a long run's log stops being frozen, not that it is live.
+TAIL_REFRESH_SECONDS = 300
+
 SYNC_TAIL_LINES = 500
 SYNC_TAIL_BYTES = 32_000
 

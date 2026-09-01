@@ -18,6 +18,8 @@ from textual.widgets import Button, Label, ListItem, ListView, RichLog, Static
 
 from clusterpilot.cluster.slurm import (
     TERMINAL_STATES,
+    format_summary,
+    parse_summary,
     cancel,
     cat_log,
     find_array_logs,
@@ -66,14 +68,55 @@ def _elapsed(job: JobRecord) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 
+# Usable columns inside #queue-panel: 34 wide less its two border columns.
+_ROW_WIDTH = 32
+
+
 def _format_list_item(job: JobRecord) -> str:
+    """Two lines: name and breakdown, then id, cluster and state glyph.
+
+    The per-task breakdown belongs on the row, not only in the detail pane.
+    With four arrays across four clusters, opening each one in turn to learn
+    how far it has got is what sends you to ssh instead.
+
+    It goes on the name line rather than after the cluster because the second
+    line is already close to the panel's width: a `trillium-gpu` row with a
+    breakdown like `120R/880PD` would push it past 32 columns and Textual
+    would clip the right-hand end, which is precisely the number being added.
+    On the name line the name gives way instead, which costs less.
+    """
     color, icon = _STATUS_STYLE.get(job.status, ("[#f0e8d0]", "?"))
-    name = job.job_name[:26]
+    detail = job.status_detail or ""
+    if detail:
+        name_width = max(12, _ROW_WIDTH - len(detail) - 3)
+        name = job.job_name[:name_width]
+        head = f" [bold]{name}[/]  [#7a6a50]{detail}[/]"
+    else:
+        head = f" [bold]{job.job_name[:26]}[/]"
     return (
-        f" [bold]{name}[/]\n"
+        f"{head}\n"
         f" [#7a6a50]#{job.job_id}  {job.cluster_name}[/]  "
         f"{color}{icon}[/]"
     )
+
+
+def _queue_title(jobs: list[JobRecord]) -> str:
+    """QUEUE header carrying the total task breakdown across active jobs.
+
+    The question this answers is "how many of my tasks are running right now",
+    which otherwise means logging into every cluster in turn. Only active jobs
+    count: finished ones would bury the live numbers under a growing pile of
+    completions.
+    """
+    totals: dict[str, int] = {}
+    for job in jobs:
+        if job.status in TERMINAL_STATES:
+            continue
+        for state, count in parse_summary(job.status_detail or "").items():
+            totals[state] = totals.get(state, 0) + count
+    if not totals:
+        return "═ QUEUE "
+    return f"═ QUEUE  [#e8a020]{format_summary(totals)}[/] "
 
 
 def _display_path(path: str) -> str:
@@ -241,6 +284,7 @@ class JobsView(Static):
         return [ListItem(Static(_format_list_item(job))) for job in self._jobs]
 
     def _rebuild_list(self) -> None:
+        self.query_one("#queue-title", Label).update(_queue_title(self._jobs))
         job_list = self.query_one("#job-list", ListView)
         job_list.clear()
         for item in self._list_items():

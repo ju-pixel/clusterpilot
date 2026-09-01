@@ -276,6 +276,7 @@ async def update_status(
     synced: bool | None = None,
     status_detail: str | None = None,
     efficiency: str | None = None,
+    partition: str | None = None,
 ) -> None:
     """Update mutable fields for a job. Only non-None kwargs are written."""
     sets: list[str] = ["status = ?"]
@@ -299,6 +300,10 @@ async def update_status(
     if efficiency is not None:
         sets.append("efficiency = ?")
         params.append(efficiency)
+
+    if partition is not None:
+        sets.append("partition = ?")
+        params.append(partition)
 
     params.extend([job_id, cluster_name])
     await db.execute(

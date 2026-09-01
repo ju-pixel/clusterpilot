@@ -45,6 +45,8 @@ _ABBREVIATIONS = {
     "CANCELLED": "CA",
 }
 
+_STATE_BY_ABBREVIATION = {v: k for k, v in _ABBREVIATIONS.items()}
+
 # Display order within each of the three summary groups.
 _SUMMARY_ORDER = (
     "RUNNING", "COMPLETING",
@@ -101,11 +103,16 @@ class JobStatus:
         state:  Canonical aggregate state, one of the usual SLURM names.
         counts: Normalised state -> task count, e.g. {"RUNNING": 5, "PENDING": 27}.
         source: Which command produced this, "squeue" or "sacct".
+        partition: Where the scheduler actually put the job, when squeue said.
+            Empty from the sacct path and empty when squeue did not report one.
+            On a routed cluster this is the only truthful source: the script
+            carries no --partition directive for anything to read (#57).
     """
 
     state: str
     counts: dict[str, int] = field(default_factory=dict)
     source: str = ""
+    partition: str = ""
 
     @property
     def summary(self) -> str:
@@ -115,11 +122,7 @@ class JobStatus:
         """
         if len(self.counts) <= 1 and sum(self.counts.values()) <= 1:
             return ""
-        parts = [
-            f"{self.counts[state]}{_ABBREVIATIONS.get(state, state)}"
-            for state in sorted(self.counts, key=_summary_sort_key)
-        ]
-        return "/".join(parts)
+        return format_summary(self.counts)
 
 
 def normalise_state(raw: str) -> str:
@@ -174,11 +177,14 @@ async def query_status(host: str, user: str, job_id: str) -> JobStatus | None:
     try:
         out = await run_remote(
             host, user,
-            f"squeue -j {job_id} -h -o '%i|%T' 2>/dev/null",
+            f"squeue -j {job_id} -h -o '%i|%T|%P' 2>/dev/null",
         )
         counts = _parse_status_lines(out)
         if counts:
-            return JobStatus(state=aggregate(counts), counts=counts, source="squeue")
+            return JobStatus(
+                state=aggregate(counts), counts=counts, source="squeue",
+                partition=_parse_partition(out),
+            )
     except SSHError:
         pass
 
@@ -209,6 +215,41 @@ async def job_status(host: str, user: str, job_id: str) -> str | None:
     return status.state if status else None
 
 
+def format_summary(counts: dict[str, int]) -> str:
+    """Render a state -> count map as "5R/27PD", running-like states first.
+
+    The one implementation of this format. The F1 queue header totals several
+    jobs' breakdowns and has to read the same way as the rows beneath it, so it
+    formats through here rather than sorting abbreviations of its own, which
+    put pending before running.
+    """
+    return "/".join(
+        f"{counts[state]}{_ABBREVIATIONS.get(state, state)}"
+        for state in sorted(counts, key=_summary_sort_key)
+    )
+
+
+def parse_summary(text: str) -> dict[str, int]:
+    """Inverse of format_summary: "5R/27PD" back to state -> count.
+
+    Unrecognised parts are skipped rather than guessed at, so a summary
+    written by a newer version cannot corrupt a total.
+    """
+    counts: dict[str, int] = {}
+    for part in text.split("/"):
+        part = part.strip()
+        digits = ""
+        for char in part:
+            if not char.isdigit():
+                break
+            digits += char
+        state = _STATE_BY_ABBREVIATION.get(part[len(digits):])
+        if not digits or state is None:
+            continue
+        counts[state] = counts.get(state, 0) + int(digits)
+    return counts
+
+
 def _summary_sort_key(state: str) -> tuple[int, int, str]:
     """Order summary entries: running-like, then pending-like, then terminal."""
     if state in _RUNNING_LIKE:
@@ -219,6 +260,21 @@ def _summary_sort_key(state: str) -> tuple[int, int, str]:
         group = 2
     rank = _SUMMARY_ORDER.index(state) if state in _SUMMARY_ORDER else len(_SUMMARY_ORDER)
     return (group, rank, state)
+
+
+def _parse_partition(text: str) -> str:
+    """First partition named in "<id>|<STATE>|<PARTITION>" lines, or "".
+
+    Every task of an array is in the same partition, so the first line that
+    carries one settles it. Splits without discarding empty fields, so a job
+    squeue reports no partition for yields "" rather than reading the state
+    column as a partition name.
+    """
+    for raw_line in text.splitlines():
+        fields = raw_line.strip().split("|")
+        if len(fields) >= 3 and fields[2].strip():
+            return fields[2].strip()
+    return ""
 
 
 def _parse_status_lines(text: str) -> dict[str, int]:
