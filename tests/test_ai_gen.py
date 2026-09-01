@@ -13,6 +13,8 @@ from clusterpilot.jobs.ai_gen import (
     _build_system_prompt,
     _format_partitions,
     _one_gpu_of,
+    estimate_cost,
+    price_for,
 )
 
 
@@ -1246,14 +1248,22 @@ class TestPricing:
         assert usage.cost_usd == pytest.approx(30.00)
 
     def test_the_4_6_rows_are_kept(self):
-        from clusterpilot.jobs.ai_gen import _PRICING
-        assert _PRICING["claude-sonnet-4-6"] == (3.00, 15.00)
-        assert _PRICING["claude-opus-4-6"] == (5.00, 25.00)
-        assert _PRICING["claude-haiku-4-5"] == (0.80, 4.00)
+        assert price_for("claude-sonnet-4-6") == (3.00, 15.00)
+        assert price_for("claude-opus-4-6") == (5.00, 25.00)
 
-    def test_an_unknown_model_still_costs_nothing(self):
+    def test_haiku_4_5_is_priced_at_the_published_rate(self):
+        """This row read (0.80, 4.00) until #67 and was 20% low."""
+        assert price_for("claude-haiku-4-5") == (1.00, 5.00)
+
+    def test_an_unknown_model_is_unknown_rather_than_free(self):
+        """Changed by #67. It used to answer 0.0, which reads as "this cost
+        nothing" and is only true for a local model. A model released since
+        this table was last checked costs something nobody here knows, and the
+        display has to be able to tell the two apart from a real zero."""
         usage = ApiUsage(model="llama3.2", input_tokens=1000, output_tokens=1000)
-        assert usage.cost_usd == 0.0
+        assert usage.cost_usd is None
+        assert price_for("llama3.2") is None
+        assert estimate_cost("llama3.2", 1000, 1000) is None
 
 
 class TestAllowanceFieldsFromTheProxy:

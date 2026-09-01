@@ -26,7 +26,7 @@ from clusterpilot.cluster.slurm import (
     tail_log,
 )
 from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db, mark_remote_cleaned, update_status
-from clusterpilot.jobs.ai_gen import _PRICING
+from clusterpilot.jobs.ai_gen import estimate_cost
 from clusterpilot.jobs.fieldnotes import log_completed_job
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import SSHError, is_connected, remove_remote_dir
@@ -89,11 +89,15 @@ def _display_path(path: str) -> str:
 
 
 def _format_meta(job: JobRecord) -> str:
-    # Per-job API cost (if usage was recorded).
+    # Per-job API cost, for the generation that produced the submitted script.
+    # An unpriced model says so rather than borrowing another model's rate: the
+    # old fallback billed a free local generation at Sonnet 4.6's price (#67).
     if job.input_tokens or job.output_tokens:
-        inp_rate, out_rate = _PRICING.get(job.model_used, (3.00, 15.00))
-        cost = (job.input_tokens * inp_rate + job.output_tokens * out_rate) / 1_000_000
-        cost_str = f"[#e8a020]${cost:.4f}[/]"
+        cost = estimate_cost(job.model_used, job.input_tokens, job.output_tokens)
+        if cost is None:
+            cost_str = f"[#7a6a50]not priced ({job.model_used or 'unknown model'})[/]"
+        else:
+            cost_str = f"[#e8a020]${cost:.4f}[/]"
     else:
         cost_str = "[#7a6a50]—[/]"
 

@@ -150,6 +150,23 @@ class JobRecord:
         return end - self.started_at
 
 
+
+_CREATE_GENERATIONS = """
+CREATE TABLE IF NOT EXISTS generations (
+    row_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    generated_at  REAL    NOT NULL,
+    cluster_name  TEXT    NOT NULL DEFAULT '',
+    model         TEXT    NOT NULL DEFAULT '',
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    -- 1 for the rows written once from the jobs table when this table was
+    -- introduced, so an upgrade does not appear to wipe the running total.
+    -- The seed is guarded on these rows rather than on the table being
+    -- empty, so a real generation landing first cannot block it.
+    seeded        INTEGER NOT NULL DEFAULT 0
+)
+"""
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 async def init_db(db: "aiosqlite.Connection") -> None:
@@ -186,7 +203,38 @@ async def init_db(db: "aiosqlite.Connection") -> None:
             await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {defn}")
         except Exception:
             pass  # Column already exists.
+    await db.execute(_CREATE_GENERATIONS)
+    await _seed_generations(db)
     await db.commit()
+
+
+async def _seed_generations(db: "aiosqlite.Connection") -> None:
+    """Carry an existing database's job usage into the generations table once.
+
+    Spend is counted from generations, not from jobs (#66), so without this an
+    upgrade would show a lifetime total of zero for someone with a year of
+    history. One row per job that recorded usage, marked seeded so it happens
+    exactly once and so the rows stay distinguishable from real generations.
+
+    A job row records only the last generation that produced it, which is the
+    undercount this table exists to fix; seeding cannot invent the calls that
+    were never recorded, so a seeded history stays a floor. Everything from
+    here on is counted properly.
+    """
+    async with db.execute("SELECT COUNT(*) FROM generations WHERE seeded = 1") as cur:
+        row = await cur.fetchone()
+    if row and row[0]:
+        return
+    await db.execute(
+        """
+        INSERT INTO generations (
+            generated_at, cluster_name, model, input_tokens, output_tokens, seeded
+        )
+        SELECT submitted_at, cluster_name, model_used, input_tokens, output_tokens, 1
+        FROM jobs
+        WHERE input_tokens > 0 OR output_tokens > 0
+        """
+    )
 
 
 # ── Write operations ──────────────────────────────────────────────────────────
@@ -529,15 +577,51 @@ async def get_jobs_missing_accounting(
     return [_row_to_record(r) for r in rows]
 
 
-async def get_total_usage(
+async def record_generation(
     db: "aiosqlite.Connection",
-) -> tuple[int, int]:
-    """Return (total_input_tokens, total_output_tokens) across all jobs."""
+    *,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cluster_name: str = "",
+) -> None:
+    """Record one billed generation, whatever becomes of the script.
+
+    Called when the generation finishes rather than when a job is submitted,
+    because a regenerated, abandoned or truncation-refused script is billed
+    exactly like one that reaches sbatch (#66).
+    """
+    await db.execute(
+        """
+        INSERT INTO generations (
+            generated_at, cluster_name, model, input_tokens, output_tokens
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (time.time(), cluster_name, model, input_tokens, output_tokens),
+    )
+    await db.commit()
+
+
+async def get_spend_by_model(
+    db: "aiosqlite.Connection",
+) -> list[tuple[str, int, int]]:
+    """Return (model, input_tokens, output_tokens) grouped by model.
+
+    Grouped rather than totalled because the two models in play are priced 2.5x
+    apart and the HARDER JOB switch is per generation: one rate applied to the
+    whole history reads an Opus month as a Sonnet one (#66).
+    """
     async with db.execute(
-        "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM jobs"
+        """
+        SELECT model,
+               COALESCE(SUM(input_tokens), 0),
+               COALESCE(SUM(output_tokens), 0)
+        FROM generations
+        GROUP BY model
+        """
     ) as cur:
-        row = await cur.fetchone()
-    return (row[0], row[1]) if row else (0, 0)
+        rows = await cur.fetchall()
+    return [(r[0] or "", r[1], r[2]) for r in rows]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
