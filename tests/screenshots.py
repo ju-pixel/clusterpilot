@@ -122,6 +122,10 @@ def demo_jobs() -> list[tuple[JobRecord, float | None, float | None, bool]]:
                 partition="gpubase_bygpu_b1",
                 working_dir="/scratch/alice/clusterpilot_jobs/zfc-cooling",
                 status="PENDING",
+                # A second array, so the QUEUE header has something to total
+                # across jobs rather than echoing a single row.
+                status_detail="32PD",
+                array_spec="0-31",
                 walltime="12:00:00",
                 submitted_at=NOW - 900,
             ),
