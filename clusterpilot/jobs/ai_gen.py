@@ -9,7 +9,7 @@ Usage
     usage = ApiUsage()
     async for token in generate_script(description, probe, profile, model, api_key, usage=usage):
         print(token, end="", flush=True)
-    print(f"Cost: ${usage.cost_usd:.4f}")
+    print(f"Cost: ${usage.cost_usd:.4f}")   # None when the model is not priced
 
 Hosted tier
 -----------
@@ -60,13 +60,36 @@ _PRICING: dict[str, tuple[float, float]] = {
     "claude-opus-5":      (5.00,  25.00),
     "claude-sonnet-4-6":  (3.00,  15.00),
     "claude-opus-4-6":    (5.00,  25.00),
-    "claude-haiku-4-5":   (0.80,   4.00),
+    # Corrected 2026-09-01: this row said (0.80, 4.00), which read every Haiku
+    # figure 20% low. Checked against published pricing along with the rest of
+    # the table, which is right (#67).
+    "claude-haiku-4-5":   (1.00,   5.00),
     # OpenAI
     "gpt-4o":             (2.50,  10.00),
     "gpt-4o-mini":        (0.15,   0.60),
     "o4-mini":            (1.10,   4.40),
     "gpt-4-turbo":       (10.00,  30.00),
 }
+
+
+def price_for(model: str) -> tuple[float, float] | None:
+    """Per-million-token (input, output) price for *model*, or None.
+
+    None means "not priced here", which is deliberately distinct from free.
+    Callers must render it as unknown rather than substituting a number: the
+    two previous fallbacks, 0.00 here and Sonnet 4.6's rate in the TUI, gave
+    three different answers for one generation (#67).
+    """
+    return _PRICING.get(model)
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """Estimated USD cost of one call, or None when *model* is not priced."""
+    rates = price_for(model)
+    if rates is None:
+        return None
+    inp_rate, out_rate = rates
+    return (input_tokens * inp_rate + output_tokens * out_rate) / 1_000_000
 
 
 @dataclass
@@ -94,13 +117,15 @@ class ApiUsage:
         return self.stop_reason == TRUNCATION_STOP_REASON
 
     @property
-    def cost_usd(self) -> float:
-        """Estimated cost in USD based on published per-token pricing.
+    def cost_usd(self) -> float | None:
+        """Estimated cost in USD, or None when the model is not priced here.
 
-        Returns 0.0 for unknown models (e.g. local Ollama models).
+        None is not zero. A local Ollama model genuinely costs nothing, and a
+        model released since this table was last checked costs something
+        nobody here knows; both have to reach the display as unknown so it can
+        say so (#67).
         """
-        inp_rate, out_rate = _PRICING.get(self.model, (0.00, 0.00))
-        return (self.input_tokens * inp_rate + self.output_tokens * out_rate) / 1_000_000
+        return estimate_cost(self.model, self.input_tokens, self.output_tokens)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

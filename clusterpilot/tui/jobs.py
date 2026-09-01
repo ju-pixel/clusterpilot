@@ -26,7 +26,7 @@ from clusterpilot.cluster.slurm import (
     tail_log,
 )
 from clusterpilot.db import DB_PATH, JobRecord, delete_job, get_all_jobs, init_db, mark_remote_cleaned, update_status
-from clusterpilot.jobs.ai_gen import _PRICING
+from clusterpilot.jobs.ai_gen import estimate_cost
 from clusterpilot.jobs.fieldnotes import log_completed_job
 from clusterpilot.jobs.sync import sync_job
 from clusterpilot.ssh.connection import SSHError, is_connected, remove_remote_dir
@@ -89,11 +89,15 @@ def _display_path(path: str) -> str:
 
 
 def _format_meta(job: JobRecord) -> str:
-    # Per-job API cost (if usage was recorded).
+    # Per-job API cost, for the generation that produced the submitted script.
+    # An unpriced model says so rather than borrowing another model's rate: the
+    # old fallback billed a free local generation at Sonnet 4.6's price (#67).
     if job.input_tokens or job.output_tokens:
-        inp_rate, out_rate = _PRICING.get(job.model_used, (3.00, 15.00))
-        cost = (job.input_tokens * inp_rate + job.output_tokens * out_rate) / 1_000_000
-        cost_str = f"[#e8a020]${cost:.4f}[/]"
+        cost = estimate_cost(job.model_used, job.input_tokens, job.output_tokens)
+        if cost is None:
+            cost_str = f"[#7a6a50]not priced ({job.model_used or 'unknown model'})[/]"
+        else:
+            cost_str = f"[#e8a020]${cost:.4f}[/]"
     else:
         cost_str = "[#7a6a50]—[/]"
 
@@ -137,6 +141,7 @@ class JobsView(Static):
         Binding("l", "log", "Log", show=False),
         Binding("c", "clean", "Clean remote", show=False),
         Binding("d", "delete", "Forget", show=False),
+        Binding("y", "copy_log", "Copy log", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -148,7 +153,7 @@ class JobsView(Static):
                 yield Label("═ JOB DETAIL ", id="meta-title")
                 yield Static("Select a job from the queue.", id="meta-content")
             with Vertical(id="log-panel"):
-                yield Label("═ OUTPUT LOG ", id="log-title")
+                yield Label(r"═ OUTPUT LOG  \[Y] copy ", id="log-title")
                 yield RichLog(id="log-display", highlight=False, markup=True)
             with Vertical(id="action-bar"):
                 # The brackets are escaped: a button label is parsed as
@@ -374,6 +379,33 @@ class JobsView(Static):
             log_widget.write(f"[{color}]{line}[/]")
 
     # ── Action buttons ────────────────────────────────────────────────────────
+
+    def action_copy_log(self) -> None:
+        """Copy the OUTPUT LOG panel to the clipboard.
+
+        A key rather than a mouse selection: RichLog is a ScrollView, so a drag
+        inside it scrolls instead of selecting, and a selection could only ever
+        reach the lines currently on screen. The log is usually taller than the
+        panel, and the point of copying it is to paste the whole thing
+        somewhere else (#65).
+
+        The panel's own strips are the source, so what lands on the clipboard
+        is exactly what is displayed, minus the colour markup. Textual sends it
+        as OSC 52, which means this also works when the TUI is being driven
+        over SSH.
+        """
+        log_widget = self.query_one("#log-display", RichLog)
+        lines = [strip.text.rstrip() for strip in log_widget.lines]
+        while lines and not lines[-1]:
+            lines.pop()
+        if not lines:
+            self.app.notify("Nothing in the output log to copy.")
+            return
+        self.app.copy_to_clipboard("\n".join(lines) + "\n")
+        count = len(lines)
+        self.app.notify(
+            f"Copied {count} {'line' if count == 1 else 'lines'} to the clipboard.",
+        )
 
     @on(Button.Pressed, "#btn-rsync")
     def action_rsync(self) -> None:

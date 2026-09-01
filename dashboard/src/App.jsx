@@ -95,7 +95,13 @@ export default function ClusterPilotDashboard() {
   return (
     <div style={{
       background: T.bg,
-      minHeight: "100vh",
+      // The shell is an app frame, not a document: the topbar and sidebar stay
+      // put and each pane scrolls inside itself. That only works if the frame
+      // is bounded to the viewport. With min-height it was free to grow, so a
+      // long page (a job's Logs tab, #64) stretched the whole shell instead of
+      // scrolling its own pane, and no scrollbar ever appeared. dvh rather
+      // than vh so a phone's collapsing address bar does not cut the bottom off.
+      height: "100dvh",
       color: T.text,
       display: "flex",
       flexDirection: "column",

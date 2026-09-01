@@ -15,8 +15,8 @@ from textual.widgets import Static, TabbedContent, TabPane
 
 from clusterpilot import __version__
 from clusterpilot.config import Config
-from clusterpilot.db import DB_PATH, get_total_usage, init_db
-from clusterpilot.jobs.ai_gen import _PRICING
+from clusterpilot.db import DB_PATH, get_spend_by_model, init_db
+from clusterpilot.jobs.ai_gen import estimate_cost
 from clusterpilot.jobs.daemon import PollDaemon
 from clusterpilot.config import ClusterProfile
 from clusterpilot.ssh.connection import is_connected, open_connection
@@ -52,8 +52,16 @@ class TitleBar(Static):
         """Re-render with current SSH connection state for each cluster."""
         self.update(self._build_content())
 
-    def set_cost(self, cost_usd: float) -> None:
-        self._cost_text = f"[#7a6a50]API spend:[/] [#e8a020]${cost_usd:.4f}[/]"
+    def set_cost(self, cost_usd: float, *, unpriced: bool = False) -> None:
+        """Show cumulative spend, marked as a floor when something is unpriced.
+
+        A local Ollama model has no published price, so its generations cannot
+        be added up. Saying "at least" is honest; quietly leaving them out and
+        showing a bare total is the habit that made this figure untrustworthy
+        in the first place (#66).
+        """
+        prefix = "≥" if unpriced else ""
+        self._cost_text = f"[#7a6a50]API spend:[/] [#e8a020]{prefix}${cost_usd:.4f}[/]"
         self.update(self._build_content())
 
 
@@ -872,14 +880,24 @@ Button:hover { background: $amberLo; }
         self._check_for_update()
 
     async def _refresh_cost(self) -> None:
-        """Update the title bar with cumulative API spend."""
+        """Update the title bar with cumulative API spend.
+
+        Priced per model rather than at the configured default: HARDER JOB is a
+        per-generation choice, and Opus is 2.5x Sonnet, so one rate across the
+        whole history read an Opus month as a Sonnet one (#66).
+        """
         async with aiosqlite.connect(self._db_path) as db:
             await init_db(db)
-            inp, out = await get_total_usage(db)
-        # Use default sonnet pricing for the aggregate (good enough for display).
-        inp_rate, out_rate = _PRICING.get(self._config.model, (3.00, 15.00))
-        cost = (inp * inp_rate + out * out_rate) / 1_000_000
-        self.query_one(TitleBar).set_cost(cost)
+            rows = await get_spend_by_model(db)
+        total = 0.0
+        unpriced = False
+        for model, inp, out in rows:
+            cost = estimate_cost(model, inp, out)
+            if cost is None:
+                unpriced = unpriced or bool(inp or out)
+                continue
+            total += cost
+        self.query_one(TitleBar).set_cost(total, unpriced=unpriced)
 
     @work(thread=False)
     async def _check_for_update(self) -> None:

@@ -1,6 +1,7 @@
 """F2 SUBMIT view — describe job → AI generates script → upload + submit."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -28,7 +29,7 @@ from clusterpilot.cluster.probe import (
 )
 from clusterpilot.cluster.slurm import SlurmError, submit
 from clusterpilot.config import Config
-from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job
+from clusterpilot.db import DB_PATH, JobRecord, init_db, insert_job, record_generation
 from clusterpilot.jobs.ai_gen import ApiUsage, generate_script
 from clusterpilot.jobs.env_detect import ScriptEnvironment, analyze_script
 from clusterpilot.jobs.params_table import (
@@ -54,6 +55,8 @@ from clusterpilot.tui.widgets.file_explorer import save_recent_path
 if TYPE_CHECKING:
     from clusterpilot.tui.app import ClusterPilotApp
     from collections.abc import Callable
+
+log = logging.getLogger(__name__)
 
 
 class PathSuggester(Suggester):
@@ -1216,9 +1219,31 @@ class SubmitView(Static):
         )
 
         u = self._last_usage
+
+        # Recorded here, not at submit. This call has been billed whatever
+        # happens to the script next: regenerated, abandoned, or refused below
+        # for truncation. Counting only the generations that reached sbatch is
+        # what made the running total a floor rather than a total (#66).
+        if u.input_tokens or u.output_tokens:
+            try:
+                async with aiosqlite.connect(app._db_path) as db:
+                    await init_db(db)
+                    await record_generation(
+                        db,
+                        model=u.model,
+                        input_tokens=u.input_tokens,
+                        output_tokens=u.output_tokens,
+                        cluster_name=profile.name,
+                    )
+            except Exception:
+                # A bookkeeping failure must not cost the user their script.
+                log.warning("Could not record generation usage", exc_info=True)
+
+        cost = u.cost_usd
+        cost_text = f"${cost:.4f}" if cost is not None else f"{u.model} not priced"
         self.app.notify(
             f"Script generated — {u.input_tokens:,} in + {u.output_tokens:,} out "
-            f"tokens (${u.cost_usd:.4f})",
+            f"tokens ({cost_text})",
             severity="information",
             timeout=8,
         )

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from textual.widgets import Static
+from textual.widgets import Label, RichLog, Static
 
 from clusterpilot.config import ClusterProfile, Config, Defaults
 from clusterpilot.db import JobRecord
@@ -172,3 +172,68 @@ class TestQuitConfirmation:
                 await pilot.pause()
                 assert not isinstance(app.screen, ConfirmScreen)
                 assert app._exit
+
+
+class TestCopyLog:
+    """The OUTPUT LOG panel must be copyable by key (#65).
+
+    RichLog is a ScrollView, so a mouse drag inside it scrolls rather than
+    selects, and a selection could only ever reach the lines on screen. The
+    log is routinely taller than the panel and the point of copying it is to
+    paste the whole thing somewhere else.
+    """
+
+    @pytest.mark.asyncio
+    async def test_y_copies_every_line_the_panel_holds(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline():
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = inject_running_job(app)
+                await pilot.pause()
+                log_widget = view.query_one("#log-display", RichLog)
+                log_widget.clear()
+                for i in range(200):
+                    log_widget.write(f"[#f0e8d0]step {i} complete[/]")
+                await pilot.pause()
+
+                with patch.object(app, "copy_to_clipboard") as copy:
+                    await pilot.press("y")
+                    await pilot.pause()
+
+                copy.assert_called_once()
+                copied = copy.call_args.args[0]
+
+        # Everything, not just what fits in the panel, and without the markup.
+        lines = copied.splitlines()
+        assert len(lines) == 200
+        assert lines[0] == "step 0 complete"
+        assert lines[-1] == "step 199 complete"
+        assert "#f0e8d0" not in copied
+
+    @pytest.mark.asyncio
+    async def test_y_on_an_empty_panel_says_so_rather_than_copying(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline():
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = inject_running_job(app)
+                await pilot.pause()
+                view.query_one("#log-display", RichLog).clear()
+                await pilot.pause()
+
+                with patch.object(app, "copy_to_clipboard") as copy:
+                    await pilot.press("y")
+                    await pilot.pause()
+
+                copy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_panel_header_advertises_the_key(self, tmp_path: Path):
+        """A key nobody can discover is a key nobody presses."""
+        app = build_app(tmp_path)
+        with offline():
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = inject_running_job(app)
+                await pilot.pause()
+                header = str(view.query_one("#log-title", Label).content)
+
+        assert "[Y]" in header
