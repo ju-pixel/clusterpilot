@@ -137,6 +137,7 @@ class JobsView(Static):
         Binding("l", "log", "Log", show=False),
         Binding("c", "clean", "Clean remote", show=False),
         Binding("d", "delete", "Forget", show=False),
+        Binding("y", "copy_log", "Copy log", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -148,7 +149,7 @@ class JobsView(Static):
                 yield Label("═ JOB DETAIL ", id="meta-title")
                 yield Static("Select a job from the queue.", id="meta-content")
             with Vertical(id="log-panel"):
-                yield Label("═ OUTPUT LOG ", id="log-title")
+                yield Label(r"═ OUTPUT LOG  \[Y] copy ", id="log-title")
                 yield RichLog(id="log-display", highlight=False, markup=True)
             with Vertical(id="action-bar"):
                 # The brackets are escaped: a button label is parsed as
@@ -374,6 +375,33 @@ class JobsView(Static):
             log_widget.write(f"[{color}]{line}[/]")
 
     # ── Action buttons ────────────────────────────────────────────────────────
+
+    def action_copy_log(self) -> None:
+        """Copy the OUTPUT LOG panel to the clipboard.
+
+        A key rather than a mouse selection: RichLog is a ScrollView, so a drag
+        inside it scrolls instead of selecting, and a selection could only ever
+        reach the lines currently on screen. The log is usually taller than the
+        panel, and the point of copying it is to paste the whole thing
+        somewhere else (#65).
+
+        The panel's own strips are the source, so what lands on the clipboard
+        is exactly what is displayed, minus the colour markup. Textual sends it
+        as OSC 52, which means this also works when the TUI is being driven
+        over SSH.
+        """
+        log_widget = self.query_one("#log-display", RichLog)
+        lines = [strip.text.rstrip() for strip in log_widget.lines]
+        while lines and not lines[-1]:
+            lines.pop()
+        if not lines:
+            self.app.notify("Nothing in the output log to copy.")
+            return
+        self.app.copy_to_clipboard("\n".join(lines) + "\n")
+        count = len(lines)
+        self.app.notify(
+            f"Copied {count} {'line' if count == 1 else 'lines'} to the clipboard.",
+        )
 
     @on(Button.Pressed, "#btn-rsync")
     def action_rsync(self) -> None:
