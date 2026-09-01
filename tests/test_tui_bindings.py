@@ -237,3 +237,28 @@ class TestCopyLog:
                 header = str(view.query_one("#log-title", Label).content)
 
         assert "[Y]" in header
+
+
+class TestQueueTitleInTheRunningApp:
+    @pytest.mark.asyncio
+    async def test_the_header_shows_the_live_total(self, tmp_path: Path):
+        """_queue_title is unit tested; this proves it reaches the widget."""
+        app = build_app(tmp_path)
+        with offline():
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = app.query_one(JobsView)
+                view._jobs = [
+                    running_job(),
+                    running_job(),
+                ]
+                view._jobs[0].job_id = "1"
+                view._jobs[0].status_detail = "66R/4PD"
+                view._jobs[1].job_id = "2"
+                view._jobs[1].status_detail = "12R/98PD"
+                view._selected = 0
+                view._rebuild_list()
+                await pilot.pause()
+                title = str(view.query_one("#queue-title", Label).content)
+
+        assert "78R" in title       # 66 + 12
+        assert "102PD" in title     # 4 + 98

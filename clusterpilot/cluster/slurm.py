@@ -45,6 +45,8 @@ _ABBREVIATIONS = {
     "CANCELLED": "CA",
 }
 
+_STATE_BY_ABBREVIATION = {v: k for k, v in _ABBREVIATIONS.items()}
+
 # Display order within each of the three summary groups.
 _SUMMARY_ORDER = (
     "RUNNING", "COMPLETING",
@@ -120,11 +122,7 @@ class JobStatus:
         """
         if len(self.counts) <= 1 and sum(self.counts.values()) <= 1:
             return ""
-        parts = [
-            f"{self.counts[state]}{_ABBREVIATIONS.get(state, state)}"
-            for state in sorted(self.counts, key=_summary_sort_key)
-        ]
-        return "/".join(parts)
+        return format_summary(self.counts)
 
 
 def normalise_state(raw: str) -> str:
@@ -215,6 +213,41 @@ async def job_status(host: str, user: str, job_id: str) -> str | None:
     """
     status = await query_status(host, user, job_id)
     return status.state if status else None
+
+
+def format_summary(counts: dict[str, int]) -> str:
+    """Render a state -> count map as "5R/27PD", running-like states first.
+
+    The one implementation of this format. The F1 queue header totals several
+    jobs' breakdowns and has to read the same way as the rows beneath it, so it
+    formats through here rather than sorting abbreviations of its own, which
+    put pending before running.
+    """
+    return "/".join(
+        f"{counts[state]}{_ABBREVIATIONS.get(state, state)}"
+        for state in sorted(counts, key=_summary_sort_key)
+    )
+
+
+def parse_summary(text: str) -> dict[str, int]:
+    """Inverse of format_summary: "5R/27PD" back to state -> count.
+
+    Unrecognised parts are skipped rather than guessed at, so a summary
+    written by a newer version cannot corrupt a total.
+    """
+    counts: dict[str, int] = {}
+    for part in text.split("/"):
+        part = part.strip()
+        digits = ""
+        for char in part:
+            if not char.isdigit():
+                break
+            digits += char
+        state = _STATE_BY_ABBREVIATION.get(part[len(digits):])
+        if not digits or state is None:
+            continue
+        counts[state] = counts.get(state, 0) + int(digits)
+    return counts
 
 
 def _summary_sort_key(state: str) -> tuple[int, int, str]:
