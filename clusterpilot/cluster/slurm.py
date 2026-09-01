@@ -101,11 +101,16 @@ class JobStatus:
         state:  Canonical aggregate state, one of the usual SLURM names.
         counts: Normalised state -> task count, e.g. {"RUNNING": 5, "PENDING": 27}.
         source: Which command produced this, "squeue" or "sacct".
+        partition: Where the scheduler actually put the job, when squeue said.
+            Empty from the sacct path and empty when squeue did not report one.
+            On a routed cluster this is the only truthful source: the script
+            carries no --partition directive for anything to read (#57).
     """
 
     state: str
     counts: dict[str, int] = field(default_factory=dict)
     source: str = ""
+    partition: str = ""
 
     @property
     def summary(self) -> str:
@@ -174,11 +179,14 @@ async def query_status(host: str, user: str, job_id: str) -> JobStatus | None:
     try:
         out = await run_remote(
             host, user,
-            f"squeue -j {job_id} -h -o '%i|%T' 2>/dev/null",
+            f"squeue -j {job_id} -h -o '%i|%T|%P' 2>/dev/null",
         )
         counts = _parse_status_lines(out)
         if counts:
-            return JobStatus(state=aggregate(counts), counts=counts, source="squeue")
+            return JobStatus(
+                state=aggregate(counts), counts=counts, source="squeue",
+                partition=_parse_partition(out),
+            )
     except SSHError:
         pass
 
@@ -219,6 +227,21 @@ def _summary_sort_key(state: str) -> tuple[int, int, str]:
         group = 2
     rank = _SUMMARY_ORDER.index(state) if state in _SUMMARY_ORDER else len(_SUMMARY_ORDER)
     return (group, rank, state)
+
+
+def _parse_partition(text: str) -> str:
+    """First partition named in "<id>|<STATE>|<PARTITION>" lines, or "".
+
+    Every task of an array is in the same partition, so the first line that
+    carries one settles it. Splits without discarding empty fields, so a job
+    squeue reports no partition for yields "" rather than reading the state
+    column as a partition name.
+    """
+    for raw_line in text.splitlines():
+        fields = raw_line.strip().split("|")
+        if len(fields) >= 3 and fields[2].strip():
+            return fields[2].strip()
+    return ""
 
 
 def _parse_status_lines(text: str) -> dict[str, int]:

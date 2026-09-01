@@ -1359,7 +1359,12 @@ class SubmitView(Static):
             or f"cpjob_{int(time.time())}"
         )
         job_name  = base_job_name
-        partition = _extract(script, "partition",  "skylake")
+        # Blank, not a guess. A routed cluster's script carries no
+        # --partition directive by design, and the old fallback here wrote the
+        # literal string "skylake" into every DRAC and Trillium job, which is
+        # not a partition any of them has (#57). The daemon fills this in from
+        # squeue once the scheduler has actually placed the job.
+        partition = _extract(script, "partition",  "")
         walltime  = _extract(script, "time",       "01:00:00")
         account   = _extract(script, "account",    profile.account)
 
