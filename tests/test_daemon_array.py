@@ -50,7 +50,7 @@ async def _poll(
     """Run one _poll_job cycle with every remote call stubbed out."""
     daemon = _make_daemon()
 
-    async def _tail(host: str, user: str, path: str) -> str:
+    async def _tail(host: str, user: str, path: str, n_lines: int = 50) -> str:
         return (tails or {}).get(path, "")
 
     mocks = {

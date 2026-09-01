@@ -404,7 +404,9 @@ class PollDaemon:
         log_tail = ""
         if job.log_path:
             try:
-                log_tail = await tail_log(profile.host, profile.user, job.log_path)
+                log_tail = await tail_log(
+                    profile.host, profile.user, job.log_path, n_lines=SYNC_TAIL_LINES,
+                )
             except SSHError:
                 pass
         await self._sync(job, status, log_tail=log_tail or None)
@@ -586,7 +588,9 @@ class PollDaemon:
         """
         for path in list((await self._array_task_logs(profile, job)).values())[:3]:
             try:
-                tail = await tail_log(profile.host, profile.user, path)
+                tail = await tail_log(
+                    profile.host, profile.user, path, n_lines=SYNC_TAIL_LINES,
+                )
             except SSHError:
                 continue
             if tail.strip():
@@ -606,7 +610,9 @@ class PollDaemon:
         if not log_path:
             return ""
         try:
-            return await tail_log(profile.host, profile.user, log_path)
+            return await tail_log(
+                profile.host, profile.user, log_path, n_lines=SYNC_TAIL_LINES,
+            )
         except SSHError:
             return ""
 
@@ -696,6 +702,8 @@ class PollDaemon:
         log_tail: str | None = None,
     ) -> None:
         """Push a state to the hosted API and remember it only if it landed."""
+        if log_tail:
+            log_tail = clip_tail(log_tail)
         ok = await sync_job(job, status, self.config.hosted, log_tail=log_tail)
         if ok:
             self._synced[_key(job)] = status
@@ -712,7 +720,10 @@ class PollDaemon:
         if status != "RUNNING" and status not in TERMINAL_STATES:
             return None
         try:
-            return (await tail_log(profile.host, profile.user, job.log_path)) or None
+            tail = await tail_log(
+                profile.host, profile.user, job.log_path, n_lines=SYNC_TAIL_LINES,
+            )
+            return tail or None
         except SSHError:
             return None
 
@@ -763,6 +774,45 @@ class PollDaemon:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# The dashboard renders `log_tail` as the job's log, so it has to be worth
+# scrolling: 50 lines is a notification excerpt, not a log (#64). Capped by
+# bytes as well as lines, because a job can emit very long lines and this
+# travels on every status transition, for every task of every array.
+SYNC_TAIL_LINES = 500
+SYNC_TAIL_BYTES = 32_000
+
+TRIM_MARKER = "[earlier lines trimmed]"
+
+
+def clip_tail(text: str, *, max_bytes: int = SYNC_TAIL_BYTES) -> str:
+    """Trim a log tail to a byte budget, keeping the most recent whole lines.
+
+    The end of a log is the part worth reading, so lines are dropped from the
+    front. A trimmed result says so on its first line: otherwise a reader
+    cannot tell a truncated log from a short one.
+    """
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    budget = max_bytes - len(TRIM_MARKER.encode("utf-8")) - 1
+    lines = text.splitlines()
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        cost = len(line.encode("utf-8")) + 1
+        if used + cost > budget:
+            break
+        kept.append(line)
+        used += cost
+    if not kept:
+        # A single line longer than the whole budget: keep its tail rather
+        # than returning the marker and nothing else. Slicing bytes can land
+        # mid-character, which is what "replace" is for.
+        raw = lines[-1].encode("utf-8")[-budget:] if lines else b""
+        return "\n".join([TRIM_MARKER, raw.decode("utf-8", "replace")])
+    kept.reverse()
+    return "\n".join([TRIM_MARKER, *kept])
+
 
 def _key(job: JobRecord) -> str:
     return f"{job.cluster_name}:{job.job_id}"
