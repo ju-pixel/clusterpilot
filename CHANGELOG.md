@@ -3,6 +3,37 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## v0.7.4 (2026-09-01)
+
+The job log is readable again in both of the places you look at it, and the
+API spend figure can be trusted.
+
+### Fixed
+
+- **A job's Logs tab on the dashboard scrolls, and holds a real log.** The
+  page shell was free to grow past the viewport, so nothing had a definite
+  height to shrink against, the tab pane took the height of the whole log, and
+  no scrollbar ever appeared. There was little to scroll through in any case:
+  only the last fifty lines ever reached the dashboard. The daemon now syncs
+  up to five hundred lines, trimmed to a size budget from the front and marked
+  where it was cut. (#64)
+- **`y` copies the OUTPUT LOG panel on the jobs screen.** The panel scrolls,
+  so dragging across it moved the log rather than selecting any of it, whilst
+  the job detail pane above it selected normally. The key copies everything
+  the panel holds, including the lines scrolled out of view, and travels as
+  OSC 52, so it works when the TUI is driven over SSH. (#65)
+- **The API spend figure counts every generation, and prices each one at its
+  own model.** It summed the jobs table, where a row only exists once a job is
+  submitted, so every regenerated, abandoned and refused generation was billed
+  by the provider and counted nowhere. It also priced a whole history at
+  whichever model your config names, which showed an Opus generation at
+  Sonnet's rate. Usage is now recorded as each generation finishes, priced per
+  model, and your existing history is carried over on first run. (#66)
+- **An unpriced model is shown as unpriced rather than guessed at.** A local
+  Ollama generation, which costs nothing, was billed on screen at Claude
+  Sonnet 4.6's rate at two of the three places cost appears, and Claude Haiku
+  4.5 was priced twenty per cent low. (#67)
+
 ## v0.7.3 (2026-08-31)
 
 Parameter-table job arrays now work end to end. A real 70-task array was
