@@ -3,6 +3,38 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## v0.7.5 (2026-09-01)
+
+The dashboard stops telling you things that stopped being true, and the jobs
+screen answers "how many of my tasks are running" without a trip to ssh.
+
+### Fixed
+
+- **A job's partition is read from the scheduler, not guessed.** Submit took
+  the partition by scraping the generated script, with the literal string
+  `skylake` as its fallback. On DRAC and Trillium the script carries no
+  `--partition` directive by design, because the scheduler routes the job from
+  `--account`, `--gres`, `--time` and `--mem`, so every routed job claimed to
+  be in a partition none of those clusters has. The field now starts blank and
+  is filled from `squeue` once the job has actually been placed, which costs
+  no extra call and finally makes it say something the script cannot. A job
+  that has already finished keeps its old value: `squeue` no longer knows, and
+  on DRAC `sacct` cannot be reached from a login node (#47). (#57)
+- **An array's task breakdown keeps updating on the dashboard.** It was pushed
+  once, at the instant the job went RUNNING, and never again, so an array
+  reported `10R/60PD` hours after that had stopped being true and the refresh
+  button could not help, because the stale number was in the API rather than
+  the page. The terminal was right throughout; only the web was frozen. (#72)
+- **A running job's log on the dashboard is refreshed while it runs**, rather
+  than staying the excerpt captured when the job started. (#72)
+
+### Added
+
+- **The F1 queue shows each array's progress, and the header totals it.** Rows
+  carry the per-task breakdown, and the QUEUE header adds it up across active
+  jobs, so four arrays on four clusters can be read at a glance instead of
+  opening each one or logging into the clusters to count.
+
 ## v0.7.4 (2026-09-01)
 
 The job log is readable again in both of the places you look at it, and the
