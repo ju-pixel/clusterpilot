@@ -3,6 +3,59 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
+## Unreleased
+
+Seven open bugs from the September research runs, each with a regression
+test. Bug batch 4, 2026-09-07.
+
+### Fixed
+
+- **Every MIG profile reaches the GPU SIZE picker.** On an H100 cluster a
+  MIG node's `sinfo` row lists all three slices in one comma-joined field.
+  The probe kept only the text before the first bracket, and the picker then
+  kept only the first type it saw, so Nibi's `2g.20gb` could not be chosen
+  at all. Both now keep every entry; the probe cache carries a version so
+  the old truncated rows are discarded rather than served for another day;
+  and long MIG names are shown by their `3g.40gb` tail. (#62)
+- **A hand-edited script can be submitted.** Closing EDIT now reads the
+  `--array` and GPU type back into the submit form, so the form and the
+  script agree and the usual checks pass. A GPU type the picker never
+  offered warns, naming both values, instead of blocking with no way
+  forward. Two offered types that disagree still block. (#63)
+- **sbatch's own words reach you, once.** A rejection was shown with the
+  prefix "sbatch failed:" twice and the remote command in front of the
+  reason. The `sbatch: error:` lines are now shown on their own, the full
+  output is kept in `sbatch.log` beside the preflight log, and the one
+  message that is the cluster's fault rather than the script's, "I/O error
+  writing script/environment to file", says so. Found when Grex's scheduler
+  refused every job during its September maintenance. (#75)
+- **TAIL cycles the tasks that are running; LOG cycles the ones that have
+  finished.** On a large array, reaching a live task meant pressing TAIL
+  past every finished one. Task states come from `squeue`, cached for
+  thirty seconds, and the task list is refreshed instead of frozen at the
+  first press. Non-array jobs are unchanged. (#73)
+- **Each array task samples its own GPU usage.** The generated sampler wrote
+  one `gpu_usage.csv` per array, so 54 tasks left twelve rows from whichever
+  finished last. Arrays now write `gpu_usage-<job>-<task>.csv`, matching the
+  log names, and the note says a MIG slice reports memory only. (#74)
+- **F9 shows the ntfy topic notifications actually go to.** When a topic is
+  saved on the dashboard the daemon uses it, but F9 showed the config.toml
+  value. It now shows the dashboard topic and says it overrides the local
+  one. (#45)
+- **A job's runtime survives a restart.** On clusters where `sacct` cannot
+  be reached the measured duration was held in memory only and reached the
+  dashboard once. It is now written to the local database at the terminal
+  transition; a later `sacct` answer still wins. (#47, still open for seff
+  and backfill on DRAC)
+- **Hosted tier: an outage on our side no longer reads as your problem.**
+  When the generation service's upstream key failed, the proxy forwarded
+  Anthropic's billing text verbatim, telling subscribers to buy credits on
+  an account they do not have. All three proxy routes now return one
+  service message, the raw text goes to the server log, no generation is
+  charged, and an operator alert fires once per ten minutes when the
+  upstream key is rejected. The TUI also unwraps the proxy's JSON envelope
+  so the message reads as a sentence. (#61)
+
 ## v0.7.5 (2026-09-01)
 
 The dashboard stops telling you things that stopped being true, and the jobs
