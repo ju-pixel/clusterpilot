@@ -355,10 +355,23 @@ class PollDaemon:
             # Fetched before the notifications so they can carry it.
             efficiency = await self._job_efficiency(profile, job)
             acct = await self._job_accounting(profile, job)
+            # How long the job ran, from the daemon's own clock, for a site
+            # whose sacct does not answer (#47). Computed only when sacct said
+            # nothing, so the two writes below can never fight: with a real
+            # accounting record this stays None and update_status leaves the
+            # column alone, and without one update_accounting is a no-op.
+            # Do not reorder them on the assumption that either is harmless.
+            measured_runtime: int | None = None
+            if acct.is_empty and job.started_at and not job.runtime_seconds:
+                measured_runtime = int(now - job.started_at)
             await update_status(
                 db, job.job_id, job.cluster_name, new_status,
                 finished_at=now,
                 efficiency=efficiency or None,
+                # Written to the database, not just onto the record in memory:
+                # it used to reach the dashboard on the one sync that followed
+                # and then vanish from the local DB at the next restart (#47).
+                runtime_seconds=measured_runtime,
             )
             await update_accounting(db, job.job_id, job.cluster_name, acct)
             job.finished_at = now
@@ -375,8 +388,8 @@ class PollDaemon:
                 job.gpu_seconds = acct.gpu_seconds
                 job.exit_code = acct.exit_code
                 job.accounting_source = "sacct"
-            elif job.finished_at and job.started_at and not job.runtime_seconds:
-                job.runtime_seconds = int(job.finished_at - job.started_at)
+            elif measured_runtime is not None:
+                job.runtime_seconds = measured_runtime
 
             if new_status == "COMPLETED":
                 await self._sync_and_notify_completed(db, profile, job, new_status)

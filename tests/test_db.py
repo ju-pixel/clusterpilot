@@ -131,6 +131,22 @@ async def test_update_status_sets_status_detail(db):
     assert fetched.status_detail == "5R/27PD"
 
 
+async def test_update_status_sets_runtime_seconds(db):
+    await insert_job(db, _make_job())
+    await update_status(db, "12345", "grex", "COMPLETED", runtime_seconds=3600)
+    fetched = await get_job(db, "12345", "grex")
+    assert fetched.runtime_seconds == 3600
+
+
+async def test_update_status_without_runtime_seconds_keeps_the_stored_one(db):
+    """Every other status write must leave a duration already recorded alone."""
+    await insert_job(db, _make_job())
+    await update_status(db, "12345", "grex", "COMPLETED", runtime_seconds=3600)
+    await update_status(db, "12345", "grex", "COMPLETED", synced=True)
+    fetched = await get_job(db, "12345", "grex")
+    assert fetched.runtime_seconds == 3600
+
+
 # ── status_detail ─────────────────────────────────────────────────────────────
 
 class TestStatusDetail:

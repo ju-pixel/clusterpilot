@@ -276,9 +276,17 @@ async def update_status(
     synced: bool | None = None,
     status_detail: str | None = None,
     efficiency: str | None = None,
+    runtime_seconds: int | None = None,
     partition: str | None = None,
 ) -> None:
-    """Update mutable fields for a job. Only non-None kwargs are written."""
+    """Update mutable fields for a job. Only non-None kwargs are written.
+
+    ``runtime_seconds`` sits here rather than with the accounting writer below
+    on purpose: it is how long the job ran, a lifecycle fact the daemon already
+    knows from its own clock, not a figure read out of an accounting database.
+    ``update_accounting`` still overwrites it wherever sacct answers, so the
+    scheduler's own number stays authoritative.
+    """
     sets: list[str] = ["status = ?"]
     params: list[object] = [status]
 
@@ -300,6 +308,9 @@ async def update_status(
     if efficiency is not None:
         sets.append("efficiency = ?")
         params.append(efficiency)
+    if runtime_seconds is not None:
+        sets.append("runtime_seconds = ?")
+        params.append(runtime_seconds)
 
     if partition is not None:
         sets.append("partition = ?")
