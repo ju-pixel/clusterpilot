@@ -1,6 +1,7 @@
 """Tests for jobs/ai_gen.py — system prompt construction (pure logic, no API calls)."""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -1244,8 +1245,10 @@ class TestProxyStreaming:
     async def test_any_other_status_raises_without_falling_back(self, monkeypatch):
         client = _FakeClient(_FakeStreamResponse(402, body=b"payment required"))
         _install(monkeypatch, client)
-        with pytest.raises(RuntimeError, match="HTTP 402"):
+        with pytest.raises(RuntimeError) as exc:
             await _collect(self._stream())
+        assert "HTTP 402" in str(exc.value)
+        assert "payment required" in str(exc.value)
         assert client.urls == ["https://api.clusterpilot.sh/proxy/generate-stream"]
 
     @pytest.mark.asyncio
@@ -1255,8 +1258,79 @@ class TestProxyStreaming:
             _FakePostResponse(500, {}, text="upstream exploded"),
         )
         _install(monkeypatch, client)
-        with pytest.raises(RuntimeError, match="HTTP 500"):
+        with pytest.raises(RuntimeError) as exc:
             await _collect(self._stream())
+        assert "HTTP 500" in str(exc.value)
+        assert "upstream exploded" in str(exc.value)
+
+
+# ── #61: the API's message reaches the user, not its JSON envelope ────────────
+
+_SERVICE_MESSAGE = (
+    "ClusterPilot's generation service is temporarily unavailable. This is "
+    "not a problem with your subscription or your allowance, and you have "
+    "not been charged a generation."
+)
+
+
+class TestProxyErrorEnvelope:
+    """Issue #61: the API raises HTTPException and FastAPI serialises that as
+    {"detail": "..."}, so the sentence written for the user arrived wrapped in
+    its own JSON. Both error sites unwrap it now.
+    """
+
+    def _stream(self):
+        from clusterpilot.jobs.ai_gen import _stream_proxy
+        return _stream_proxy(
+            "system", "description", "claude-sonnet-5", "cp-token",
+            "https://api.clusterpilot.sh/proxy", None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_streaming_site_unwraps_the_detail(self, monkeypatch):
+        body = json.dumps({"detail": _SERVICE_MESSAGE}).encode()
+        client = _FakeClient(_FakeStreamResponse(503, body=body))
+        _install(monkeypatch, client)
+        with pytest.raises(RuntimeError) as exc:
+            await _collect(self._stream())
+        assert _SERVICE_MESSAGE in str(exc.value)
+        assert '{"detail"' not in str(exc.value)
+        assert client.urls == ["https://api.clusterpilot.sh/proxy/generate-stream"]
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_site_unwraps_the_detail(self, monkeypatch):
+        client = _FakeClient(
+            _FakeStreamResponse(404, body=b"Not Found"),
+            _FakePostResponse(503, {}, text=json.dumps({"detail": _SERVICE_MESSAGE})),
+        )
+        _install(monkeypatch, client)
+        with pytest.raises(RuntimeError) as exc:
+            await _collect(self._stream())
+        assert _SERVICE_MESSAGE in str(exc.value)
+        assert '{"detail"' not in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_a_list_detail_falls_back_to_the_raw_body(self, monkeypatch):
+        """A FastAPI validation error's detail is a list of dicts, which is of
+        no use as a sentence, so the body is shown as it arrives."""
+        raw = json.dumps({"detail": [{"loc": ["body", "model"], "msg": "field required"}]})
+        client = _FakeClient(_FakeStreamResponse(422, body=raw.encode()))
+        _install(monkeypatch, client)
+        with pytest.raises(RuntimeError) as exc:
+            await _collect(self._stream())
+        assert "field required" in str(exc.value)
+
+    def test_a_non_json_body_is_unchanged(self):
+        from clusterpilot.jobs.ai_gen import _proxy_error_message
+        assert _proxy_error_message("<html>502 Bad Gateway</html>") == (
+            "<html>502 Bad Gateway</html>"
+        )
+        assert _proxy_error_message("") == ""
+
+    def test_a_very_long_detail_is_still_truncated(self):
+        from clusterpilot.jobs.ai_gen import _proxy_error_message
+        body = json.dumps({"detail": "x" * 900})
+        assert _proxy_error_message(body) == "x" * 300
 
 
 class TestPricing:

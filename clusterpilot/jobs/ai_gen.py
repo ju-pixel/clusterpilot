@@ -274,6 +274,25 @@ def _apply_allowance(usage: ApiUsage, data: dict, requested_model: str) -> None:
         usage.remaining_total = int(remaining_total)
 
 
+def _proxy_error_message(body: str) -> str:
+    """Return the human half of a proxy error body.
+
+    The hosted API raises ``HTTPException``, and FastAPI serialises that as
+    ``{"detail": "..."}``, so showing the body verbatim puts the JSON envelope
+    in front of the user in place of the sentence written for them (#61). A
+    body that is not that shape (a gateway error page, an upstream's own JSON,
+    a validation error whose ``detail`` is a list) is shown as it arrives.
+    """
+    message = body
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("detail"), str):
+        message = parsed["detail"] or body
+    return message[:300]
+
+
 async def _stream_proxy(
     system: str,
     description: str,
@@ -312,14 +331,18 @@ async def _stream_proxy(
                 body = await resp.aread()
                 detail = body.decode("utf-8", "replace") if body else ""
                 raise RuntimeError(
-                    f"Proxy returned HTTP {resp.status_code}: {detail[:300]}"
+                    f"Proxy returned HTTP {resp.status_code}: "
+                    f"{_proxy_error_message(detail)}"
                 )
 
         # The deployed proxy has no streaming endpoint yet: one POST, as before.
         resp = await client.post(base + "/generate", json=payload, headers=headers)
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Proxy returned HTTP {resp.status_code}: {resp.text[:300]}")
+        raise RuntimeError(
+            f"Proxy returned HTTP {resp.status_code}: "
+            f"{_proxy_error_message(resp.text)}"
+        )
 
     data = resp.json()
     text: str = data.get("text", "")
