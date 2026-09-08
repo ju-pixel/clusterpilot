@@ -19,7 +19,12 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models import GenerationUsage
-from app.routes.proxy import proxy_allowance, proxy_generate, proxy_generate_stream
+from app.routes.proxy import (
+    _SERVICE_UNAVAILABLE,
+    proxy_allowance,
+    proxy_generate,
+    proxy_generate_stream,
+)
 from app.services import allowance
 
 _TOKEN = "cp-abcd1234efgh"
@@ -305,7 +310,10 @@ class TestCountingOnSuccessOnly:
             with pytest.raises(HTTPException) as excinfo:
                 await proxy_generate(_request(_OPUS), db=db)
 
-        assert excinfo.value.status_code == 500
+        # 503 and the service message since issue #61: the upstream status is
+        # logged, not forwarded. What matters here is the empty usage table.
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.detail == _SERVICE_UNAVAILABLE
         assert await _rows(db) == []
 
     async def test_a_stream_that_ends_in_an_error_counts_nothing(self, db, db_factory):
@@ -315,7 +323,7 @@ class TestCountingOnSuccessOnly:
             response = await proxy_generate_stream(_request(_OPUS), db=db)
             records = await _collect(response)
 
-        assert "500" in records[0]["error"]
+        assert records == [{"error": _SERVICE_UNAVAILABLE}]
         assert await _rows(db) == []
 
     async def test_a_successful_stream_counts_once(self, db, db_factory):

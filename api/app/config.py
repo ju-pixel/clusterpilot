@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     total_monthly_cap: int = 150        # TOTAL_MONTHLY_CAP
     fallback_model: str = "claude-sonnet-5"  # FALLBACK_MODEL
 
+    # Operator alert for upstream generation failures (issue #61). An ntfy topic
+    # URL, or any endpoint that accepts a plain-text POST body. Empty is the
+    # supported default: no alert is sent and no network call is made, so a
+    # self-hosted deployment needs no extra secret.
+    ops_ntfy_url: str = ""  # OPS_NTFY_URL
+
     # App
     environment: str = "development"
     cors_origins: list[str] = ["http://localhost:5173", "https://clusterpilot.sh", "https://app.clusterpilot.sh"]

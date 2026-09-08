@@ -28,9 +28,12 @@ installs are unaffected.
 """
 
 import json
+import logging
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,12 +42,45 @@ from app.config import settings
 from app.database import get_session_factory
 from app.deps import get_db
 from app.models import SUBSCRIBED_STATUSES, User
-from app.services import allowance
+from app.services import allowance, ops_alert
 from app.services.keys import verify_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/proxy", tags=["proxy"])
 
 _ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+
+# What every upstream failure says to the user, on all three routes.
+#
+# Issue #61: the old text was "Anthropic error: <raw body>", so a revoked
+# master key or an empty billing account reached the TUI as a 401 or a 400 and
+# read exactly like the user's own subscription or allowance being at fault.
+# It is our outage, the user's allowance is untouched, and the body is ours to
+# read in the logs, not theirs.
+_SERVICE_UNAVAILABLE = (
+    "ClusterPilot's generation service is temporarily unavailable. This is not "
+    "a problem with your subscription or your allowance, and you have not been "
+    "charged a generation."
+)
+
+# How much of an upstream body reaches the log. Enough to name the failure
+# without pasting a whole error document into every line.
+_LOGGED_BODY_CHARS = 500
+
+
+def _report_upstream_failure(route: str, status_code: int, body: str) -> None:
+    """Record an upstream failure server-side and raise the operator alert.
+
+    The body is logged and never returned. It is Anthropic's text about our
+    account and our request, which is the same reasoning that keeps the
+    ``httpx.HTTPError`` branch below down to an exception class name.
+    """
+    logger.error(
+        "Upstream failure on %s: status %s, body %s",
+        route, status_code, body[:_LOGGED_BODY_CHARS],
+    )
+    ops_alert.maybe_alert(route, status_code, body)
 
 
 async def _get_user_by_cp_token(token: str, db: AsyncSession) -> User:
@@ -101,14 +137,20 @@ async def _authorised_user(request: Request, db: AsyncSession) -> User:
 async def proxy_messages(
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> StreamingResponse:
+) -> Response:
     await _authorised_user(request, db)
 
     body = await request.body()
 
-    async def stream_anthropic() -> bytes:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            async with client.stream(
+    # The upstream status must be known before a single byte is streamed: the
+    # first chunk fixes this response at 200, and until issue #61 that is what
+    # happened, so Anthropic's error document was piped to the client as a
+    # successful generation. The exit stack lets the request be opened and
+    # checked here, then handed to the generator still open.
+    async with AsyncExitStack() as stack:
+        client = await stack.enter_async_context(httpx.AsyncClient(timeout=300.0))
+        resp = await stack.enter_async_context(
+            client.stream(
                 "POST",
                 _ANTHROPIC_MESSAGES_URL,
                 content=body,
@@ -117,9 +159,27 @@ async def proxy_messages(
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
-            ) as resp:
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
+            )
+        )
+
+        if resp.status_code != 200:
+            failure = (await resp.aread()).decode("utf-8", "replace")
+            _report_upstream_failure("/proxy/v1/messages", resp.status_code, failure)
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": _SERVICE_UNAVAILABLE},
+            )
+
+        # Ownership of the open client and response moves to the generator,
+        # which closes them when the last chunk has gone out.
+        live = stack.pop_all()
+
+    async def stream_anthropic() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await live.aclose()
 
     return StreamingResponse(stream_anthropic(), media_type="text/event-stream")
 
@@ -182,9 +242,10 @@ async def proxy_generate(
         )
 
     if resp.status_code != 200:
+        _report_upstream_failure("/proxy/generate", resp.status_code, resp.text)
         raise HTTPException(
-            status_code=resp.status_code,
-            detail=f"Anthropic error: {resp.text[:300]}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_SERVICE_UNAVAILABLE,
         )
 
     data = resp.json()
@@ -266,11 +327,11 @@ async def proxy_generate_stream(
                     },
                 ) as resp:
                     if resp.status_code != 200:
-                        body = await resp.aread()
-                        yield _ndjson({
-                            "error": f"Anthropic error {resp.status_code}: "
-                                     f"{body.decode('utf-8', 'replace')[:300]}"
-                        })
+                        failure = (await resp.aread()).decode("utf-8", "replace")
+                        _report_upstream_failure(
+                            "/proxy/generate-stream", resp.status_code, failure
+                        )
+                        yield _ndjson({"error": _SERVICE_UNAVAILABLE})
                         return
 
                     async for line in resp.aiter_lines():
