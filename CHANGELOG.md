@@ -3,7 +3,7 @@
 All notable changes to ClusterPilot, newest first. Issue numbers refer to
 github.com/ju-pixel/clusterpilot.
 
-## Unreleased
+## v0.7.6 (2026-09-08)
 
 Seven open bugs from the September research runs, each with a regression
 test. Bug batch 4, 2026-09-07.

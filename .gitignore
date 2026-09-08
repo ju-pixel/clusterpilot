@@ -239,3 +239,6 @@ CLAUDE.md
 
 # Local Netlify folder
 .netlify
+
+# IDE screenshots dropped in for bug reports; never part of the repo
+tempscreenshots/
