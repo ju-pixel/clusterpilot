@@ -22,6 +22,12 @@ from clusterpilot.ssh.connection import SSHError, run_remote
 _CACHE_ROOT = paths.cache_root()
 _CACHE_TTL = 24 * 3600   # seconds
 
+# Bumped whenever a parser change makes a previously written cache wrong
+# rather than merely incomplete. Version 2 keeps every GPU profile in a GRES
+# field; version 1 files kept only the first, so a fix to the parser would
+# stay invisible for up to a day behind them (#62).
+_CACHE_VERSION = 2
+
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
@@ -65,16 +71,23 @@ class ClusterProbe:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def load_cache(cluster_name: str) -> ClusterProbe | None:
-    """Return cached probe if it exists and is younger than 24h, else None."""
+    """Return cached probe if it exists and is younger than 24h, else None.
+
+    A file written by an older parser is a miss, not a load: the rows in it
+    are wrong rather than merely thin, and waiting out the 24h TTL would hide
+    a parser fix for a whole day.
+    """
     path = _cache_path(cluster_name)
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text())
+        if int(data.get("version", 1)) < _CACHE_VERSION:
+            return None
         if time.time() - data["probed_at"] > _CACHE_TTL:
             return None
         return _from_dict(data)
-    except (KeyError, ValueError):
+    except (KeyError, TypeError, ValueError):
         return None
 
 
@@ -82,7 +95,9 @@ def save_cache(probe: ClusterProbe) -> None:
     """Write probe data to ~/.cache/clusterpilot/<cluster>/probe.json."""
     path = _cache_path(probe.cluster_name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(probe), indent=2))
+    data = asdict(probe)
+    data["version"] = _CACHE_VERSION
+    path.write_text(json.dumps(data, indent=2))
 
 
 async def probe_cluster(
@@ -184,6 +199,23 @@ def _leading_int(text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+_SOCKET_SUFFIX_RE = re.compile(r"\([^)]*\)")
+
+
+def _parse_gres(field: str) -> str:
+    """Normalise the ``%G`` field: drop socket affinity, keep every entry.
+
+    A MIG node lists all of its profiles in one comma-joined field, so
+    ``gpu:h100_3g.40gb:4(S:2-3),gpu:h100_1g.10gb:8(S:2-3)`` has to survive as
+    both entries. Collapsing it at the first bracket dropped every profile
+    after the leading one before it ever reached the cache (#62).
+    """
+    if field == "(null)":
+        return ""
+    entries = [_SOCKET_SUFFIX_RE.sub("", item).strip() for item in field.split(",")]
+    return ",".join(entry for entry in entries if entry)
+
+
 def _parse_sinfo(output: str) -> list[PartitionInfo]:
     """Parse `sinfo -o '%P %l %G %D %c %m' --noheader` output.
 
@@ -201,8 +233,7 @@ def _parse_sinfo(output: str) -> list[PartitionInfo]:
         name_raw, max_time, gres_raw, nodes_str = parts[0], parts[1], parts[2], parts[3]
         is_default = name_raw.endswith("*")
         name = name_raw.rstrip("*")
-        # Strip socket-affinity suffix: "gpu:v100:4(S:0-1)" → "gpu:v100:4"
-        gres = gres_raw.split("(")[0] if gres_raw != "(null)" else ""
+        gres = _parse_gres(gres_raw)
         try:
             nodes = int(nodes_str)
         except ValueError:

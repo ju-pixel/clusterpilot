@@ -66,14 +66,50 @@ def offline(probe: ClusterProbe | None = None) -> Iterator[None]:
 
 
 def narval_probe() -> ClusterProbe:
-    """A cut-down Narval probe: MIG slices arrive as extra partition rows."""
+    """A cut-down Narval probe.
+
+    A MIG node names every profile in one comma-joined GRES field, which is
+    the shape ``sinfo -o '%G'`` really returns (#62); the whole card is a
+    separate row of the same partition.
+    """
     return ClusterProbe(
         cluster_name="testcluster",
         probed_at=time.time(),
         partitions=[
+            PartitionInfo(
+                "gpubase_bygpu_b1", "3:00:00",
+                "gpu:a100_3g.20gb:4,gpu:a100_4g.20gb:1", 141, False,
+            ),
             PartitionInfo("gpubase_bygpu_b1", "3:00:00", "gpu:a100:4", 141, False),
-            PartitionInfo("gpubase_bygpu_b1", "3:00:00", "gpu:a100_3g.20gb:4", 141, False),
-            PartitionInfo("gpubase_bygpu_b1", "3:00:00", "gpu:a100_4g.20gb:1", 141, False),
+            PartitionInfo("cpubase_bycore_b1", "3:00:00", "", 20, True),
+        ],
+        julia_versions=["julia/1.11.3"],
+        accounts=["def-test"],
+        account_max_wall={"def-test": ""},
+    )
+
+
+def fir_probe() -> ClusterProbe:
+    """A Fir probe, verbatim GRES fields from the live cluster (2026-09-07).
+
+    Three MIG profiles share one row and the whole H100 is a second row, with
+    the MIG row leading: the picker must show all four regardless of order.
+    """
+    return ClusterProbe(
+        cluster_name="testcluster",
+        probed_at=time.time(),
+        partitions=[
+            PartitionInfo(
+                "gpubase_bygpu_b1", "3:00:00",
+                "gpu:nvidia_h100_80gb_hbm3_3g.40gb:4,"
+                "gpu:nvidia_h100_80gb_hbm3_2g.20gb:4,"
+                "gpu:nvidia_h100_80gb_hbm3_1g.10gb:8",
+                60, False, cpus=48, memory_mb=1152000,
+            ),
+            PartitionInfo(
+                "gpubase_bygpu_b1", "3:00:00", "gpu:h100:4",
+                30, False, cpus=48, memory_mb=1152000,
+            ),
             PartitionInfo("cpubase_bycore_b1", "3:00:00", "", 20, True),
         ],
         julia_versions=["julia/1.11.3"],
@@ -101,6 +137,14 @@ def select_values(app: ClusterPilotApp, selector: str) -> list[str]:
     """
     select = app.query_one(selector, Select)
     return [str(value) for _, value in select._options if value is not Select.NULL]
+
+
+def select_labels(app: ClusterPilotApp, selector: str) -> list[str]:
+    """The option labels of a Select, in the order they are shown."""
+    select = app.query_one(selector, Select)
+    return [
+        str(label) for label, value in select._options if value is not Select.NULL
+    ]
 
 
 def build_app(tmp_path: Path) -> ClusterPilotApp:
@@ -172,9 +216,57 @@ class TestSubmitScreen:
 
 class TestGpuSizeRow:
     """WP3: the GPU SIZE picker is built from the probe, never from a table
-    of GPU names in the code. Narval reports each MIG slice as its own
-    partition row, so a whole card and its slices arrive side by side.
+    of GPU names in the code. One partition row can name several profiles, so
+    a whole card and its MIG slices arrive side by side.
     """
+
+    @pytest.mark.asyncio
+    async def test_every_mig_profile_on_a_row_reaches_the_picker(self, tmp_path: Path):
+        """The MIG row leads on Fir, so a parser that keeps only the leading
+        entry loses the whole card as well as two slices (#62).
+        """
+        app = build_app(tmp_path)
+        with offline(fir_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+                assert select_values(app, "#gpu-size-select") == [
+                    "h100",
+                    "nvidia_h100_80gb_hbm3_1g.10gb",
+                    "nvidia_h100_80gb_hbm3_2g.20gb",
+                    "nvidia_h100_80gb_hbm3_3g.40gb",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_slice_labels_are_shortened_but_values_are_not(self, tmp_path: Path):
+        """sbatch needs the full profile name, the user does not (#62)."""
+        app = build_app(tmp_path)
+        with offline(fir_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+                assert select_labels(app, "#gpu-size-select") == [
+                    "h100, whole GPU",
+                    "1g.10gb, slice",
+                    "2g.20gb, slice",
+                    "3g.40gb, slice",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_the_partition_label_shortens_the_profiles(self, tmp_path: Path):
+        app = build_app(tmp_path)
+        with offline(fir_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+                labels = select_labels(app, "#partition-select")
+                assert labels[0].startswith(
+                    "gpubase_bygpu_b1  (GPU: 3g.40gb, 2g.20gb, 1g.10gb  max 3:00:00)"
+                )
+                assert "nvidia_h100" not in labels[0]
 
     @pytest.mark.asyncio
     async def test_whole_cards_are_listed_before_slices(self, tmp_path: Path):

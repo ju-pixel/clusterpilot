@@ -81,6 +81,56 @@ class TestParseSinfo:
         assert result[0].gres == "gpu:v100:4"
 
 
+class TestParseSinfoMigProfiles:
+    """A MIG node lists all of its profiles in one comma-joined %G field.
+
+    Rows below are verbatim from ``sinfo -o '%P %l %G %D %c %m'`` on Fir
+    (2026-09-07). Collapsing the field at the first bracket kept only the
+    leading profile, which is what dropped the rest from the picker (#62).
+    """
+
+    FIR_MIG_ROW = (
+        "gpubase_bygpu_b1 3:00:00 "
+        "gpu:nvidia_h100_80gb_hbm3_3g.40gb:4(S:2-3),"
+        "gpu:nvidia_h100_80gb_hbm3_2g.20gb:4(S:2-3),"
+        "gpu:nvidia_h100_80gb_hbm3_1g.10gb:8(S:2-3) 60 48 1152000"
+    )
+
+    def test_every_profile_survives(self):
+        result = _parse_sinfo(self.FIR_MIG_ROW)
+        assert result[0].gres == (
+            "gpu:nvidia_h100_80gb_hbm3_3g.40gb:4,"
+            "gpu:nvidia_h100_80gb_hbm3_2g.20gb:4,"
+            "gpu:nvidia_h100_80gb_hbm3_1g.10gb:8"
+        )
+
+    def test_socket_affinity_is_gone_from_every_entry(self):
+        result = _parse_sinfo(self.FIR_MIG_ROW)
+        assert "(" not in result[0].gres
+
+    def test_the_row_is_still_a_gpu_partition(self):
+        probe = ClusterProbe(
+            cluster_name="fir",
+            probed_at=time.time(),
+            partitions=_parse_sinfo(self.FIR_MIG_ROW),
+            julia_versions=[], accounts=[], account_max_wall={},
+        )
+        assert len(probe.gpu_partitions()) == 1
+
+    def test_the_whole_card_row_is_unaffected(self):
+        row = "gpubase_bygpu_b1 3:00:00 gpu:h100:4(S:2-3) 30 48 1152000"
+        result = _parse_sinfo(row)
+        assert result[0].gres == "gpu:h100:4"
+
+    def test_rorqual_socket_range_also_stripped(self):
+        row = "gpubase_bygpu_b1 3:00:00 gpu:h100:4(S:0-1) 30 48 1152000"
+        assert _parse_sinfo(row)[0].gres == "gpu:h100:4"
+
+    def test_cores_and_memory_still_read_past_the_commas(self):
+        p = _parse_sinfo(self.FIR_MIG_ROW)[0]
+        assert (p.nodes, p.cpus, p.memory_mb) == (60, 48, 1152000)
+
+
 # ── _parse_julia_modules ──────────────────────────────────────────────────────
 
 class TestParseJuliaModules:
@@ -460,11 +510,69 @@ class TestParseSinfoResources:
         assert (p.cpus, p.memory_mb) == (0, 0)
 
 
+class TestCacheVersion:
+    """A cache written by an older parser holds truncated GRES fields, so it
+    is a miss rather than a load: waiting out the 24h TTL would hide the #62
+    fix for a whole day.
+    """
+
+    @staticmethod
+    def _write(tmp_path: Path, payload: dict) -> None:
+        path = tmp_path / "grex" / "probe.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload))
+
+    @staticmethod
+    def _payload(**extra) -> dict:
+        return {
+            "cluster_name": "grex",
+            "probed_at": time.time(),
+            "partitions": [{
+                "name": "stamps", "max_time": "21-00:00:00",
+                "gres": "gpu:v100:4", "nodes": 3, "is_default": False,
+            }],
+            "julia_versions": [], "accounts": [], "account_max_wall": {},
+            **extra,
+        }
+
+    def test_a_cache_without_a_version_is_a_miss(self, tmp_path):
+        self._write(tmp_path, self._payload())
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
+            assert load_cache("grex") is None
+
+    def test_an_older_version_is_a_miss(self, tmp_path):
+        self._write(tmp_path, self._payload(version=1))
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
+            assert load_cache("grex") is None
+
+    def test_the_current_version_loads(self, tmp_path):
+        self._write(tmp_path, self._payload(version=2))
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
+            assert load_cache("grex") is not None
+
+    def test_an_unreadable_version_is_a_miss(self, tmp_path):
+        self._write(tmp_path, self._payload(version="two"))
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
+            assert load_cache("grex") is None
+
+    def test_what_save_cache_writes_is_readable(self, tmp_path):
+        probe = ClusterProbe(
+            cluster_name="grex", probed_at=time.time(),
+            partitions=[], julia_versions=[], accounts=[], account_max_wall={},
+        )
+        with patch("clusterpilot.cluster.probe._CACHE_ROOT", tmp_path):
+            save_cache(probe)
+            written = json.loads((tmp_path / "grex" / "probe.json").read_text())
+            assert written["version"] == 2
+            assert load_cache("grex") is not None
+
+
 class TestCacheBackwardsCompatibility:
     def test_a_cache_without_cores_or_memory_still_loads(self, tmp_path):
         stale = {
             "cluster_name": "grex",
             "probed_at": time.time(),
+            "version": 2,
             "partitions": [{
                 "name": "stamps", "max_time": "21-00:00:00",
                 "gres": "gpu:v100:4", "nodes": 3, "is_default": False,

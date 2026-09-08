@@ -461,21 +461,49 @@ def _sanitise_script(script: str, job_name: str, is_array: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _gres_gpu_type(gres: str) -> str:
-    """The GPU type in a partition GRES, e.g. "a100" from "gpu:a100:4".
+def _gres_gpu_types(gres: str) -> list[str]:
+    """Every GPU type in a partition GRES, in the order sinfo listed them.
 
-    Returns "" for a type-less or non-GPU GRES. A type containing "_" is a MIG
-    slice ("a100_3g.20gb"); the probe lists each slice as its own partition row.
+    ``"gpu:a100:4"`` gives ``["a100"]``. A MIG node reports all of its
+    profiles in one comma-joined field, so
+    ``"gpu:a100_3g.20gb:4,gpu:a100_4g.20gb:1"`` gives both: reading only the
+    leading one hid every other slice from the picker (#62). A type-less or
+    non-GPU GRES gives [].
     """
-    fields = gres.split(":")
-    if len(fields) >= 3 and fields[0] == "gpu":
-        return fields[1]
-    return ""
+    types: list[str] = []
+    for item in gres.split(","):
+        fields = item.strip().split(":")
+        if len(fields) >= 3 and fields[0] == "gpu" and fields[1]:
+            types.append(fields[1])
+    return types
+
+
+# A MIG profile always ends in its slice geometry, "3g.20gb" on an A100 and
+# "3g.40gb" on an H100. Matching that tail rather than looking for "_" keeps a
+# long whole-card name such as "nvidia_h100_80gb_hbm3" out of the slice group.
+_MIG_PROFILE_RE = re.compile(r"(\d+g\.\d+gb)$")
+
+
+def _is_mig_profile(gpu_type: str) -> bool:
+    """True when a GPU type names a MIG slice rather than a whole card."""
+    return _MIG_PROFILE_RE.search(gpu_type) is not None
+
+
+def _short_gpu_type(gpu_type: str) -> str:
+    """A MIG profile shortened to its slice tail; a whole card unchanged.
+
+    Only the tail differs between the profiles on one node, and the full name
+    can run to 29 characters ("nvidia_h100_80gb_hbm3_3g.40gb"), which three of
+    would swamp the partition label. The full name stays the option value,
+    because that is what sbatch has to be given.
+    """
+    match = _MIG_PROFILE_RE.search(gpu_type)
+    return match.group(1) if match else gpu_type
 
 
 def _sorted_gpu_types(types: Iterable[str]) -> list[str]:
     """Whole cards first, then MIG slices, each group alphabetical."""
-    return sorted(set(types), key=lambda t: ("_" in t, t))
+    return sorted(set(types), key=lambda t: (_is_mig_profile(t), t))
 
 
 def _resolve_table_path(project_dir_str: str, table_raw: str) -> Path:
@@ -663,8 +691,9 @@ class SubmitView(Static):
         self._last_path_field: str = ""
         self._partition_availability: dict[str, PartitionAvailability] = {}
         # GPU types the probe reports, per partition name and across the whole
-        # cluster. The probe lists MIG instances as extra rows for the same
-        # partition, so one partition can offer several types.
+        # cluster. One partition can offer several types: a MIG node names
+        # every profile in a single comma-joined GRES field, and a partition
+        # can also appear on more than one sinfo row.
         self._gpu_types_by_partition: dict[str, list[str]] = {}
         self._all_gpu_types: list[str] = []
         self._init_done = False
@@ -893,7 +922,12 @@ class SubmitView(Static):
                 avail_str = f"  [0/{pa.total} free - queues]"
 
             if p.gres:
-                label = f"{p.name}  (GPU: {p.gres}  max {p.max_time}){avail_str}"
+                # A MIG row names every profile on the node, so the raw GRES
+                # would be three 40-character names in one label (#62).
+                gpu_names = ", ".join(
+                    _short_gpu_type(t) for t in _gres_gpu_types(p.gres)
+                ) or p.gres
+                label = f"{p.name}  (GPU: {gpu_names}  max {p.max_time}){avail_str}"
             else:
                 label = f"{p.name}  (CPU  max {p.max_time}){avail_str}"
             options.append((label, p.name))
@@ -907,9 +941,9 @@ class SubmitView(Static):
         # whole cards and MIG slices alike (see _rebuild_gpu_sizes).
         by_partition: dict[str, list[str]] = {}
         for p in probe.gpu_partitions():
-            gpu_type = _gres_gpu_type(p.gres)
-            if gpu_type and gpu_type not in by_partition.setdefault(p.name, []):
-                by_partition[p.name].append(gpu_type)
+            for gpu_type in _gres_gpu_types(p.gres):
+                if gpu_type not in by_partition.setdefault(p.name, []):
+                    by_partition[p.name].append(gpu_type)
         self._gpu_types_by_partition = by_partition
         self._all_gpu_types = _sorted_gpu_types(
             {t for types in by_partition.values() for t in types}
@@ -937,7 +971,12 @@ class SubmitView(Static):
         row.display = True
         select.set_options(
             [
-                (f"{t}, slice" if "_" in t else f"{t}, whole GPU", t)
+                (
+                    f"{_short_gpu_type(t)}, slice"
+                    if _is_mig_profile(t)
+                    else f"{t}, whole GPU",
+                    t,
+                )
                 for t in types
             ]
         )
