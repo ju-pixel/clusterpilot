@@ -58,6 +58,8 @@ kill $NVSMI_PID
 
 That writes one line a minute for the life of the job. Remember to kill it at the end, or the sampler keeps the job alive after your work is done and you pay walltime for nothing.
 
+Two things to watch. In a job array every task runs in the same directory, so a single `gpu_usage.csv` is overwritten by whichever task finishes last: give each task its own file, which is what ClusterPilot's generated scripts do with `gpu_usage-${SLURM_ARRAY_JOB_ID}-${SLURM_ARRAY_TASK_ID}.csv`, matching the `%A-%a` naming of the logs. And on a MIG slice, a card partitioned into smaller virtual GPUs, only `memory.used` comes back: utilisation reads `[N/A]`, because the slice cannot see what the rest of the card is doing.
+
 The other route is the cluster's own monitoring portal, which records this for you without changing the job script:
 
 | Cluster | Where to look |

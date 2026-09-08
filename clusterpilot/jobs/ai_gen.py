@@ -745,12 +745,23 @@ Match module versions to what is available on this cluster.
         # A GPU job that never reports what it used cannot be sized properly
         # next time (#31). The sampler is a background process, so it costs the
         # job nothing and stops with it.
+        # Every task of an array shares one job directory, so a fixed
+        # gpu_usage.csv is clobbered by whichever task writes last and only the
+        # final one survives (#74). Name it per task the way the logs are named,
+        # %A-%a, so the sampler and the log for a task sit side by side. Kept
+        # out of the f-string below: `${...}` is not an f-string expression.
+        sampler_file = (
+            "gpu_usage-${SLURM_ARRAY_JOB_ID}-${SLURM_ARRAY_TASK_ID}.csv"
+            if array_spec
+            else "gpu_usage.csv"
+        )
         gpu_sampler_note = (
             "\n\nAlso start a GPU usage sampler before the driver and stop it "
             "after: `nvidia-smi --query-gpu=utilization.gpu,memory.used "
-            "--format=csv -l 60 > gpu_usage.csv &` then, after the driver "
+            f"--format=csv -l 60 > {sampler_file} &` then, after the driver "
             "finishes, `kill %1 2>/dev/null || true`. It costs nothing and "
-            "tells the user whether the next request can be a slice."
+            "tells the user whether the next request can be a slice. On a MIG "
+            "slice only memory.used is reported: utilisation reads N/A."
         )
         gpu_directive_block = (
             f"\n═══ GPU REQUIRED ═══\n\n"

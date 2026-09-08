@@ -925,7 +925,32 @@ class TestGpuUsageSampler:
         block = gpu_block(prompt)
         assert "nvidia-smi --query-gpu=utilization.gpu,memory.used" in block
         assert "gpu_usage.csv" in block
+        assert "SLURM_ARRAY" not in block
         assert "kill %1 2>/dev/null || true" in block
+
+    def test_an_array_samples_to_one_file_per_task(self, grex_probe, grex_profile):
+        """Issue #74: the tasks of an array share a job directory, so a fixed
+        gpu_usage.csv keeps only whichever task wrote last. The per-task name
+        follows the %A-%a log convention.
+        """
+        prompt = _build_system_prompt(
+            grex_probe, grex_profile, partition="stamps",
+            array_spec="0-9", script_env=self._cuda_env(),
+        )
+        block = gpu_block(prompt)
+        assert (
+            "> gpu_usage-${SLURM_ARRAY_JOB_ID}-${SLURM_ARRAY_TASK_ID}.csv &" in block
+        )
+        assert "> gpu_usage.csv &" not in block
+
+    def test_the_note_warns_about_mig_slices(self, grex_probe, grex_profile):
+        """Issue #74: on a MIG slice utilisation reads N/A, so a user reading
+        the sampler output needs to know memory.used is all there is.
+        """
+        prompt = _build_system_prompt(
+            grex_probe, grex_profile, partition="stamps", script_env=self._cuda_env()
+        )
+        assert "On a MIG slice only memory.used is reported" in gpu_block(prompt)
 
     def test_no_sampler_without_a_gpu_job(self, grex_probe, grex_profile):
         prompt = _build_system_prompt(grex_probe, grex_profile, partition="stamps")
