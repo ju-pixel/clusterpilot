@@ -15,8 +15,10 @@ from clusterpilot.cluster.slurm import (
     _parse_efficiency,
     _first_sacct_error,
     _parse_tres,
+    _task_indices,
     _worst_exit_code,
     aggregate,
+    array_task_states,
     find_array_logs,
     find_log,
     job_accounting,
@@ -839,3 +841,69 @@ class TestSacctErrorsAreKeptNotSwallowed:
         with patch("clusterpilot.cluster.slurm.run_remote", new=run):
             await job_accounting("narval", "juliaf", "1")
         assert "2>/dev/null" not in run.await_args.args[2]
+
+
+# ── array task states, for the log viewer's two cycles (#73) ─────────────────
+
+class TestTaskIndices:
+    """The sibling of _task_count: which tasks a job-id field names."""
+
+    @pytest.mark.parametrize(
+        ("field", "expected"),
+        [
+            ("123", []),                       # not an array element
+            ("123_7", ["7"]),                  # one element
+            ("123_[5-8]", ["5", "6", "7", "8"]),
+            ("123_[5-7,40]", ["5", "6", "7", "40"]),
+            ("123_[5-7%5]", ["5", "6", "7"]),  # a throttle caps concurrency only
+            ("123_[0-9:3]", ["0", "3", "6", "9"]),   # a step narrows membership
+            ("123_[]", []),
+        ],
+    )
+    def test_the_forms_squeue_prints(self, field, expected):
+        assert _task_indices(field) == expected
+
+    def test_an_unreadable_range_is_skipped_rather_than_guessed(self):
+        assert _task_indices("123_[a-b]") == []
+
+
+class TestArrayTaskStates:
+    async def test_running_and_pending_tasks_are_reported(self):
+        out = (
+            "4123456_[10-12%2]|PENDING\n"
+            "4123456_7|RUNNING\n"
+            "4123456_8|RUNNING\n"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote(out)):
+            states = await array_task_states("host", "user", "4123456")
+        assert states == {
+            "7": "RUNNING", "8": "RUNNING",
+            "10": "PENDING", "11": "PENDING", "12": "PENDING",
+        }
+
+    async def test_a_finished_array_reports_nothing(self):
+        """squeue exits non-zero once the job has left the queue, and that
+        means every task has finished, not that the query failed.
+        """
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote_raises(SSHError("Invalid job id specified")),
+        ):
+            assert await array_task_states("host", "user", "4123456") == {}
+
+    async def test_empty_output_reports_nothing(self):
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote("")):
+            assert await array_task_states("host", "user", "4123456") == {}
+
+    async def test_states_are_normalised(self):
+        out = "4123456_3|CANCELLED by 12345\n"
+        with patch("clusterpilot.cluster.slurm.run_remote", _mock_run_remote(out)):
+            assert await array_task_states("host", "user", "4123456") == {
+                "3": "CANCELLED"
+            }
+
+    async def test_it_asks_squeue_for_the_task_states(self):
+        run = _mock_run_remote("")
+        with patch("clusterpilot.cluster.slurm.run_remote", run):
+            await array_task_states("host", "user", "4123456")
+        assert run.call_args[0][2].startswith("squeue -j 4123456 -h -o '%i|%T'")

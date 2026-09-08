@@ -353,6 +353,75 @@ def _parse_status_lines(text: str) -> dict[str, int]:
     return counts
 
 
+def _task_indices(job_field: str) -> list[str]:
+    """The array task indices a squeue or sacct job id field names.
+
+    The sibling of :func:`_task_count`, which counts the same field without
+    naming its members. "123" is not an array element and gives []; "123_7"
+    gives ["7"]; "123_[5-31,40]" gives every index it covers, and a "%N"
+    throttle suffix such as "123_[5-31%5]" caps concurrency rather than
+    membership, so it is stripped first.
+    """
+    _, separator, suffix = job_field.partition("_")
+    suffix = suffix.strip()
+    if not separator or not suffix:
+        return []
+    if not suffix.startswith("["):
+        return [suffix]
+
+    body = suffix[1:].split("]")[0].split("%")[0]
+    indices: list[str] = []
+    for item in body.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "-" not in item:
+            indices.append(item)
+            continue
+        low, _, high = item.partition("-")
+        step_text = ""
+        if ":" in high:
+            high, _, step_text = high.partition(":")
+        try:
+            start, end, step = int(low), int(high), int(step_text or 1)
+        except ValueError:
+            continue
+        indices.extend(str(index) for index in range(start, end + 1, max(step, 1)))
+    return indices
+
+
+async def array_task_states(host: str, user: str, job_id: str) -> dict[str, str]:
+    """Map array task index → its state, for the tasks still in the queue.
+
+    Only the queue knows which tasks are on a node right now: a task that has
+    finished has left squeue altogether. So a task with a log file and no
+    entry here has finished, which is what lets the log viewer tell the two
+    apart (#73).
+
+    Returns {} when squeue reports nothing, including when the whole job has
+    finished and squeue exits non-zero. That reads correctly: nothing is
+    running, and every task with a log has finished.
+    """
+    try:
+        out = await run_remote(
+            host, user, f"squeue -j {job_id} -h -o '%i|%T' 2>/dev/null",
+        )
+    except SSHError:
+        return {}
+
+    states: dict[str, str] = {}
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        job_field, _, state_field = line.partition("|")
+        state = normalise_state(state_field.strip())
+        if not state:
+            continue
+        for index in _task_indices(job_field.strip()):
+            states[index] = state
+    return states
+
+
 def _task_count(job_field: str) -> int:
     """Count the array tasks a squeue or sacct job id field stands for.
 

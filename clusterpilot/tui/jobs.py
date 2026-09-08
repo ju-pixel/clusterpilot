@@ -17,7 +17,9 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Label, ListItem, ListView, RichLog, Static
 
 from clusterpilot.cluster.slurm import (
+    RUNNING_STATES,
     TERMINAL_STATES,
+    array_task_states,
     format_summary,
     parse_summary,
     cancel,
@@ -57,6 +59,33 @@ _STATUS_STYLE = {
 def _status_rich(status: str) -> str:
     color, icon = _STATUS_STYLE.get(status, ("[#f0e8d0]", "?"))
     return f"{color}{icon} {status}[/]"
+
+
+# Seconds a task-state snapshot is reused for. TAIL is a key the user leans
+# on, and two SSH round trips per press on a 54-task array is a slow key.
+_ARRAY_SNAPSHOT_TTL = 30.0
+
+# The two groups a log press can cycle. TAIL asks "what is happening", LOG
+# asks "what went wrong", and those are different sets of tasks (#73).
+_RUNNING = "running"
+_FINISHED = "finished"
+
+
+@dataclasses.dataclass(frozen=True)
+class ArrayLogChoice:
+    """Which array task's log to show, and how it sits among its siblings.
+
+    ``log_path`` is empty when nothing matched, which is an ordinary state
+    rather than an error: an array can have nothing running yet, or nothing
+    finished yet. Saying so beats showing another task's log as though it
+    were the one asked for.
+    """
+
+    want: str = _RUNNING
+    log_path: str = ""
+    task: str = ""
+    matched: int = 0    # tasks in the cycle this choice came from
+    total: int = 0      # tasks in the array, as far as logs and squeue show
 
 
 def _elapsed(job: JobRecord) -> str:
@@ -215,12 +244,15 @@ class JobsView(Static):
         self._tail_job_id: str | None = None     # job ID being tailed
         self._tail_log_path: str | None = None   # cached log path for polling
         self._tail_mode: str = "tail"             # "tail" or "full"
-        self._tail_array_task: str | None = None  # task index being tailed (array jobs)
-        # Active array job's per-task logs: TAIL cycles through them.
-        self._array_job_id: str | None = None     # job the discovered tasks belong to
+        # The array task on screen, None for a plain job.
+        self._tail_array_choice: ArrayLogChoice | None = None
+        # Active array job's per-task logs and queue states, with one cursor
+        # per group: TAIL cycles the running tasks, LOG the finished ones.
+        self._array_job_id: str | None = None     # job the snapshot belongs to
         self._array_tasks: dict[str, str] = {}    # task index → log path
-        self._array_order: list[str] = []         # task indices, numeric order
-        self._array_pos: int = 0                  # index into _array_order
+        self._array_states: dict[str, str] = {}   # task index → state in squeue
+        self._array_fetched_at: float = 0.0       # monotonic clock, for the TTL
+        self._array_pos: dict[str, int] = {}      # group → cursor, -1 before use
         self.set_interval(10, self._refresh)
         self._refresh()
         self.focus_job_list()
@@ -327,8 +359,9 @@ class JobsView(Static):
         # re-discovers and starts at the lowest task.
         self._array_job_id = None
         self._array_tasks = {}
-        self._array_order = []
-        self._array_pos = 0
+        self._array_states = {}
+        self._array_fetched_at = 0.0
+        self._array_pos = {}
         self._update_meta(job)
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
@@ -341,50 +374,113 @@ class JobsView(Static):
             self._tail_timer = None
         self._tail_job_id = None
         self._tail_log_path = None
-        self._tail_array_task = None
+        self._tail_array_choice = None
 
     def _start_tail_polling(
-        self, job: JobRecord, log_path: str, mode: str, task: str | None = None,
+        self,
+        job: JobRecord,
+        log_path: str,
+        mode: str,
+        choice: ArrayLogChoice | None = None,
     ) -> None:
         """Begin polling the log every 5 seconds for a running job."""
         self._stop_tail_polling()
         self._tail_job_id = job.job_id
         self._tail_log_path = log_path
         self._tail_mode = mode
-        self._tail_array_task = task
+        self._tail_array_choice = choice
         self._tail_timer = self.set_interval(5, self._poll_tail)
 
-    async def _resolve_array_log(
-        self, job: JobRecord, host: str, user: str, *, advance: bool,
-    ) -> tuple[str | None, str | None]:
-        """Resolve the active array task's log path.
+    async def _array_snapshot(
+        self, job: JobRecord, host: str, user: str,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """(task → log path, task → queue state) for *job*, briefly cached.
 
-        Discovers the per-task logs on first use for this job (starting at the
-        lowest task index) and, on a repeat TAIL press, cycles to the next
-        available task. Returns ``(log_path, task_index)``, or ``(None, None)``
-        if no task logs exist yet.
+        Two SSH round trips, so a press within the TTL of the last one reuses
+        what it found; a different job always refetches. The old code cached
+        the discovery for as long as the job stayed selected, so a task that
+        started after the first TAIL never appeared at all.
         """
-        if self._array_job_id != job.job_id or not self._array_order:
-            tasks = await find_array_logs(
+        now = time.monotonic()
+        if (
+            self._array_job_id != job.job_id
+            or now - self._array_fetched_at > _ARRAY_SNAPSHOT_TTL
+        ):
+            if self._array_job_id != job.job_id:
+                self._array_pos = {}
+            self._array_tasks = await find_array_logs(
                 host, user, job.job_name, job.job_id, job.working_dir,
             )
-            self._array_tasks = tasks
-            self._array_order = list(tasks.keys())
-            self._array_pos = 0
+            self._array_states = await array_task_states(host, user, job.job_id)
             self._array_job_id = job.job_id
-        elif advance:
-            self._array_pos = (self._array_pos + 1) % len(self._array_order)
-        if not self._array_order:
-            return None, None
-        task = self._array_order[self._array_pos]
-        return self._array_tasks[task], task
+            self._array_fetched_at = now
+        return self._array_tasks, self._array_states
 
-    def _log_header(self, log_path: str, task: str | None, label: str) -> str:
-        """Build the OUTPUT LOG header line, annotating the array task if any."""
-        if task is None:
+    async def _resolve_array_log(
+        self, job: JobRecord, host: str, user: str, *, want: str,
+    ) -> ArrayLogChoice:
+        """Pick the next array task to show from the *want* group.
+
+        TAIL cycles the tasks running now, LOG cycles the ones that have
+        finished, because those are the two questions an array is asked: what
+        is happening, and what went wrong. Both used to cycle every task that
+        had ever written a log, so on a 54-task array TAIL kept landing on
+        tasks that finished hours ago (#73).
+
+        Deliberately free of widgets and notifications: the caller decides
+        what to say when nothing matched, and this stays testable on its own.
+        """
+        tasks, states = await self._array_snapshot(job, host, user)
+        total = len(set(tasks) | set(states))
+        if want == _RUNNING:
+            cycle = [t for t in tasks if states.get(t, "") in RUNNING_STATES]
+        else:
+            cycle = [t for t in tasks if t not in states]
+        if not cycle:
+            return ArrayLogChoice(want=want, total=total)
+
+        # The cursor starts before the first task, so the first press of a
+        # group shows the lowest task rather than the second one.
+        position = (self._array_pos.get(want, -1) + 1) % len(cycle)
+        self._array_pos[want] = position
+        task = cycle[position]
+        return ArrayLogChoice(
+            want=want,
+            log_path=tasks[task],
+            task=task,
+            matched=len(cycle),
+            total=total,
+        )
+
+    def _log_header(
+        self, log_path: str, label: str, choice: ArrayLogChoice | None = None,
+    ) -> str:
+        """Build the OUTPUT LOG header line, annotating the array task if any.
+
+        The brackets are escaped because the header is written as markup.
+        """
+        if choice is None or not choice.task:
             return f"{log_path} ({label})"
-        cycle = r", \[T] cycles tasks" if len(self._array_order) > 1 else ""
-        return f"{log_path} (array task {task}; {label}{cycle})"
+        keys = r"\[T] cycles running, \[L] cycles finished"
+        return (
+            f"{log_path} (array task {choice.task}; {choice.want} "
+            f"{choice.matched} of {choice.total}; {label}; {keys})"
+        )
+
+    @staticmethod
+    def _no_array_task_message(choice: ArrayLogChoice) -> str:
+        """What to show when the asked-for group of tasks is empty."""
+        if choice.total == 0:
+            return "[#7a6a50]Array task logs not found yet.[/]"
+        if choice.want == _RUNNING:
+            return (
+                "[#7a6a50]No task of this array is running now. "
+                r"Press \[L] to cycle the tasks that have finished.[/]"
+            )
+        return (
+            "[#7a6a50]No task of this array has finished yet. "
+            r"Press \[T] to cycle the tasks that are running.[/]"
+        )
 
     @work(thread=False)
     async def _poll_tail(self) -> None:
@@ -415,7 +511,7 @@ class JobsView(Static):
         log_widget.clear()
         total = len(lines.splitlines())
         label = "last 500 lines" if self._tail_mode == "tail" else f"{total} lines"
-        header = self._log_header(self._tail_log_path, self._tail_array_task, label)
+        header = self._log_header(self._tail_log_path, label, self._tail_array_choice)
         log_widget.write(f"[#7a6a50]── {header} ── [dim]live[/dim][/]")
         for line in lines.splitlines():
             color = "#e05050" if ("ERROR" in line or "error" in line) else \
@@ -573,14 +669,16 @@ class JobsView(Static):
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
         # Resolve the log path. Array jobs write one log per task (%x-%A-%a),
-        # so default to the lowest task and cycle on each repeat TAIL press.
-        array_task: str | None = None
+        # so TAIL cycles the tasks that are running right now: the tail of a
+        # task that finished hours ago is not what T is pressed for (#73).
+        choice: ArrayLogChoice | None = None
         if job.array_spec:
-            log_path, array_task = await self._resolve_array_log(
-                job, profile.host, profile.user, advance=True,
+            choice = await self._resolve_array_log(
+                job, profile.host, profile.user, want=_RUNNING,
             )
+            log_path = choice.log_path
             if not log_path:
-                log_widget.write("[#7a6a50]Array task logs not found yet.[/]")
+                log_widget.write(self._no_array_task_message(choice))
                 return
         else:
             log_path = job.log_path
@@ -594,7 +692,7 @@ class JobsView(Static):
                 return
         lines = await tail_log(profile.host, profile.user, log_path, n_lines=500)
         live_tag = " [dim]live[/dim]" if job.status == "RUNNING" else ""
-        header = self._log_header(log_path, array_task, "last 500 lines")
+        header = self._log_header(log_path, "last 500 lines", choice)
         log_widget.write(f"[#7a6a50]── {header} ──{live_tag}[/]")
         for line in lines.splitlines():
             color = "#e05050" if ("ERROR" in line or "error" in line) else \
@@ -602,7 +700,7 @@ class JobsView(Static):
             log_widget.write(f"[{color}]{line}[/]")
         # Start live polling if the job is still running.
         if job.status == "RUNNING":
-            self._start_tail_polling(job, log_path, "tail", array_task)
+            self._start_tail_polling(job, log_path, "tail", choice)
 
     # ── Full log ──────────────────────────────────────────────────────────────
 
@@ -621,15 +719,17 @@ class JobsView(Static):
             return
         log_widget = self.query_one("#log-display", RichLog)
         log_widget.clear()
-        # Array jobs: show the currently selected task's full log (TAIL picks
-        # the task; LOG does not advance it).
-        array_task: str | None = None
+        # Array jobs: LOG cycles the tasks that have finished, whose logs are
+        # complete and are what a post-mortem is after. TAIL has the running
+        # ones (#73).
+        choice: ArrayLogChoice | None = None
         if job.array_spec:
-            log_path, array_task = await self._resolve_array_log(
-                job, profile.host, profile.user, advance=False,
+            choice = await self._resolve_array_log(
+                job, profile.host, profile.user, want=_FINISHED,
             )
+            log_path = choice.log_path
             if not log_path:
-                log_widget.write("[#7a6a50]Array task logs not found yet.[/]")
+                log_widget.write(self._no_array_task_message(choice))
                 return
         else:
             log_path = job.log_path
@@ -645,16 +745,19 @@ class JobsView(Static):
         content = await cat_log(profile.host, profile.user, log_path)
         log_widget.clear()
         total = len(content.splitlines())
-        live_tag = " [dim]live[/dim]" if job.status == "RUNNING" else ""
-        header = self._log_header(log_path, array_task, f"{total} lines")
+        # Poll, and say "live", only for a log that can still grow. An array
+        # task shown here has already finished, however busy the rest of the
+        # array is.
+        polling = job.status == "RUNNING" and choice is None
+        live_tag = " [dim]live[/dim]" if polling else ""
+        header = self._log_header(log_path, f"{total} lines", choice)
         log_widget.write(f"[#7a6a50]── {header} ──{live_tag}[/]")
         for line in content.splitlines():
             color = "#e05050" if ("ERROR" in line or "error" in line) else \
                     "#6ed86e" if ("\u2713" in line or "successfully" in line) else "#f0e8d0"
             log_widget.write(f"[{color}]{line}[/]")
-        # Start live polling if the job is still running.
-        if job.status == "RUNNING":
-            self._start_tail_polling(job, log_path, "full", array_task)
+        if polling:
+            self._start_tail_polling(job, log_path, "full")
 
     # ── Clean remote working directory ────────────────────────────────────────
 
