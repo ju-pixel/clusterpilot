@@ -9,6 +9,10 @@ pinned here:
   2. F9 shows the row only for a hosted user, never blocks its own render on
      the request, and says "unknown" rather than a made-up figure when the
      request fails.
+
+The same background-fetch machinery fills the notification rows (issue #45),
+so those tests live here too: F9 must show the topic the daemon will really
+post to, which is the dashboard's when the account has one.
 """
 from __future__ import annotations
 
@@ -17,8 +21,14 @@ from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from clusterpilot.config import ClusterProfile, Config, Defaults, HostedConfig
-from clusterpilot.jobs.sync import Allowance, fetch_allowance
+from clusterpilot.config import (
+    ClusterProfile,
+    Config,
+    Defaults,
+    HostedConfig,
+    NotificationConfig,
+)
+from clusterpilot.jobs.sync import Allowance, NotificationPreferences, fetch_allowance
 from clusterpilot.tui.app import ClusterPilotApp
 
 TERMINAL_SIZE = (100, 30)
@@ -113,33 +123,46 @@ def _config(token: str) -> Config:
             )
         ],
         hosted=HostedConfig(api_token=token),
+        notifications=NotificationConfig(ntfy_topic="local-topic"),
     )
 
 
 @contextlib.contextmanager
-def _offline(allowance: Allowance | None) -> Iterator[AsyncMock]:
-    """Stub the network, including the allowance fetch F9 makes on mount."""
+def _offline(
+    allowance: Allowance | None, prefs: NotificationPreferences | None = None,
+) -> Iterator[tuple[AsyncMock, AsyncMock]]:
+    """Stub the network, including both fetches F9 makes on mount.
+
+    Both are patched by name in ``config_view``: leaving either one real would
+    put a live HTTP request in the middle of every F9 test.
+    """
     daemon = MagicMock()
     daemon.run_forever = AsyncMock()
     fetch = AsyncMock(return_value=allowance)
+    fetch_prefs = AsyncMock(return_value=prefs)
     with patch("clusterpilot.tui.app.PollDaemon", return_value=daemon), \
             patch("clusterpilot.tui.app.is_connected", return_value=False), \
             patch("clusterpilot.update.check_for_update", new=AsyncMock(return_value=None)), \
             patch("clusterpilot.tui.submit.probe_cluster",
                   new=AsyncMock(side_effect=RuntimeError("offline"))), \
             patch("clusterpilot.tui.submit.fetch_availability", new=AsyncMock(return_value={})), \
-            patch("clusterpilot.tui.config_view.fetch_allowance", new=fetch):
-        yield fetch
+            patch("clusterpilot.tui.config_view.fetch_allowance", new=fetch), \
+            patch("clusterpilot.tui.config_view.fetch_notification_preferences",
+                  new=fetch_prefs):
+        yield fetch, fetch_prefs
 
 
 async def _config_text(
-    tmp_path: Path, token: str, allowance: Allowance | None,
-) -> tuple[str, AsyncMock]:
-    """Open F9, let the background fetch settle, and return the rendered text."""
+    tmp_path: Path,
+    token: str,
+    allowance: Allowance | None,
+    prefs: NotificationPreferences | None = None,
+) -> tuple[str, AsyncMock, AsyncMock]:
+    """Open F9, let the background fetches settle, and return the rendered text."""
     from textual.widgets import Static
 
     app = ClusterPilotApp(_config(token), db_path=tmp_path / "jobs.db")
-    with _offline(allowance) as fetch:
+    with _offline(allowance, prefs) as (fetch, fetch_prefs):
         async with app.run_test(size=TERMINAL_SIZE) as pilot:
             await pilot.press("f9")
             # The fetch is a worker, so the row is filled a tick after the
@@ -147,7 +170,7 @@ async def _config_text(
             for _ in range(5):
                 await pilot.pause()
             text = str(app.query_one("#config-content", Static).content)
-    return text, fetch
+    return text, fetch, fetch_prefs
 
 
 class TestConfigViewAllowanceRow:
@@ -157,17 +180,60 @@ class TestConfigViewAllowanceRow:
             total_used=41, total_limit=150,
             fallback_model="claude-sonnet-5", resets_on="2026-09-01",
         )
-        text, fetch = await _config_text(tmp_path, "cp-abc", allowance)
+        text, fetch, _ = await _config_text(tmp_path, "cp-abc", allowance)
         assert "Allowance" in text
         assert "Opus 3/15, total 41/150, resets 2026-09-01" in text
         fetch.assert_awaited()
 
     async def test_a_self_hosted_user_sees_no_row(self, tmp_path: Path):
-        text, fetch = await _config_text(tmp_path, "", None)
+        text, fetch, _ = await _config_text(tmp_path, "", None)
         assert "Allowance" not in text
         fetch.assert_not_awaited()
 
     async def test_a_failed_fetch_reads_unknown(self, tmp_path: Path):
-        text, _ = await _config_text(tmp_path, "cp-abc", None)
+        text, _, _ = await _config_text(tmp_path, "cp-abc", None)
         assert "Allowance" in text
         assert "unknown" in text
+
+
+class TestConfigViewNotifyRows:
+    """Issue #45: F9 must name the topic the daemon will really post to."""
+
+    async def test_a_dashboard_topic_wins_and_says_so(self, tmp_path: Path):
+        prefs = NotificationPreferences(ntfy_topic="https://ntfy.sh/dash-topic")
+        text, _, fetch_prefs = await _config_text(tmp_path, "cp-abc", None, prefs)
+        assert "https://ntfy.sh/dash-topic" in text
+        assert "(dashboard topic, overrides config.toml)" in text
+        # The local value is still shown, labelled as the one being overridden,
+        # so the user can see what to correct in config.toml.
+        assert "ntfy topic (config.toml)" in text
+        assert "local-topic" in text
+        fetch_prefs.assert_awaited()
+
+    async def test_a_bare_dashboard_topic_keeps_the_local_server(self, tmp_path: Path):
+        prefs = NotificationPreferences(ntfy_topic="dash-topic")
+        text, _, _ = await _config_text(tmp_path, "cp-abc", None, prefs)
+        assert "https://ntfy.sh/dash-topic" in text
+
+    async def test_no_dashboard_topic_leaves_the_local_rows_alone(self, tmp_path: Path):
+        prefs = NotificationPreferences(ntfy_topic="")
+        text, _, fetch_prefs = await _config_text(tmp_path, "cp-abc", None, prefs)
+        assert "https://ntfy.sh/local-topic" in text
+        assert "dashboard topic" not in text
+        assert "(config.toml)" not in text
+        fetch_prefs.assert_awaited()
+
+    async def test_a_self_hosted_user_is_never_asked(self, tmp_path: Path):
+        text, _, fetch_prefs = await _config_text(tmp_path, "", None)
+        assert "https://ntfy.sh/local-topic" in text
+        assert "dashboard topic" not in text
+        fetch_prefs.assert_not_awaited()
+
+    async def test_an_unreachable_dashboard_leaves_the_local_rows_alone(
+        self, tmp_path: Path,
+    ):
+        # None is "no opinion from the cloud", exactly as the daemon reads it.
+        text, _, fetch_prefs = await _config_text(tmp_path, "cp-abc", None, None)
+        assert "https://ntfy.sh/local-topic" in text
+        assert "dashboard topic" not in text
+        fetch_prefs.assert_awaited()

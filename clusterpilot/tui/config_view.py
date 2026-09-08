@@ -11,7 +11,12 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Static
 
 from clusterpilot.config import CONFIG_PATH, ConfigError, load_config
-from clusterpilot.jobs.sync import Allowance, fetch_allowance
+from clusterpilot.jobs.sync import (
+    Allowance,
+    NotificationPreferences,
+    fetch_allowance,
+    fetch_notification_preferences,
+)
 from clusterpilot.ssh.connection import _CONTROL_PATH
 
 if TYPE_CHECKING:
@@ -21,8 +26,8 @@ _ALLOWANCE_LOADING = "[#7a6a50]loading…[/]"
 _ALLOWANCE_UNKNOWN = "[#7a6a50](unknown)[/]"
 
 
-def _row(key: str, value: str) -> str:
-    return f"[#7a6a50]{key:<20}[/] [#f0e8d0]{value}[/]\n"
+def _row(key: str, value: str, width: int = 20) -> str:
+    return f"[#7a6a50]{key:<{width}}[/] [#f0e8d0]{value}[/]\n"
 
 
 def _format_allowance(allowance: Allowance) -> str:
@@ -34,7 +39,7 @@ def _format_allowance(allowance: Allowance) -> str:
     )
 
 
-def _render(app: "ClusterPilotApp", allowance: str = "") -> str:
+def _render(app: "ClusterPilotApp", allowance: str = "", cloud_topic: str = "") -> str:
     cfg = app._config
     lines: list[str] = []
 
@@ -61,12 +66,29 @@ def _render(app: "ClusterPilotApp", allowance: str = "") -> str:
 
     lines.append("[bold #e8a020]NOTIFICATIONS[/]\n")
     n = cfg.notifications
-    lines.append(_row("Backend",     n.backend))
-    lines.append(_row("ntfy topic",  n.ntfy_topic or "[#7a6a50](not set)[/]"))
-    lines.append(_row("ntfy server", n.ntfy_server))
+    # A topic saved on the dashboard beats the one in config.toml, because that
+    # is what the daemon posts to (issue #43, PollDaemon._notifications), and
+    # F9 showed a URL nothing was sent to (issue #45). The identity check is
+    # deliberate rather than an equality slip: with_topic returns the config
+    # unchanged when the dashboard value is unusable (a bare server URL with no
+    # topic), which is exactly the case where the daemon also falls back to the
+    # local topic, so the plain local rows are then the truth.
+    resolved = n.with_topic(cloud_topic) if cloud_topic else n
+    from_dashboard = resolved is not n
+    # Keys grow when they are labelled, so the block pads to its own longest
+    # key and the four values stay in one column.
+    topic_key = "ntfy topic (config.toml)" if from_dashboard else "ntfy topic"
+    server_key = "ntfy server (config.toml)" if from_dashboard else "ntfy server"
+    width = max(20, len(topic_key), len(server_key))
+    lines.append(_row("Backend",   n.backend, width))
+    lines.append(_row(topic_key,  n.ntfy_topic or "[#7a6a50](not set)[/]", width))
+    lines.append(_row(server_key, n.ntfy_server, width))
     # The URL a notification is actually POSTed to, so a doubled topic or a
     # stray path is visible without reading the config file.
-    lines.append(_row("Notify URL", n.resolved_url or "[#7a6a50](no topic set)[/]"))
+    url = resolved.resolved_url or "[#7a6a50](no topic set)[/]"
+    if from_dashboard:
+        url = f"{url} [#7a6a50](dashboard topic, overrides config.toml)[/]"
+    lines.append(_row("Notify URL", url, width))
     lines.append("\n")
 
     lines.append("[bold #e8a020]AI SCRIPT GENERATION[/]\n")
@@ -121,13 +143,19 @@ class ConfigView(Static):
 
     def on_mount(self) -> None:
         self._allowance: str = ""
+        self._cloud_topic: str = ""
         self._refresh_display()
         self._load_allowance()
+        self._load_cloud_topic()
 
     def _refresh_display(self) -> None:
         app = cast("ClusterPilotApp", self.app)
         self.query_one("#config-content", Static).update(
-            _render(app, getattr(self, "_allowance", ""))
+            _render(
+                app,
+                getattr(self, "_allowance", ""),
+                getattr(self, "_cloud_topic", ""),
+            )
         )
 
     @work(exclusive=True)
@@ -144,6 +172,28 @@ class ConfigView(Static):
         self._allowance = (
             _format_allowance(allowance) if allowance is not None else _ALLOWANCE_UNKNOWN
         )
+        self._refresh_display()
+
+    # A group of its own: an exclusive worker cancels its group mates, so
+    # sharing the default group would leave whichever fetch started second as
+    # the only row ever filled in.
+    @work(group="notify-prefs", exclusive=True)
+    async def _load_cloud_topic(self) -> None:
+        """Fill in the dashboard's ntfy topic in the background, if there is one.
+
+        Silent on failure, as the allowance row is: an unreachable dashboard
+        means "no opinion from the cloud", and the local rows already say what
+        config.toml holds.
+        """
+        app = cast("ClusterPilotApp", self.app)
+        if not app._config.hosted.api_token:
+            return
+        prefs: NotificationPreferences | None = await fetch_notification_preferences(
+            app._config.hosted
+        )
+        if prefs is None or not prefs.ntfy_topic:
+            return
+        self._cloud_topic = prefs.ntfy_topic
         self._refresh_display()
 
     @on(Button.Pressed, "#btn-edit-config")
