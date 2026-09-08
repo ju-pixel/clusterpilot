@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -43,6 +43,7 @@ from clusterpilot.jobs.validate import (
     SubmitIntent,
     blocking,
     format_findings,
+    read_script_requests,
     validate_script,
 )
 from clusterpilot.jobs.preflight import PreflightError, warm_depot
@@ -680,6 +681,10 @@ class SubmitView(Static):
         # the same checks again on the edited script (#53).
         self._last_intent: SubmitIntent | None = None
         self._last_probe: ClusterProbe | None = None
+        # The parameter table the last generation used, None when there is
+        # none. Set here too, not only in _stream_script, so anything that can
+        # run before the first generation can read it.
+        self._params_table: ParamsTable | None = None
         # The job name as generated, without any "-MMDD-HHMM" uniqueness
         # suffix. Every submit derives its name from this, so re-submitting
         # cannot stack one suffix on top of another.
@@ -952,6 +957,26 @@ class SubmitView(Static):
             "" if select.value is Select.NULL else str(select.value)
         )
 
+    def _gpu_types_for(self, partition_name: str) -> list[str]:
+        """The GPU types on offer for *partition_name*, "" meaning any.
+
+        No partition picked, or one the probe has no GPU rows for: offer every
+        type the cluster has rather than an empty picker.
+        """
+        types = _sorted_gpu_types(self._gpu_types_by_partition.get(partition_name, []))
+        return types or self._all_gpu_types
+
+    def _offered_gpu_sizes(self) -> list[str] | None:
+        """What the GPU SIZE picker is offering, or None when that is unknown.
+
+        None rather than an empty list: the validator treats "not known" as a
+        reason to keep blocking a mismatch, whereas an empty list would claim
+        the cluster offers no GPU at all.
+        """
+        select = self.query_one("#partition-select", Select)
+        partition = "" if select.value is Select.NULL else str(select.value)
+        return self._gpu_types_for(partition) or None
+
     def _rebuild_gpu_sizes(self, partition_name: str) -> None:
         """Refill the GPU SIZE picker for *partition_name*, "" meaning any.
 
@@ -963,11 +988,7 @@ class SubmitView(Static):
         if not self._all_gpu_types:
             row.display = False
             return
-        types = _sorted_gpu_types(self._gpu_types_by_partition.get(partition_name, []))
-        if not types:
-            # No partition picked, or one the probe has no GPU rows for: offer
-            # every type the cluster has rather than an empty picker.
-            types = self._all_gpu_types
+        types = self._gpu_types_for(partition_name)
         row.display = True
         select.set_options(
             [
@@ -1322,6 +1343,65 @@ class SubmitView(Static):
 
     # ── Validation ────────────────────────────────────────────────────────────
 
+    def _back_populate_from_script(self) -> None:
+        """Refill ARRAY and GPU SIZE from a hand-edited script.
+
+        The edited script is the one that runs, so the form follows it. Without
+        this the user hits the wall in #63: they fix the script by hand, the
+        form still holds the answer the generation was checked against, and
+        SUBMIT stays disabled with no way to agree with either side.
+
+        Only what the script names is touched, and only where taking it cannot
+        hide a real disagreement. An array that contradicts a loaded parameter
+        table is left alone so the validator still reports it, and a GPU type
+        the picker never offered is left alone because a Select cannot hold a
+        value it was not given (that case warns instead, in the validator).
+        """
+        intent = self._last_intent
+        if intent is None or not self._generated_script:
+            return
+        asked = read_script_requests(self._generated_script)
+        changed: list[str] = []
+
+        array_field = self.query_one("#array-input", Input)
+        if (
+            asked.array_spec
+            and asked.array_spec != array_field.value.strip()
+            and self._array_agrees_with_table(asked.array_task_count)
+        ):
+            array_field.value = asked.array_spec
+            intent = replace(intent, array_spec=asked.array_spec)
+            changed.append(f"ARRAY = {asked.array_spec}")
+
+        gpu_select = self.query_one("#gpu-size-select", Select)
+        offered = self._offered_gpu_sizes() or []
+        named = {t for t in asked.gpu_types if t in offered}
+        current = "" if gpu_select.value is Select.NULL else str(gpu_select.value)
+        if len(named) == 1 and (picked := named.pop()) != current:
+            gpu_select.value = picked
+            intent = replace(intent, gpu_size=picked)
+            changed.append(f"GPU SIZE = {picked}")
+
+        if changed:
+            self._last_intent = intent
+            self.app.notify(
+                "Picker updated from your edited script: " + ", ".join(changed),
+                severity="information", markup=False, timeout=8,
+            )
+
+    def _array_agrees_with_table(self, task_count: int | None) -> bool:
+        """True when an edited array spec can be taken from the script.
+
+        With a parameter table loaded, its row count is the source of truth for
+        how many tasks there are. Copying a contradicting spec into the ARRAY
+        field would turn a blocking mismatch into a silent one, so the field
+        keeps what the user asked for and the validator reports the clash.
+        """
+        table = self._params_table
+        if table is None:
+            return True
+        return task_count == table.task_count
+
     def _apply_validation(self, *, announce_clean: bool = False) -> None:
         """Re-check the current script, report findings, and gate SUBMIT.
 
@@ -1343,6 +1423,7 @@ class SubmitView(Static):
             intent=intent,
             partitions=probe.partitions if probe is not None else None,
             account_max_wall=probe.account_max_wall if probe is not None else None,
+            offered_gpu_sizes=self._offered_gpu_sizes(),
         )
         was_blocked = blocking(self._findings)
         self._findings = findings
@@ -1663,7 +1744,10 @@ class SubmitView(Static):
             # An edited script is a different script, so it gets the same gate
             # the generated one got. Both directions matter: a block the user
             # has just fixed must clear, and a clean script edited into a
-            # broken one must not reach sbatch (#53).
+            # broken one must not reach sbatch (#53). The form follows the
+            # script first, so a hand-edited array or GPU size is not still
+            # being checked against the answer it replaced (#63).
+            self._back_populate_from_script()
             self._apply_validation(announce_clean=True)
         finally:
             Path(tmp_path).unlink(missing_ok=True)

@@ -25,11 +25,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from textual.widgets import Button, Input, TextArea
+from textual.widgets import Button, Input, Select, TextArea
 
 from clusterpilot.cluster.probe import ClusterProbe, PartitionInfo
 from clusterpilot.config import ClusterProfile, Config, Defaults
 from clusterpilot.jobs.params_table import load_params_table, render_bash_reader
+from clusterpilot.jobs.validate import Severity
 from clusterpilot.tui.app import ClusterPilotApp
 from clusterpilot.tui.submit import SubmitView
 from clusterpilot.tui.widgets.file_explorer import FileExplorer
@@ -114,8 +115,30 @@ def canned_script(table_name: str, *, reader: str = "", body: str = "") -> str:
     )
 
 
+def mig_probe() -> ClusterProbe:
+    """The same GPU partition as sinfo really reports it (#62).
+
+    The MIG profiles share one comma-joined row and the whole card is a
+    second row, so the picker offers h100 alongside its two slices.
+    """
+    return ClusterProbe(
+        cluster_name="rorqual",
+        probed_at=0.0,
+        partitions=[
+            PartitionInfo(
+                "gpubase_bygpu_b1", "1-00:00:00",
+                "gpu:h100_3g.40gb:4,gpu:h100_1g.10gb:8", 60, False,
+            ),
+            PartitionInfo("gpubase_bygpu_b1", "1-00:00:00", "gpu:h100:4", 30, False),
+        ],
+        julia_versions=["julia/1.10.10"],
+        accounts=["def-stamps"],
+        account_max_wall={"def-stamps": ""},
+    )
+
+
 @contextlib.contextmanager
-def offline(script: str) -> Iterator[None]:
+def offline(script: str, probe: ClusterProbe | None = None) -> Iterator[None]:
     """Stub the network and hand *script* back from the model call."""
     daemon = MagicMock()
     daemon.run_forever = AsyncMock()
@@ -130,7 +153,7 @@ def offline(script: str) -> Iterator[None]:
             patch("clusterpilot.update.check_for_update", new=AsyncMock(return_value=None)), \
             patch(
                 "clusterpilot.tui.submit.probe_cluster",
-                new=AsyncMock(return_value=stub_probe()),
+                new=AsyncMock(return_value=probe if probe is not None else stub_probe()),
             ), \
             patch("clusterpilot.tui.submit.fetch_availability", new=AsyncMock(return_value={})), \
             patch("clusterpilot.tui.submit.generate_script", new=fake_generate):
@@ -572,3 +595,182 @@ class TestShadowedColumnWarns:
 
                 assert slugs(view) == ["params-column-shadowed"]
                 assert not view.query_one("#btn-submit", Button).disabled
+
+
+# ── #63: the form follows a hand-edited script ───────────────────────────────
+
+class TestEditBackPopulatesTheForm:
+    """A script edited by hand is the one that runs, so ARRAY and GPU SIZE
+    follow it. Before this, fixing the script by hand left the form holding
+    the answer the generation was checked against, and SUBMIT stayed disabled
+    with no way to make the two agree.
+    """
+
+    @staticmethod
+    async def open_with_probe(app: ClusterPilotApp, pilot) -> SubmitView:
+        """Open F2 and let the partition probe worker finish."""
+        view = await open_submit(app, pilot)
+        await pilot.pause()
+        await pilot.pause()
+        return view
+
+    @pytest.mark.asyncio
+    async def test_an_edited_array_fills_the_array_field_and_clears_the_block(
+        self, tmp_path: Path
+    ):
+        write_project(tmp_path, rows=4)
+        generated = canned_script("").replace("--array=0-69", "--array=0-3")
+        edited = canned_script("").replace("--array=0-69", "--array=0-99")
+
+        app = ClusterPilotApp(stub_config(), db_path=tmp_path / "jobs.db")
+        with offline(generated):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = await self.open_with_probe(app, pilot)
+                view.query_one("#project-dir-input", Input).value = str(tmp_path)
+                view.query_one("#script-path-input", Input).value = DRIVER
+                view.query_one("#array-input", Input).value = "0-3"
+                await generate(view, pilot)
+                assert not view.query_one("#btn-submit", Button).disabled
+
+                view._generated_script = edited
+                view._back_populate_from_script()
+                view._apply_validation(announce_clean=True)
+                await pilot.pause()
+
+                assert view.query_one("#array-input", Input).value == "0-99"
+                assert view._last_intent.array_spec == "0-99"
+                assert view._findings == [], [f.message for f in view._findings]
+                assert not view.query_one("#btn-submit", Button).disabled
+
+    @pytest.mark.asyncio
+    async def test_an_edited_array_that_contradicts_the_table_still_blocks(
+        self, tmp_path: Path
+    ):
+        """The table's row count is the source of truth for how many tasks
+        there are, so this mismatch is reported rather than copied into the
+        field and hidden.
+        """
+        table_path = write_project(tmp_path, rows=4)
+        table = load_params_table(table_path)
+        reader = render_bash_reader(table) + "\n"
+        generated = canned_script(table_path.name, reader=reader).replace(
+            "--array=0-69", "--array=0-3"
+        )
+        edited = generated.replace("--array=0-3", "--array=0-99")
+
+        app = ClusterPilotApp(stub_config(), db_path=tmp_path / "jobs.db")
+        with offline(generated):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = await self.open_with_probe(app, pilot)
+                view.query_one("#project-dir-input", Input).value = str(tmp_path)
+                view.query_one("#script-path-input", Input).value = DRIVER
+                view.query_one("#params-table-input", Input).value = str(
+                    table_path.relative_to(tmp_path)
+                )
+                view.query_one("#array-input", Input).value = "0-3"
+                await generate(view, pilot)
+
+                view._generated_script = edited
+                view._back_populate_from_script()
+                view._apply_validation(announce_clean=True)
+                await pilot.pause()
+
+                assert view.query_one("#array-input", Input).value == "0-3"
+                assert "array-mismatch" in slugs(view)
+                assert view.query_one("#btn-submit", Button).disabled
+
+    @pytest.mark.asyncio
+    async def test_an_edited_gpu_type_the_probe_offers_flips_the_picker(
+        self, tmp_path: Path
+    ):
+        write_project(tmp_path, rows=4)
+        generated = canned_script("").replace(
+            "--gres=gpu:h100_3g.40gb:1", "--gres=gpu:h100:1"
+        ).replace("--array=0-69", "--array=0-3")
+        edited = canned_script("").replace("--array=0-69", "--array=0-3")
+
+        app = ClusterPilotApp(stub_config(), db_path=tmp_path / "jobs.db")
+        with offline(generated, probe=mig_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = await self.open_with_probe(app, pilot)
+                view.query_one("#project-dir-input", Input).value = str(tmp_path)
+                view.query_one("#script-path-input", Input).value = DRIVER
+                view.query_one("#array-input", Input).value = "0-3"
+                view.query_one("#gpu-size-select", Select).value = "h100"
+                await generate(view, pilot)
+                assert not view.query_one("#btn-submit", Button).disabled
+
+                view._generated_script = edited
+                view._back_populate_from_script()
+                view._apply_validation(announce_clean=True)
+                await pilot.pause()
+
+                assert view.query_one("#gpu-size-select", Select).value == "h100_3g.40gb"
+                assert view._last_intent.gpu_size == "h100_3g.40gb"
+                assert view._findings == [], [f.message for f in view._findings]
+                assert not view.query_one("#btn-submit", Button).disabled
+
+    @pytest.mark.asyncio
+    async def test_a_gpu_type_the_probe_never_offered_warns_without_blocking(
+        self, tmp_path: Path
+    ):
+        write_project(tmp_path, rows=4)
+        generated = canned_script("").replace(
+            "--gres=gpu:h100_3g.40gb:1", "--gres=gpu:h100:1"
+        ).replace("--array=0-69", "--array=0-3")
+        edited = generated.replace("--gres=gpu:h100:1", "--gres=gpu:a100:1")
+
+        app = ClusterPilotApp(stub_config(), db_path=tmp_path / "jobs.db")
+        with offline(generated, probe=mig_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = await self.open_with_probe(app, pilot)
+                view.query_one("#project-dir-input", Input).value = str(tmp_path)
+                view.query_one("#script-path-input", Input).value = DRIVER
+                view.query_one("#array-input", Input).value = "0-3"
+                view.query_one("#gpu-size-select", Select).value = "h100"
+                await generate(view, pilot)
+
+                view._generated_script = edited
+                view._back_populate_from_script()
+                view._apply_validation(announce_clean=True)
+                await pilot.pause()
+
+                assert slugs(view) == ["gpu-size"]
+                assert view._findings[0].severity is Severity.WARNING
+                message = view._findings[0].message
+                assert "a100" in message and "h100" in message
+                assert view.query_one("#gpu-size-select", Select).value == "h100"
+                assert not view.query_one("#btn-submit", Button).disabled
+
+    @pytest.mark.asyncio
+    async def test_two_offered_types_that_disagree_still_block(self, tmp_path: Path):
+        """Nothing to follow: the script names two types the picker offers, so
+        the disagreement is a real slip rather than a hand edit to adopt.
+        """
+        write_project(tmp_path, rows=4)
+        generated = canned_script("").replace(
+            "--gres=gpu:h100_3g.40gb:1", "--gres=gpu:h100:1"
+        ).replace("--array=0-69", "--array=0-3")
+        edited = generated.replace(
+            "--gres=gpu:h100:1",
+            "--gres=gpu:h100:1\n#SBATCH --gpus=h100_3g.40gb:1",
+        )
+
+        app = ClusterPilotApp(stub_config(), db_path=tmp_path / "jobs.db")
+        with offline(generated, probe=mig_probe()):
+            async with app.run_test(size=TERMINAL_SIZE) as pilot:
+                view = await self.open_with_probe(app, pilot)
+                view.query_one("#project-dir-input", Input).value = str(tmp_path)
+                view.query_one("#script-path-input", Input).value = DRIVER
+                view.query_one("#array-input", Input).value = "0-3"
+                view.query_one("#gpu-size-select", Select).value = "h100"
+                await generate(view, pilot)
+
+                view._generated_script = edited
+                view._back_populate_from_script()
+                view._apply_validation(announce_clean=True)
+                await pilot.pause()
+
+                assert view.query_one("#gpu-size-select", Select).value == "h100"
+                assert "gpu-size" in slugs(view)
+                assert view.query_one("#btn-submit", Button).disabled

@@ -107,6 +107,20 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class ScriptRequests:
+    """What a script actually asks for, read back out of its directives.
+
+    The mirror image of :class:`SubmitIntent`: intent is what the user asked
+    for, this is what the script in front of them says. ``array_task_count``
+    is None when there is no ``--array`` or its spec cannot be read.
+    """
+
+    array_spec: str = ""
+    array_task_count: int | None = None
+    gpu_types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SubmitIntent:
     """What the user actually asked for on the submit screen.
 
@@ -162,13 +176,15 @@ def validate_script(
     intent: SubmitIntent,
     partitions: Sequence[PartitionInfo] | None = None,
     account_max_wall: Mapping[str, str] | None = None,
+    offered_gpu_sizes: Sequence[str] | None = None,
 ) -> list[Finding]:
     """Check *script* against *intent* and return every finding, worst first.
 
     *partitions* is the probed partition table for the selected cluster.
     *account_max_wall* is the probe's account-to-walltime-ceiling mapping.
-    Omit either and the checks that need those probed facts are skipped rather
-    than guessed.
+    *offered_gpu_sizes* is the list the GPU SIZE picker was populated with.
+    Omit any of them and the checks that need those probed facts are skipped,
+    or fall back to their stricter reading, rather than guessing.
 
     Raises ``IntentError`` when *intent* itself is impossible.
     """
@@ -180,7 +196,7 @@ def validate_script(
     findings.extend(_check_miscased_directives(script))
     findings.extend(_check_array(script, intent))
     findings.extend(_check_gpu_count(script))
-    findings.extend(_check_gpu_size(script, intent))
+    findings.extend(_check_gpu_size(script, intent, offered_gpu_sizes))
     findings.extend(_check_walltime(script, intent, partitions))
     findings.extend(_check_account_walltime(script, intent, account_max_wall))
     findings.extend(_check_resources(script, intent, partitions))
@@ -210,6 +226,29 @@ def format_findings(findings: Sequence[Finding]) -> str:
         message = " ".join(finding.message.split())
         lines.append(f"{finding.severity.value:<8}  {finding.check}{where}: {message}")
     return "\n".join(lines)
+
+
+def read_script_requests(script: str) -> ScriptRequests:
+    """Read back what *script* asks for, for a caller that has to follow it.
+
+    The submit screen back-populates its ARRAY field and GPU SIZE picker from
+    a hand-edited script, because the edited script is the one that runs and a
+    form still holding the old answer blocks a submit the user has just fixed
+    (#63). Reading it through the checks' own parsers is what keeps the form
+    and the checks from disagreeing about the same script.
+    """
+    array = _directive_value(script, "array")
+    spec = array[1] if array else ""
+    gpu_types: list[str] = []
+    for _number, _count, text in _gpu_requests(script):
+        for named in _request_gpu_types(text):
+            if named and named not in gpu_types:
+                gpu_types.append(named)
+    return ScriptRequests(
+        array_spec=spec,
+        array_task_count=_count_array_tasks(spec) if spec else None,
+        gpu_types=tuple(gpu_types),
+    )
 
 
 # ── Intent validation ─────────────────────────────────────────────────────────
@@ -646,12 +685,22 @@ def _request_gpu_types(text: str) -> list[str]:
     return types
 
 
-def _check_gpu_size(script: str, intent: SubmitIntent) -> list[Finding]:
+def _check_gpu_size(
+    script: str,
+    intent: SubmitIntent,
+    offered_gpu_sizes: Sequence[str] | None = None,
+) -> list[Finding]:
     """Check every GPU request names the GPU size the user picked.
 
     A MIG slice and a whole card are different resources to SLURM, so a
     mismatch, or a type-less request where a size was picked, gets the job the
     wrong hardware. Skipped entirely when the picker was left blank.
+
+    *offered_gpu_sizes* is what the GPU SIZE picker actually offered. A script
+    naming a type that was never on that list is warned about rather than
+    blocked: the picker could not have been set to it, the probe may simply
+    not know the site's naming, and the script is what runs (#63). Omit the
+    list and every mismatch blocks, which is the behaviour without a probe.
     """
     wanted = intent.gpu_size.strip()
     if not wanted:
@@ -661,16 +710,32 @@ def _check_gpu_size(script: str, intent: SubmitIntent) -> list[Finding]:
         types = _request_gpu_types(text)
         if types and all(named == wanted for named in types):
             continue
-        got = ", ".join(named for named in types if named) or "no GPU type"
+        named_types = [named for named in types if named]
+        got = ", ".join(named_types) or "no GPU type"
+        unoffered = (
+            offered_gpu_sizes is not None
+            and bool(named_types)
+            and all(named not in offered_gpu_sizes for named in named_types)
+        )
+        if unoffered:
+            message = (
+                f"The script asks for {got} ('{text}') but '{wanted}' is picked as "
+                f"the GPU SIZE on the submit screen. {got} is not a size this "
+                f"cluster's probe offered, so ClusterPilot cannot tell which of the "
+                f"two is right; the script is what runs."
+            )
+        else:
+            message = (
+                f"The script asks for {got} ('{text}') but '{wanted}' is picked as "
+                f"the GPU SIZE on the submit screen. A whole card and a MIG slice "
+                f"are different resources: SLURM will not substitute one for the "
+                f"other."
+            )
         findings.append(
             Finding(
                 check="gpu-size",
-                severity=Severity.BLOCKING,
-                message=(
-                    f"'{text}' names {got}, but you picked '{wanted}' on the submit "
-                    f"screen. A whole card and a MIG slice are different resources: "
-                    f"SLURM will not substitute one for the other."
-                ),
+                severity=Severity.WARNING if unoffered else Severity.BLOCKING,
+                message=message,
                 line=number,
             )
         )
