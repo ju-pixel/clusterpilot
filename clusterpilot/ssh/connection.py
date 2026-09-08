@@ -25,7 +25,24 @@ _CONTROL_PATH = str(Path.home() / ".ssh" / "cm_%h_%p_%r")
 
 
 class SSHError(Exception):
-    """Raised when an SSH command fails or times out."""
+    """Raised when an SSH command fails or times out.
+
+    The remote command's own stderr and exit status are kept on the exception
+    so a caller can diagnose the failure instead of re-parsing the message: a
+    non-zero exit from a remote tool usually means the tool has already said
+    what went wrong, and "Remote command failed (exit 1)" is not that (#75).
+    Both are empty defaults, because a timeout has neither.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        stderr: str = "",
+        returncode: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stderr = stderr
+        self.returncode = returncode
 
 
 def is_connected(host: str, user: str) -> bool:
@@ -122,7 +139,9 @@ async def run_remote(
         err = stderr.decode().strip()
         raise SSHError(
             f"Remote command failed (exit {proc.returncode}): {cmd!r}"
-            + (f"\n{err}" if err else "")
+            + (f"\n{err}" if err else ""),
+            stderr=err,
+            returncode=proc.returncode,
         )
 
     return stdout.decode().strip()

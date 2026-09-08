@@ -85,12 +85,62 @@ async def submit(
     try:
         output = await run_remote(host, user, cmd)
     except SSHError as exc:
-        raise SlurmError(f"sbatch failed: {exc}") from exc
+        raise _submit_failure(exc) from exc
 
     match = _SUBMITTED_RE.search(output)
     if not match:
         raise SlurmError(f"Unexpected sbatch output: {output!r}")
     return match.group(1)
+
+
+# sbatch prefixes each diagnosis it prints with this, one per line.
+_SBATCH_ERROR_PREFIX = "sbatch: error:"
+
+# Reasons that name a fault on the cluster's side rather than in the request.
+# The discriminator is the reason itself, never slurmctld's "Batch job
+# submission failed:" prefix: that prefix also fronts "Invalid account or
+# account/partition combination specified", "Invalid partition name specified"
+# and "Requested node configuration is not available", every one of which is
+# the script's own problem. Calling those cluster faults would be #75 inverted.
+_CONTROLLER_FAULTS = (
+    "I/O error writing script/environment to file",
+)
+
+_CONTROLLER_FAULT_NOTE = (
+    "The scheduler accepted the request and then could not store it, which is "
+    "a cluster-side fault, not a problem with the script. Retry later or ask "
+    "the site."
+)
+
+
+def _submit_failure(exc: SSHError) -> SlurmError:
+    """Turn a failed sbatch into an error that says what actually happened.
+
+    sbatch writes its own diagnosis to stderr and exits 1, so the SSH layer
+    reports "Remote command failed (exit 1)" and the old wrapper prefixed that
+    with "sbatch failed:" again. The user was left reading two layers of
+    plumbing and no reason, and a controller-side write failure looked exactly
+    like a rejected script (#75).
+
+    The site's own words are the useful part, so ``sbatch: error:`` lines are
+    surfaced as they are; that is what carries a submit filter's advice. Only a
+    reason known to be the cluster's fault earns the extra sentence. The full
+    stderr stays on the exception for the caller to persist.
+    """
+    reasons = [
+        line.strip()[len(_SBATCH_ERROR_PREFIX):].strip()
+        for line in exc.stderr.splitlines()
+        if line.strip().startswith(_SBATCH_ERROR_PREFIX)
+    ]
+    if not reasons:
+        # Nothing from sbatch itself: the SSH transport or the login node
+        # failed, and its message is all there is.
+        return SlurmError(f"sbatch failed: {exc}", stderr=exc.stderr)
+
+    message = "; ".join(reasons)
+    if any(fault in reason for reason in reasons for fault in _CONTROLLER_FAULTS):
+        message = f"{message}. {_CONTROLLER_FAULT_NOTE}"
+    return SlurmError(message, stderr=exc.stderr)
 
 
 # ── Status polling ────────────────────────────────────────────────────────────

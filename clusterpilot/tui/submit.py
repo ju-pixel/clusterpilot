@@ -1667,7 +1667,19 @@ class SubmitView(Static):
                 working_dir=remote_dir,
             )
         except SlurmError as exc:
-            self.app.notify(f"sbatch failed: {exc}", severity="error", markup=False)
+            # The exception already carries sbatch's own words. Prefixing them
+            # with "sbatch failed:" again buried the reason under two layers of
+            # plumbing, so the message is shown as it is and the raw output is
+            # kept beside the preflight log for anything it did not include
+            # (#75).
+            detail = ""
+            if exc.stderr:
+                sbatch_log = local_job_dir / "sbatch.log"
+                sbatch_log.write_text(exc.stderr)
+                detail = f"\nFull sbatch output: {sbatch_log}"
+            self.app.notify(
+                f"{exc}{detail}", severity="error", markup=False, timeout=15,
+            )
             self.query_one("#btn-submit", Button).disabled = False
             return
 

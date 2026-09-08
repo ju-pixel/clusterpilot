@@ -76,6 +76,29 @@ class TestRunRemote:
             with pytest.raises(SSHError, match="Connection refused"):
                 await run_remote("host", "user", "cmd")
 
+    async def test_the_error_carries_the_stderr_and_exit_status(self):
+        """A remote tool that fails has usually said why on stderr, and the
+        caller needs it verbatim rather than parsed back out of the message
+        (#75).
+        """
+        stderr = (
+            b"sbatch: error: Batch job submission failed: "
+            b"I/O error writing script/environment to file"
+        )
+        proc = _make_proc(1, stderr=stderr)
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            with pytest.raises(SSHError) as caught:
+                await run_remote("host", "user", "sbatch job.sh")
+
+        assert caught.value.stderr == stderr.decode()
+        assert caught.value.returncode == 1
+        assert "Remote command failed" in str(caught.value)
+
+    async def test_a_timeout_carries_no_stderr(self):
+        error = SSHError("Command timed out after 1s: 'cmd'")
+        assert error.stderr == ""
+        assert error.returncode is None
+
     async def test_raises_ssh_error_on_timeout(self):
         import asyncio
 

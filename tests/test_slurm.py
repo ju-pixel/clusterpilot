@@ -63,9 +63,10 @@ class TestSubmit:
         assert "sbatch" in cmd
 
     async def test_raises_slurm_error_on_unexpected_output(self):
+        """sbatch exited 0 but said something else entirely."""
         with patch(
             "clusterpilot.cluster.slurm.run_remote",
-            _mock_run_remote("sbatch: error: Batch job submission failed"),
+            _mock_run_remote("Job queued for later submission"),
         ):
             with pytest.raises(SlurmError, match="Unexpected sbatch output"):
                 await submit("host", "user", "/home/user/job.sh")
@@ -76,6 +77,106 @@ class TestSubmit:
             _mock_run_remote_raises(SSHError("connection refused")),
         ):
             with pytest.raises(SlurmError, match="sbatch failed"):
+                await submit("host", "user", "/home/user/job.sh")
+
+
+class TestSubmitFailureReporting:
+    """A rejected submission has to read as what it is (#75).
+
+    A real sbatch failure writes its diagnosis to stderr and exits 1, so the
+    SSH layer raises "Remote command failed (exit 1)" and the old wrapper put
+    "sbatch failed:" in front of that. Neither layer said why.
+    """
+
+    @staticmethod
+    def _rejection(stderr: str) -> AsyncMock:
+        return _mock_run_remote_raises(
+            SSHError(
+                "Remote command failed (exit 1): 'sbatch job.sh'\n" + stderr,
+                stderr=stderr,
+                returncode=1,
+            )
+        )
+
+    async def test_a_controller_write_failure_is_explained(self):
+        stderr = (
+            "sbatch: error: Batch job submission failed: "
+            "I/O error writing script/environment to file"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", self._rejection(stderr)):
+            with pytest.raises(SlurmError) as caught:
+                await submit("host", "user", "/home/user/job.sh")
+
+        message = str(caught.value)
+        assert "I/O error writing script/environment to file" in message
+        assert "cluster-side fault, not a problem with the script" in message
+        assert "Remote command failed" not in message
+
+    async def test_a_rejected_request_is_not_called_a_cluster_fault(self):
+        """The same "Batch job submission failed:" prefix fronts the ordinary
+        rejections, which are the script's own problem and must not be
+        excused.
+        """
+        stderr = (
+            "sbatch: error: Batch job submission failed: "
+            "Invalid account or account/partition combination specified"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", self._rejection(stderr)):
+            with pytest.raises(SlurmError) as caught:
+                await submit("host", "user", "/home/user/job.sh")
+
+        message = str(caught.value)
+        assert "Invalid account or account/partition combination" in message
+        assert "cluster-side fault" not in message
+
+    async def test_a_submit_filter_message_is_shown_as_it_is(self):
+        """Grex's submit filter prints INFO lines and then its own error; the
+        error is the advice the user needs, verbatim.
+        """
+        stderr = (
+            "sbatch: INFO: Account def-stamps has 0 jobs running\n"
+            "sbatch: INFO: Partition set to lgpu\n"
+            "sbatch: error: lgpu is meant for GPU jobs only"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", self._rejection(stderr)):
+            with pytest.raises(SlurmError) as caught:
+                await submit("host", "user", "/home/user/job.sh")
+
+        assert str(caught.value) == "lgpu is meant for GPU jobs only"
+
+    async def test_every_error_line_is_kept(self):
+        stderr = (
+            "sbatch: error: Batch job submission failed: Invalid partition name "
+            "specified\n"
+            "sbatch: error: Try 'sinfo' for a list of partitions"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", self._rejection(stderr)):
+            with pytest.raises(SlurmError) as caught:
+                await submit("host", "user", "/home/user/job.sh")
+
+        assert "Invalid partition name specified" in str(caught.value)
+        assert "Try 'sinfo'" in str(caught.value)
+
+    async def test_the_full_stderr_stays_on_the_exception(self):
+        stderr = (
+            "sbatch: INFO: something the user may want later\n"
+            "sbatch: error: lgpu is meant for GPU jobs only"
+        )
+        with patch("clusterpilot.cluster.slurm.run_remote", self._rejection(stderr)):
+            with pytest.raises(SlurmError) as caught:
+                await submit("host", "user", "/home/user/job.sh")
+
+        assert caught.value.stderr == stderr
+
+    async def test_a_failure_with_nothing_from_sbatch_keeps_the_old_message(self):
+        """No sbatch diagnosis means the login node or the transport failed,
+        and the SSH message is all there is to show.
+        """
+        with patch(
+            "clusterpilot.cluster.slurm.run_remote",
+            _mock_run_remote_raises(SSHError("Command timed out after 30.0s")),
+        ):
+            with pytest.raises(SlurmError, match="sbatch failed: Command timed out"):
                 await submit("host", "user", "/home/user/job.sh")
 
 
